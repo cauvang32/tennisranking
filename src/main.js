@@ -1,7 +1,7 @@
 import './style.css'
 import ExcelJS from 'exceljs'
 
-// Tennis Ranking System with Excel File Storage
+// Tennis Ranking System with Authentication and Excel File Storage
 class TennisRankingSystem {
   constructor() {
     this.players = []
@@ -9,21 +9,27 @@ class TennisRankingSystem {
     this.currentFileName = 'tennis-data.xlsx'
     this.autoSaveEnabled = true
     this.serverMode = true // Will be set based on server availability
-    this.apiBase = 'http://localhost:3001/api'
+    this.apiBase = window.location.origin + '/api'
+    this.isAuthenticated = false
+    this.user = null
+    this.authToken = localStorage.getItem('authToken')
     this.init()
   }
 
   async init() {
     await this.detectServerMode()
+    await this.checkAuthStatus()
     this.setupEventListeners()
     await this.loadInitialData()
     this.renderPlayers()
     this.renderRankings()
     this.renderMatchHistory()
     this.updatePlayerSelects()
+    this.updateUIForAuthStatus()
     
     const modeText = this.serverMode ? 'Server Mode - Shared Data' : 'Local Mode'
-    this.updateFileStatus(`📂 Hệ thống sẵn sàng (${modeText}). ${this.serverMode ? 'Tất cả người dùng có thể truy cập cùng dữ liệu!' : 'Dùng nút "Lưu dữ liệu ra Excel" để xuất file.'}`, 'info')
+    const authText = this.isAuthenticated ? ' (Đã đăng nhập)' : ' (Chế độ xem)'
+    this.updateFileStatus(`📂 Hệ thống sẵn sàng (${modeText}${authText}). ${this.serverMode ? 'Tất cả người dùng có thể truy cập cùng dữ liệu!' : 'Dùng nút "Lưu dữ liệu ra Excel" để xuất file.'}`, 'info')
   }
 
   async detectServerMode() {
@@ -33,6 +39,195 @@ class TennisRankingSystem {
     } catch (error) {
       this.serverMode = false
     }
+  }
+
+  async checkAuthStatus() {
+    if (!this.serverMode) return
+    
+    try {
+      const response = await fetch(`${this.apiBase}/auth/status`, {
+        method: 'GET',
+        headers: {
+          'Authorization': this.authToken ? `Bearer ${this.authToken}` : '',
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include'
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        this.isAuthenticated = data.authenticated
+        this.user = data.user
+      }
+    } catch (error) {
+      console.log('Auth status check failed:', error)
+      this.isAuthenticated = false
+    }
+  }
+
+  async login(username, password) {
+    try {
+      const response = await fetch(`${this.apiBase}/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include',
+        body: JSON.stringify({ username, password })
+      })
+
+      const data = await response.json()
+      
+      if (response.ok) {
+        this.isAuthenticated = true
+        this.user = data.user
+        this.authToken = data.token
+        localStorage.setItem('authToken', data.token)
+        this.updateUIForAuthStatus()
+        return { success: true, message: data.message }
+      } else {
+        return { success: false, message: data.error }
+      }
+    } catch (error) {
+      return { success: false, message: 'Lỗi kết nối server' }
+    }
+  }
+
+  async logout() {
+    try {
+      await fetch(`${this.apiBase}/auth/logout`, {
+        method: 'POST',
+        headers: {
+          'Authorization': this.authToken ? `Bearer ${this.authToken}` : '',
+          'Content-Type': 'application/json'
+        },
+        credentials: 'include'
+      })
+    } catch (error) {
+      console.log('Logout request failed:', error)
+    }
+    
+    this.isAuthenticated = false
+    this.user = null
+    this.authToken = null
+    localStorage.removeItem('authToken')
+    this.updateUIForAuthStatus()
+  }
+
+  updateUIForAuthStatus() {
+    // Update header to show login status
+    this.updateAuthHeader()
+    
+    // Hide/show edit buttons based on auth status
+    const editElements = document.querySelectorAll('.edit-only')
+    editElements.forEach(element => {
+      element.style.display = this.isAuthenticated ? '' : 'none'
+    })
+    
+    // Show/hide guest info box
+    const guestInfo = document.querySelector('.guest-info')
+    if (guestInfo) {
+      guestInfo.style.display = this.isAuthenticated ? 'none' : 'block'
+    }
+    
+    // Hide/show entire tabs that require authentication
+    const authTabs = document.querySelectorAll('[data-tab="players"], [data-tab="matches"]')
+    authTabs.forEach(tab => {
+      if (this.isAuthenticated) {
+        tab.style.display = ''
+      } else {
+        tab.style.display = 'none'
+        // If current tab is auth-required, switch to rankings
+        if (tab.classList.contains('active')) {
+          this.switchTab('rankings')
+        }
+      }
+    })
+    
+    // Re-render elements to apply auth status
+    this.renderPlayers()
+  }
+
+  updateAuthHeader() {
+    const header = document.querySelector('header')
+    let authDiv = header.querySelector('.auth-section')
+    
+    if (!authDiv) {
+      authDiv = document.createElement('div')
+      authDiv.className = 'auth-section'
+      header.appendChild(authDiv)
+    }
+    
+    if (this.isAuthenticated) {
+      authDiv.innerHTML = `
+        <div class="user-info">
+          <span>👤 ${this.user.username}</span>
+          <button id="logoutBtn" class="logout-btn">Đăng xuất</button>
+        </div>
+      `
+      document.getElementById('logoutBtn').addEventListener('click', () => this.logout())
+    } else {
+      authDiv.innerHTML = `
+        <div class="login-section">
+          <span class="view-mode">📖 Chế độ xem</span>
+          <button id="loginBtn" class="login-btn">Đăng nhập</button>
+        </div>
+      `
+      document.getElementById('loginBtn').addEventListener('click', () => this.showLoginModal())
+    }
+  }
+
+  showLoginModal() {
+    const modal = document.createElement('div')
+    modal.className = 'modal'
+    modal.innerHTML = `
+      <div class="modal-content">
+        <h2>🔐 Đăng nhập quản trị</h2>
+        <form id="loginForm">
+          <div class="form-group">
+            <label for="loginUsername">Tên đăng nhập:</label>
+            <input type="text" id="loginUsername" required>
+          </div>
+          <div class="form-group">
+            <label for="loginPassword">Mật khẩu:</label>
+            <input type="password" id="loginPassword" required>
+          </div>
+          <div class="form-actions">
+            <button type="submit">Đăng nhập</button>
+            <button type="button" id="cancelLogin">Hủy</button>
+          </div>
+        </form>
+        <div id="loginError" class="error-message"></div>
+      </div>
+    `
+    
+    document.body.appendChild(modal)
+    
+    document.getElementById('loginForm').addEventListener('submit', async (e) => {
+      e.preventDefault()
+      const username = document.getElementById('loginUsername').value
+      const password = document.getElementById('loginPassword').value
+      const errorDiv = document.getElementById('loginError')
+      
+      const result = await this.login(username, password)
+      
+      if (result.success) {
+        document.body.removeChild(modal)
+        this.updateFileStatus('✅ Đăng nhập thành công!', 'success')
+      } else {
+        errorDiv.textContent = result.message
+      }
+    })
+    
+    document.getElementById('cancelLogin').addEventListener('click', () => {
+      document.body.removeChild(modal)
+    })
+    
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        document.body.removeChild(modal)
+      }
+    })
   }
 
   async loadInitialData() {
@@ -250,7 +445,7 @@ class TennisRankingSystem {
     container.innerHTML = this.players.map(player => `
       <div class="player-card">
         <span class="player-name">${player.name}</span>
-        <button class="delete-player" onclick="tennisSystem.removePlayer(${player.id})">
+        <button class="delete-player edit-only" onclick="tennisSystem.removePlayer(${player.id})" ${!this.isAuthenticated ? 'style="display:none"' : ''}>
           Xóa
         </button>
       </div>
@@ -559,8 +754,10 @@ class TennisRankingSystem {
       const response = await fetch(`${this.apiBase}/save-excel`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': this.authToken ? `Bearer ${this.authToken}` : ''
         },
+        credentials: 'include',
         body: JSON.stringify({
           fileName,
           data: excelData
@@ -778,7 +975,12 @@ class TennisRankingSystem {
 
   async loadFromServer() {
     try {
-      const response = await fetch(`${this.apiBase}/current-data`)
+      const response = await fetch(`${this.apiBase}/current-data`, {
+        headers: {
+          'Authorization': this.authToken ? `Bearer ${this.authToken}` : ''
+        },
+        credentials: 'include'
+      })
       const result = await response.json()
       
       if (result.success && result.data) {

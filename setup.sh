@@ -44,6 +44,16 @@ else
 fi
 
 echo ""
+echo "🏗️ Building the frontend application..."
+if npm run build; then
+    echo "✅ Frontend built successfully!"
+else
+    echo "❌ Failed to build frontend."
+    echo "Please check for build errors above."
+    exit 1
+fi
+
+echo ""
 echo "🎉 Setup Complete!"
 echo "=================="
 echo ""

@@ -6,6 +6,13 @@ import cors from 'cors'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
 import { body, param, validationResult } from 'express-validator'
+import jwt from 'jsonwebtoken'
+import bcrypt from 'bcryptjs'
+import session from 'express-session'
+import dotenv from 'dotenv'
+
+// Load environment variables
+dotenv.config()
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -13,6 +20,19 @@ const __dirname = dirname(__filename)
 const app = express()
 const PORT = process.env.PORT || 3001
 const DATA_DIR = join(__dirname, 'data')
+
+// Admin credentials from environment
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin'
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'tennis2024!'
+const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@tennis.local'
+const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key'
+const SESSION_SECRET = process.env.SESSION_SECRET || 'fallback-session-secret'
+
+// Hash the admin password on startup
+const hashedAdminPassword = await bcrypt.hash(ADMIN_PASSWORD, 10)
+
+// Trust proxy (required for Cloudflare and other reverse proxies)
+app.set('trust proxy', true)
 
 // Middleware
 app.use(helmet({
@@ -33,8 +53,8 @@ app.use(helmet({
 
 // Rate limiting
 const generalLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 1000, // Limit each IP to 1000 requests per windowMs
+  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
+  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 1000, // Limit each IP to 1000 requests per windowMs
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
@@ -42,8 +62,16 @@ const generalLimiter = rateLimit({
 
 const apiLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // Limit each IP to 100 API requests per windowMs
+  max: parseInt(process.env.RATE_LIMIT_API_MAX) || 100, // Limit each IP to 100 API requests per windowMs
   message: 'Too many API requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5, // Limit each IP to 5 login attempts per windowMs
+  message: 'Too many login attempts from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
 })
@@ -62,21 +90,28 @@ app.use('/api', apiLimiter)
 // CORS configuration with security
 const corsOptions = {
   origin: function (origin, callback) {
+    console.log('CORS Origin:', origin) // Debug logging
+    
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true)
     
-    // Allow localhost and local network IPs
-    const allowedOrigins = [
-      'http://localhost:3001',
-      'http://127.0.0.1:3001'
-    ]
+    // Get allowed origins from environment or use defaults
+    const allowedOrigins = process.env.ALLOWED_ORIGINS ? 
+      process.env.ALLOWED_ORIGINS.split(',') : 
+      [
+        'http://localhost:3001',
+        'http://127.0.0.1:3001',
+        'https://tennis.quocanh.shop'
+      ]
     
     // Allow local network IPs (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
     const localNetworkRegex = /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):\d+$/
     
     if (allowedOrigins.includes(origin) || localNetworkRegex.test(origin)) {
+      console.log('CORS: Origin allowed:', origin)
       callback(null, true)
     } else {
+      console.log('CORS: Origin blocked:', origin)
       callback(new Error('Not allowed by CORS'))
     }
   },
@@ -85,6 +120,19 @@ const corsOptions = {
 }
 
 app.use(cors(corsOptions))
+
+// Session middleware
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production', // Only send over HTTPS in production
+    httpOnly: true,
+    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+  }
+}))
+
 app.use(express.json({ 
   limit: '10mb',
   verify: (req, res, buf) => {
@@ -126,6 +174,54 @@ const sanitizeFileName = (fileName) => {
     .substring(0, 100) // Limit length
 }
 
+// Authentication middleware
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization']
+  const token = authHeader && authHeader.split(' ')[1]
+
+  if (!token) {
+    return res.status(401).json({ error: 'Access token required' })
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: 'Invalid or expired token' })
+    }
+    req.user = user
+    next()
+  })
+}
+
+// Check if user is authenticated (for optional auth)
+const checkAuth = (req, res, next) => {
+  const authHeader = req.headers['authorization']
+  const token = authHeader && authHeader.split(' ')[1]
+
+  if (token) {
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+      if (!err) {
+        req.user = user
+        req.isAuthenticated = true
+      }
+    })
+  }
+  req.isAuthenticated = req.isAuthenticated || false
+  next()
+}
+
+// Generate JWT token
+const generateToken = (user) => {
+  return jwt.sign(
+    { 
+      username: user.username, 
+      email: user.email,
+      role: user.role || 'admin'
+    }, 
+    JWT_SECRET, 
+    { expiresIn: '24h' }
+  )
+}
+
 // Ensure data directory exists with proper permissions
 try {
   await fs.access(DATA_DIR)
@@ -135,8 +231,92 @@ try {
 
 // API Routes
 
-// Get list of Excel files
-app.get('/api/files', async (req, res) => {
+// Authentication Routes
+
+// Login endpoint
+app.post('/api/auth/login', 
+  authLimiter,
+  [
+    body('username')
+      .isLength({ min: 1, max: 50 })
+      .withMessage('Username is required'),
+    body('password')
+      .isLength({ min: 1, max: 100 })
+      .withMessage('Password is required')
+  ],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const { username, password } = req.body
+
+      // Check if credentials match admin account
+      if (username === ADMIN_USERNAME) {
+        const isValidPassword = await bcrypt.compare(password, hashedAdminPassword)
+        
+        if (isValidPassword) {
+          const user = {
+            username: ADMIN_USERNAME,
+            email: ADMIN_EMAIL,
+            role: 'admin'
+          }
+          
+          const token = generateToken(user)
+          
+          // Store user in session
+          req.session.user = user
+          
+          res.json({
+            success: true,
+            message: 'Login successful',
+            token,
+            user: {
+              username: user.username,
+              email: user.email,
+              role: user.role
+            }
+          })
+        } else {
+          res.status(401).json({ error: 'Invalid credentials' })
+        }
+      } else {
+        res.status(401).json({ error: 'Invalid credentials' })
+      }
+    } catch (error) {
+      console.error('Login error:', error)
+      res.status(500).json({ error: 'Login failed' })
+    }
+  }
+)
+
+// Logout endpoint
+app.post('/api/auth/logout', (req, res) => {
+  req.session.destroy((err) => {
+    if (err) {
+      console.error('Logout error:', err)
+      return res.status(500).json({ error: 'Logout failed' })
+    }
+    res.json({ success: true, message: 'Logged out successfully' })
+  })
+})
+
+// Check authentication status
+app.get('/api/auth/status', checkAuth, (req, res) => {
+  if (req.isAuthenticated) {
+    res.json({
+      authenticated: true,
+      user: req.user
+    })
+  } else {
+    res.json({
+      authenticated: false
+    })
+  }
+})
+
+// Data Routes (Read-only routes don't require authentication)
+
+// Get list of Excel files (public)
+app.get('/api/files', checkAuth, async (req, res) => {
   try {
     const files = await fs.readdir(DATA_DIR)
     const excelFiles = files
@@ -178,8 +358,9 @@ app.get('/api/files', async (req, res) => {
   }
 })
 
-// Save Excel file to data folder
+// Save Excel file to data folder (requires authentication)
 app.post('/api/save-excel', 
+  authenticateToken,
   uploadLimiter,
   [
     body('fileName')
@@ -227,8 +408,9 @@ app.post('/api/save-excel',
   }
 )
 
-// Load Excel file from data folder
+// Load Excel file from data folder (public)
 app.get('/api/load-excel/:fileName', 
+  checkAuth,
   [
     param('fileName')
       .isLength({ min: 1, max: 100 })
@@ -274,8 +456,9 @@ app.get('/api/load-excel/:fileName',
   }
 )
 
-// Delete Excel file
+// Delete Excel file (requires authentication)
 app.delete('/api/delete-excel/:fileName', 
+  authenticateToken,
   [
     param('fileName')
       .isLength({ min: 1, max: 100 })
@@ -313,8 +496,9 @@ app.delete('/api/delete-excel/:fileName',
   }
 )
 
-// Get current data file (latest or specified)
+// Get current data file (latest or specified) (public)
 app.get('/api/current-data/:fileName?', 
+  checkAuth,
   [
     param('fileName')
       .optional()

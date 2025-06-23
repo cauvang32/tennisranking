@@ -15,15 +15,15 @@
 
       <main>
         <div class="tabs">
-          <button class="tab-button active" data-tab="players">Quản lý người chơi</button>
-          <button class="tab-button" data-tab="matches">Trận đấu</button>
-          <button class="tab-button" data-tab="rankings">Xếp hạng</button>
+          <button class="tab-button edit-only" data-tab="players">Quản lý người chơi</button>
+          <button class="tab-button edit-only" data-tab="matches">Trận đấu</button>
+          <button class="tab-button active" data-tab="rankings">Xếp hạng</button>
           <button class="tab-button" data-tab="history">Lịch sử</button>
         </div>
 
         <!-- Players Tab -->
-        <div class="tab-content active" id="players-tab">
-          <div class="section">
+        <div class="tab-content" id="players-tab">
+          <div class="section edit-only">
             <h2>Thêm người chơi mới</h2>
             <div class="form-group">
               <input type="text" id="playerName" placeholder="Tên người chơi" />
@@ -31,7 +31,7 @@
             </div>
           </div>
 
-          <div class="section">
+          <div class="section edit-only">
             <div class="section-header">
               <h2>Quản lý dữ liệu</h2>
             </div>
@@ -58,7 +58,7 @@
 
         <!-- Matches Tab -->
         <div class="tab-content" id="matches-tab">
-          <div class="section">
+          <div class="section edit-only">
             <h2>Tạo trận đấu mới</h2>
             <div class="match-form">
               <div class="team-selection">
@@ -84,7 +84,7 @@
               </div>
             </div>
 
-            <div class="form-group">
+            <div class="form-group edit-only">
               <h3>Kết quả trận đấu</h3>
               <div class="score-input">
                 <input type="text" id="team1Score" placeholder="Tỷ số đội 1 (VD: 6-4, 6-3)" />
@@ -107,13 +107,19 @@
         </div>
 
         <!-- Rankings Tab -->
-        <div class="tab-content" id="rankings-tab">
+        <div class="tab-content active" id="rankings-tab">
           <div class="section">
             <div class="section-header">
               <h2>Bảng xếp hạng</h2>
               <div class="button-group">
                 <button id="databaseInfo" class="info-button">📊 Thông tin CSDL</button>
-                <button id="exportRankings">📁 Xuất Excel</button>
+                <button id="exportRankings" class="edit-only">📁 Xuất Excel</button>
+              </div>
+            </div>
+            <div class="guest-info" style="display: none;">
+              <div class="info-box">
+                <h3>👀 Chế độ xem công khai</h3>
+                <p>Bạn đang xem bảng xếp hạng ở chế độ công khai. Để thêm người chơi, ghi nhận trận đấu, hoặc quản lý dữ liệu, vui lòng đăng nhập.</p>
               </div>
             </div>
             <div id="rankingsTable"></div>

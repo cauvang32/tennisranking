@@ -1,5 +1,5 @@
 import './style.css'
-import * as XLSX from 'xlsx'
+import ExcelJS from 'exceljs'
 
 // Tennis Ranking System with Excel File Storage
 class TennisRankingSystem {
@@ -359,52 +359,111 @@ class TennisRankingSystem {
     container.innerHTML = historyHTML
   }
 
-  exportToExcel() {
+  async exportToExcel() {
     if (this.players.length === 0) {
       this.showMessage('Không có dữ liệu để xuất', 'error')
       return
     }
 
-    // Prepare rankings data
-    const sortedPlayers = [...this.players].sort((a, b) => b.points - a.points)
-    const rankingsData = sortedPlayers.map((player, index) => ({
-      'Hạng': index + 1,
-      'Tên': player.name,
-      'Điểm': player.points,
-      'Thắng': player.wins,
-      'Thua': player.losses,
-      'Tỷ lệ thắng (%)': player.wins + player.losses > 0 
-        ? ((player.wins / (player.wins + player.losses)) * 100).toFixed(1)
-        : '0.0',
-      'Tiền mất (VND)': player.moneyLost
-    }))
+    try {
+      // Create workbook and worksheets
+      const workbook = new ExcelJS.Workbook()
+      
+      // Add rankings sheet
+      const rankingsSheet = workbook.addWorksheet('Bảng xếp hạng')
+      
+      // Prepare rankings data
+      const sortedPlayers = [...this.players].sort((a, b) => b.points - a.points)
+      const rankingsData = sortedPlayers.map((player, index) => ({
+        'Hạng': index + 1,
+        'Tên': player.name,
+        'Điểm': player.points,
+        'Thắng': player.wins,
+        'Thua': player.losses,
+        'Tỷ lệ thắng (%)': player.wins + player.losses > 0 
+          ? ((player.wins / (player.wins + player.losses)) * 100).toFixed(1)
+          : '0.0',
+        'Tiền mất (VND)': player.moneyLost
+      }))
 
-    // Prepare match history data
-    const matchData = this.matches.map(match => ({
-      'Ngày': match.date,
-      'Đội 1': `${match.team1.player1.name} & ${match.team1.player2.name}`,
-      'Tỷ số đội 1': match.team1.score || 'N/A',
-      'Đội 2': `${match.team2.player1.name} & ${match.team2.player2.name}`,
-      'Tỷ số đội 2': match.team2.score || 'N/A',
-      'Đội thắng': match.winner === 'team1' ? 'Đội 1' : 'Đội 2'
-    }))
+      // Add headers
+      rankingsSheet.columns = [
+        { header: 'Hạng', key: 'Hạng', width: 10 },
+        { header: 'Tên', key: 'Tên', width: 20 },
+        { header: 'Điểm', key: 'Điểm', width: 10 },
+        { header: 'Thắng', key: 'Thắng', width: 10 },
+        { header: 'Thua', key: 'Thua', width: 10 },
+        { header: 'Tỷ lệ thắng (%)', key: 'Tỷ lệ thắng (%)', width: 15 },
+        { header: 'Tiền mất (VND)', key: 'Tiền mất (VND)', width: 15 }
+      ]
 
-    // Create workbook
-    const workbook = XLSX.utils.book_new()
-    
-    // Add rankings sheet
-    const rankingsSheet = XLSX.utils.json_to_sheet(rankingsData)
-    XLSX.utils.book_append_sheet(workbook, rankingsSheet, 'Bảng xếp hạng')
-    
-    // Add match history sheet
-    const matchSheet = XLSX.utils.json_to_sheet(matchData)
-    XLSX.utils.book_append_sheet(workbook, matchSheet, 'Lịch sử trận đấu')
+      // Add data rows
+      rankingsData.forEach(row => {
+        rankingsSheet.addRow(row)
+      })
 
-    // Download file
-    const fileName = `tennis-ranking-${new Date().toISOString().split('T')[0]}.xlsx`
-    XLSX.writeFile(workbook, fileName)
-    
-    this.showMessage('Đã xuất file Excel thành công', 'success')
+      // Style the headers
+      rankingsSheet.getRow(1).font = { bold: true }
+      rankingsSheet.getRow(1).fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFE0E0E0' }
+      }
+
+      // Add match history sheet
+      const matchSheet = workbook.addWorksheet('Lịch sử trận đấu')
+      
+      // Prepare match history data
+      const matchData = this.matches.map(match => ({
+        'Ngày': match.date,
+        'Đội 1': `${match.team1.player1.name} & ${match.team1.player2.name}`,
+        'Tỷ số đội 1': match.team1.score || 'N/A',
+        'Đội 2': `${match.team2.player1.name} & ${match.team2.player2.name}`,
+        'Tỷ số đội 2': match.team2.score || 'N/A',
+        'Đội thắng': match.winner === 'team1' ? 'Đội 1' : 'Đội 2'
+      }))
+
+      // Add headers for match sheet
+      matchSheet.columns = [
+        { header: 'Ngày', key: 'Ngày', width: 20 },
+        { header: 'Đội 1', key: 'Đội 1', width: 25 },
+        { header: 'Tỷ số đội 1', key: 'Tỷ số đội 1', width: 15 },
+        { header: 'Đội 2', key: 'Đội 2', width: 25 },
+        { header: 'Tỷ số đội 2', key: 'Tỷ số đội 2', width: 15 },
+        { header: 'Đội thắng', key: 'Đội thắng', width: 15 }
+      ]
+
+      // Add match data rows
+      matchData.forEach(row => {
+        matchSheet.addRow(row)
+      })
+
+      // Style the headers
+      matchSheet.getRow(1).font = { bold: true }
+      matchSheet.getRow(1).fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFE0E0E0' }
+      }
+
+      // Generate and download file
+      const fileName = `tennis-ranking-${new Date().toISOString().split('T')[0]}.xlsx`
+      const buffer = await workbook.xlsx.writeBuffer()
+      
+      // Create download link
+      const blob = new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = fileName
+      a.click()
+      window.URL.revokeObjectURL(url)
+      
+      this.showMessage('Đã xuất file Excel thành công', 'success')
+    } catch (error) {
+      console.error('Error exporting to Excel:', error)
+      this.showMessage('Lỗi khi xuất Excel: ' + error.message, 'error')
+    }
   }
 
   resetDatabase() {
@@ -523,62 +582,110 @@ class TennisRankingSystem {
   }
 
   async createExcelData() {
-    // Prepare players data
-    const playersData = this.players.map(player => ({
-      'ID': player.id,
-      'Tên': player.name,
-      'Điểm': player.points,
-      'Thắng': player.wins,
-      'Thua': player.losses,
-      'Tiền mất (VND)': player.moneyLost
-    }))
+    try {
+      // Create workbook
+      const workbook = new ExcelJS.Workbook()
+      
+      // Add players sheet
+      const playersSheet = workbook.addWorksheet('Players')
+      playersSheet.columns = [
+        { header: 'ID', key: 'ID', width: 15 },
+        { header: 'Tên', key: 'Tên', width: 20 },
+        { header: 'Điểm', key: 'Điểm', width: 10 },
+        { header: 'Thắng', key: 'Thắng', width: 10 },
+        { header: 'Thua', key: 'Thua', width: 10 },
+        { header: 'Tiền mất (VND)', key: 'Tiền mất (VND)', width: 15 }
+      ]
 
-    // Prepare matches data
-    const matchesData = this.matches.map(match => ({
-      'ID': match.id,
-      'Ngày': match.date,
-      'Đội 1 - Người 1': match.team1.player1?.name || '',
-      'Đội 1 - Người 2': match.team1.player2?.name || '',
-      'Tỷ số đội 1': match.team1.score,
-      'Đội 2 - Người 1': match.team2.player1?.name || '',
-      'Đội 2 - Người 2': match.team2.player2?.name || '',
-      'Tỷ số đội 2': match.team2.score,
-      'Đội thắng': match.winner === 'team1' ? 'Đội 1' : 'Đội 2'
-    }))
+      // Add players data
+      this.players.forEach(player => {
+        playersSheet.addRow({
+          'ID': player.id,
+          'Tên': player.name,
+          'Điểm': player.points,
+          'Thắng': player.wins,
+          'Thua': player.losses,
+          'Tiền mất (VND)': player.moneyLost
+        })
+      })
 
-    // Create workbook
-    const workbook = XLSX.utils.book_new()
-    
-    // Add players sheet
-    const playersSheet = XLSX.utils.json_to_sheet(playersData)
-    XLSX.utils.book_append_sheet(workbook, playersSheet, 'Players')
-    
-    // Add matches sheet
-    const matchesSheet = XLSX.utils.json_to_sheet(matchesData)
-    XLSX.utils.book_append_sheet(workbook, matchesSheet, 'Matches')
+      // Add matches sheet
+      const matchesSheet = workbook.addWorksheet('Matches')
+      matchesSheet.columns = [
+        { header: 'ID', key: 'ID', width: 15 },
+        { header: 'Ngày', key: 'Ngày', width: 20 },
+        { header: 'Đội 1 - Người 1', key: 'Đội 1 - Người 1', width: 20 },
+        { header: 'Đội 1 - Người 2', key: 'Đội 1 - Người 2', width: 20 },
+        { header: 'Tỷ số đội 1', key: 'Tỷ số đội 1', width: 15 },
+        { header: 'Đội 2 - Người 1', key: 'Đội 2 - Người 1', width: 20 },
+        { header: 'Đội 2 - Người 2', key: 'Đội 2 - Người 2', width: 20 },
+        { header: 'Tỷ số đội 2', key: 'Tỷ số đội 2', width: 15 },
+        { header: 'Đội thắng', key: 'Đội thắng', width: 15 }
+      ]
 
-    // Add rankings sheet
-    const rankingsData = [...this.players].sort((a, b) => b.points - a.points)
-      .map((player, index) => ({
-        'Hạng': index + 1,
-        'Tên': player.name,
-        'Điểm': player.points,
-        'Thắng': player.wins,
-        'Thua': player.losses,
-        'Tỷ lệ thắng (%)': player.wins + player.losses > 0 
-          ? ((player.wins / (player.wins + player.losses)) * 100).toFixed(1)
-          : '0.0',
-        'Tiền mất (VND)': player.moneyLost
-      }))
+      // Add matches data
+      this.matches.forEach(match => {
+        matchesSheet.addRow({
+          'ID': match.id,
+          'Ngày': match.date,
+          'Đội 1 - Người 1': match.team1.player1?.name || '',
+          'Đội 1 - Người 2': match.team1.player2?.name || '',
+          'Tỷ số đội 1': match.team1.score,
+          'Đội 2 - Người 1': match.team2.player1?.name || '',
+          'Đội 2 - Người 2': match.team2.player2?.name || '',
+          'Tỷ số đội 2': match.team2.score,
+          'Đội thắng': match.winner === 'team1' ? 'Đội 1' : 'Đội 2'
+        })
+      })
 
-    const rankingsSheet = XLSX.utils.json_to_sheet(rankingsData)
-    XLSX.utils.book_append_sheet(workbook, rankingsSheet, 'Rankings')
+      // Add rankings sheet
+      const rankingsSheet = workbook.addWorksheet('Rankings')
+      const sortedPlayers = [...this.players].sort((a, b) => b.points - a.points)
+      
+      rankingsSheet.columns = [
+        { header: 'Hạng', key: 'Hạng', width: 10 },
+        { header: 'Tên', key: 'Tên', width: 20 },
+        { header: 'Điểm', key: 'Điểm', width: 10 },
+        { header: 'Thắng', key: 'Thắng', width: 10 },
+        { header: 'Thua', key: 'Thua', width: 10 },
+        { header: 'Tỷ lệ thắng (%)', key: 'Tỷ lệ thắng (%)', width: 15 },
+        { header: 'Tiền mất (VND)', key: 'Tiền mất (VND)', width: 15 }
+      ]
 
-    // Convert to base64
-    const excelBuffer = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' })
-    const base64Data = btoa(String.fromCharCode(...new Uint8Array(excelBuffer)))
-    
-    return base64Data
+      // Add rankings data
+      sortedPlayers.forEach((player, index) => {
+        rankingsSheet.addRow({
+          'Hạng': index + 1,
+          'Tên': player.name,
+          'Điểm': player.points,
+          'Thắng': player.wins,
+          'Thua': player.losses,
+          'Tỷ lệ thắng (%)': player.wins + player.losses > 0 
+            ? ((player.wins / (player.wins + player.losses)) * 100).toFixed(1)
+            : '0.0',
+          'Tiền mất (VND)': player.moneyLost
+        })
+      })
+
+      // Style headers for all sheets
+      ;[playersSheet, matchesSheet, rankingsSheet].forEach(sheet => {
+        sheet.getRow(1).font = { bold: true }
+        sheet.getRow(1).fill = {
+          type: 'pattern',
+          pattern: 'solid',
+          fgColor: { argb: 'FFE0E0E0' }
+        }
+      })
+
+      // Convert to base64
+      const buffer = await workbook.xlsx.writeBuffer()
+      const base64Data = btoa(String.fromCharCode(...new Uint8Array(buffer)))
+      
+      return base64Data
+    } catch (error) {
+      console.error('Error creating Excel data:', error)
+      throw error
+    }
   }
 
   showMessage(message, type = 'success') {
@@ -605,43 +712,58 @@ class TennisRankingSystem {
 
     try {
       const arrayBuffer = await file.arrayBuffer()
-      const workbook = XLSX.read(arrayBuffer, { type: 'array' })
+      const workbook = new ExcelJS.Workbook()
+      await workbook.xlsx.load(arrayBuffer)
       
       // Load players data
-      if (workbook.SheetNames.includes('Players')) {
-        const playersSheet = workbook.Sheets['Players']
-        const playersData = XLSX.utils.sheet_to_json(playersSheet)
-        
-        this.players = playersData.map(row => ({
-          id: row['ID'] || Date.now() + Math.random(),
-          name: row['Tên'] || row['Name'] || '',
-          points: parseInt(row['Điểm'] || row['Points'] || 0),
-          wins: parseInt(row['Thắng'] || row['Wins'] || 0),
-          losses: parseInt(row['Thua'] || row['Losses'] || 0),
-          moneyLost: parseInt(row['Tiền mất (VND)'] || row['Money Lost'] || 0)
-        })).filter(player => player.name) // Remove empty names
+      const playersSheet = workbook.getWorksheet('Players')
+      if (playersSheet) {
+        const playersData = []
+        playersSheet.eachRow((row, rowNumber) => {
+          if (rowNumber > 1) { // Skip header row
+            const [id, name, points, wins, losses, moneyLost] = row.values.slice(1) // Skip first empty cell
+            if (name) {
+              playersData.push({
+                id: id || Date.now() + Math.random(),
+                name: String(name),
+                points: parseInt(points) || 0,
+                wins: parseInt(wins) || 0,
+                losses: parseInt(losses) || 0,
+                moneyLost: parseInt(moneyLost) || 0
+              })
+            }
+          }
+        })
+        this.players = playersData
       }
 
       // Load matches data
-      if (workbook.SheetNames.includes('Matches')) {
-        const matchesSheet = workbook.Sheets['Matches']
-        const matchesData = XLSX.utils.sheet_to_json(matchesSheet)
-        
-        this.matches = matchesData.map(row => ({
-          id: row['ID'] || Date.now() + Math.random(),
-          date: row['Ngày'] || row['Date'] || new Date().toLocaleString('vi-VN'),
-          team1: {
-            player1: this.findPlayerByName(row['Đội 1 - Người 1'] || row['Team 1 - Player 1']),
-            player2: this.findPlayerByName(row['Đội 1 - Người 2'] || row['Team 1 - Player 2']),
-            score: row['Tỷ số đội 1'] || row['Team 1 Score'] || ''
-          },
-          team2: {
-            player1: this.findPlayerByName(row['Đội 2 - Người 1'] || row['Team 2 - Player 1']),
-            player2: this.findPlayerByName(row['Đội 2 - Người 2'] || row['Team 2 - Player 2']),
-            score: row['Tỷ số đội 2'] || row['Team 2 Score'] || ''
-          },
-          winner: (row['Đội thắng'] || row['Winner']) === 'Đội 1' || row['Winner'] === 'Team 1' ? 'team1' : 'team2'
-        })).filter(match => match.team1.player1 && match.team2.player1) // Remove invalid matches
+      const matchesSheet = workbook.getWorksheet('Matches')
+      if (matchesSheet) {
+        const matchesData = []
+        matchesSheet.eachRow((row, rowNumber) => {
+          if (rowNumber > 1) { // Skip header row
+            const [id, date, team1Player1, team1Player2, team1Score, team2Player1, team2Player2, team2Score, winner] = row.values.slice(1)
+            if (team1Player1 && team2Player1) {
+              matchesData.push({
+                id: id || Date.now() + Math.random(),
+                date: String(date) || new Date().toLocaleString('vi-VN'),
+                team1: {
+                  player1: this.findPlayerByName(String(team1Player1)),
+                  player2: this.findPlayerByName(String(team1Player2)),
+                  score: String(team1Score) || ''
+                },
+                team2: {
+                  player1: this.findPlayerByName(String(team2Player1)),
+                  player2: this.findPlayerByName(String(team2Player2)),
+                  score: String(team2Score) || ''
+                },
+                winner: String(winner) === 'Đội 1' ? 'team1' : 'team2'
+              })
+            }
+          }
+        })
+        this.matches = matchesData
       }
 
       this.currentFileName = file.name
@@ -676,50 +798,65 @@ class TennisRankingSystem {
 
   async parseExcelData(base64Data) {
     try {
-      // Convert base64 to array buffer
+      // Convert base64 to buffer
       const binaryString = atob(base64Data)
       const bytes = new Uint8Array(binaryString.length)
       for (let i = 0; i < binaryString.length; i++) {
         bytes[i] = binaryString.charCodeAt(i)
       }
       
-      const workbook = XLSX.read(bytes, { type: 'array' })
+      const workbook = new ExcelJS.Workbook()
+      await workbook.xlsx.load(bytes.buffer)
       
       // Load players data
-      if (workbook.SheetNames.includes('Players')) {
-        const playersSheet = workbook.Sheets['Players']
-        const playersData = XLSX.utils.sheet_to_json(playersSheet)
-        
-        this.players = playersData.map(row => ({
-          id: row['ID'] || Date.now() + Math.random(),
-          name: row['Tên'] || row['Name'] || '',
-          points: parseInt(row['Điểm'] || row['Points'] || 0),
-          wins: parseInt(row['Thắng'] || row['Wins'] || 0),
-          losses: parseInt(row['Thua'] || row['Losses'] || 0),
-          moneyLost: parseInt(row['Tiền mất (VND)'] || row['Money Lost'] || 0)
-        })).filter(player => player.name)
+      const playersSheet = workbook.getWorksheet('Players')
+      if (playersSheet) {
+        const playersData = []
+        playersSheet.eachRow((row, rowNumber) => {
+          if (rowNumber > 1) { // Skip header row
+            const [id, name, points, wins, losses, moneyLost] = row.values.slice(1) // Skip first empty cell
+            if (name) {
+              playersData.push({
+                id: id || Date.now() + Math.random(),
+                name: String(name),
+                points: parseInt(points) || 0,
+                wins: parseInt(wins) || 0,
+                losses: parseInt(losses) || 0,
+                moneyLost: parseInt(moneyLost) || 0
+              })
+            }
+          }
+        })
+        this.players = playersData
       }
 
       // Load matches data
-      if (workbook.SheetNames.includes('Matches')) {
-        const matchesSheet = workbook.Sheets['Matches']
-        const matchesData = XLSX.utils.sheet_to_json(matchesSheet)
-        
-        this.matches = matchesData.map(row => ({
-          id: row['ID'] || Date.now() + Math.random(),
-          date: row['Ngày'] || row['Date'] || new Date().toLocaleString('vi-VN'),
-          team1: {
-            player1: this.findPlayerByName(row['Đội 1 - Người 1'] || row['Team 1 - Player 1']),
-            player2: this.findPlayerByName(row['Đội 1 - Người 2'] || row['Team 1 - Player 2']),
-            score: row['Tỷ số đội 1'] || row['Team 1 Score'] || ''
-          },
-          team2: {
-            player1: this.findPlayerByName(row['Đội 2 - Người 1'] || row['Team 2 - Player 1']),
-            player2: this.findPlayerByName(row['Đội 2 - Người 2'] || row['Team 2 - Player 2']),
-            score: row['Tỷ số đội 2'] || row['Team 2 Score'] || ''
-          },
-          winner: (row['Đội thắng'] || row['Winner']) === 'Đội 1' || row['Winner'] === 'Team 1' ? 'team1' : 'team2'
-        })).filter(match => match.team1.player1 && match.team2.player1)
+      const matchesSheet = workbook.getWorksheet('Matches')
+      if (matchesSheet) {
+        const matchesData = []
+        matchesSheet.eachRow((row, rowNumber) => {
+          if (rowNumber > 1) { // Skip header row
+            const [id, date, team1Player1, team1Player2, team1Score, team2Player1, team2Player2, team2Score, winner] = row.values.slice(1)
+            if (team1Player1 && team2Player1) {
+              matchesData.push({
+                id: id || Date.now() + Math.random(),
+                date: String(date) || new Date().toLocaleString('vi-VN'),
+                team1: {
+                  player1: this.findPlayerByName(String(team1Player1)),
+                  player2: this.findPlayerByName(String(team1Player2)),
+                  score: String(team1Score) || ''
+                },
+                team2: {
+                  player1: this.findPlayerByName(String(team2Player1)),
+                  player2: this.findPlayerByName(String(team2Player2)),
+                  score: String(team2Score) || ''
+                },
+                winner: String(winner) === 'Đội 1' ? 'team1' : 'team2'
+              })
+            }
+          }
+        })
+        this.matches = matchesData
       }
     } catch (error) {
       console.error('Error parsing Excel data:', error)
@@ -733,66 +870,31 @@ class TennisRankingSystem {
     return player || { id: Date.now() + Math.random(), name: name }
   }
 
-  saveToExcel() {
+  async saveToExcel() {
     try {
-      // Prepare players data
-      const playersData = this.players.map(player => ({
-        'ID': player.id,
-        'Tên': player.name,
-        'Điểm': player.points,
-        'Thắng': player.wins,
-        'Thua': player.losses,
-        'Tiền mất (VND)': player.moneyLost
-      }))
-
-      // Prepare matches data
-      const matchesData = this.matches.map(match => ({
-        'ID': match.id,
-        'Ngày': match.date,
-        'Đội 1 - Người 1': match.team1.player1?.name || '',
-        'Đội 1 - Người 2': match.team1.player2?.name || '',
-        'Tỷ số đội 1': match.team1.score,
-        'Đội 2 - Người 1': match.team2.player1?.name || '',
-        'Đội 2 - Người 2': match.team2.player2?.name || '',
-        'Tỷ số đội 2': match.team2.score,
-        'Đội thắng': match.winner === 'team1' ? 'Đội 1' : 'Đội 2'
-      }))
-
-      // Create workbook
-      const workbook = XLSX.utils.book_new()
+      // Create Excel data using ExcelJS
+      const base64Data = await this.createExcelData()
       
-      // Add players sheet
-      const playersSheet = XLSX.utils.json_to_sheet(playersData)
-      XLSX.utils.book_append_sheet(workbook, playersSheet, 'Players')
-      
-      // Add matches sheet
-      const matchesSheet = XLSX.utils.json_to_sheet(matchesData)
-      XLSX.utils.book_append_sheet(workbook, matchesSheet, 'Matches')
-
-      // Add rankings sheet for viewing
-      const rankingsData = [...this.players].sort((a, b) => b.points - a.points)
-        .map((player, index) => ({
-          'Hạng': index + 1,
-          'Tên': player.name,
-          'Điểm': player.points,
-          'Thắng': player.wins,
-          'Thua': player.losses,
-          'Tỷ lệ thắng (%)': player.wins + player.losses > 0 
-            ? ((player.wins / (player.wins + player.losses)) * 100).toFixed(1)
-            : '0.0',
-          'Tiền mất (VND)': player.moneyLost
-        }))
-
-      const rankingsSheet = XLSX.utils.json_to_sheet(rankingsData)
-      XLSX.utils.book_append_sheet(workbook, rankingsSheet, 'Rankings')
-
-      // Download file with better naming
+      // Generate filename with timestamp
       const now = new Date()
       const timestamp = now.toISOString().slice(0, 10) + '_' + 
                        now.toTimeString().slice(0, 5).replace(':', '-')
       const fileName = `tennis-data_${timestamp}.xlsx`
       
-      XLSX.writeFile(workbook, fileName)
+      // Convert base64 to blob and download
+      const binaryString = atob(base64Data)
+      const bytes = new Uint8Array(binaryString.length)
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i)
+      }
+      
+      const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = fileName
+      a.click()
+      window.URL.revokeObjectURL(url)
       
       this.currentFileName = fileName
       this.updateFileStatus(`💾 Đã lưu file: ${fileName}. 

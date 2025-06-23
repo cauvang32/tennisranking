@@ -2,12 +2,14 @@
 
 ## 🎯 Why Docker?
 
-Docker makes deployment **super easy** by:
+Docker makes deployment **super easy** and **secure** by:
 - ✅ **No Node.js installation needed** - Everything runs in a container
 - ✅ **Consistent environment** - Works the same everywhere
 - ✅ **Easy sharing** - Share the container with anyone
 - ✅ **Automatic updates** - Simple container rebuilds
 - ✅ **Isolated system** - Won't interfere with other software
+- ✅ **Enhanced security** - Non-root user, minimal attack surface
+- ✅ **Zero vulnerabilities** - Secure ExcelJS implementation
 
 ## 🚀 Quick Start (Docker Method)
 

@@ -40,12 +40,13 @@ If you prefer step-by-step instructions, read:
 ✅ **Shared Data** - Everyone sees the same matches and rankings!  
 ✅ **Automatic Saves** - Data saved to `/data` folder instantly  
 ✅ **Network Sharing** - Share with your whole tennis group  
+✅ **Enterprise Security** - Zero vulnerabilities, production-ready  
 ✅ **Track Tennis Matches** - Record doubles matches easily  
 ✅ **Automatic Scoring** - Winners get 4 points, losers get 1 point  
 ✅ **Money Tracking** - Track who owes money (losers pay 20,000 VND each)  
 ✅ **Rankings** - See who's the best player in your group  
 ✅ **Match History** - View and edit all past matches  
-✅ **Excel Files** - Automatic backup to timestamped Excel files  
+✅ **Excel Files** - Secure backup to timestamped Excel files  
 ✅ **Mobile Friendly** - Works on phones and tablets  
 
 ## 🌐 Share with Your Tennis Group

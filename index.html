@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/tennis.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Tennis Ranking System</title>
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>🎾 Tennis Ranking System</h1>
+        <p>Hệ thống xếp hạng tennis đôi</p>
+      </header>
+
+      <main>
+        <div class="tabs">
+          <button class="tab-button active" data-tab="players">Quản lý người chơi</button>
+          <button class="tab-button" data-tab="matches">Trận đấu</button>
+          <button class="tab-button" data-tab="rankings">Xếp hạng</button>
+          <button class="tab-button" data-tab="history">Lịch sử</button>
+        </div>
+
+        <!-- Players Tab -->
+        <div class="tab-content active" id="players-tab">
+          <div class="section">
+            <h2>Thêm người chơi mới</h2>
+            <div class="form-group">
+              <input type="text" id="playerName" placeholder="Tên người chơi" />
+              <button id="addPlayer">Thêm</button>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-header">
+              <h2>Quản lý dữ liệu</h2>
+            </div>
+            <div class="file-management">
+              <div class="file-actions">
+                <label for="loadDataFile" class="load-button">
+                  📂 Tải dữ liệu từ Excel
+                  <input type="file" id="loadDataFile" accept=".xlsx,.xls" style="display: none;">
+                </label>
+                <button id="saveDataFile" class="save-button">💾 Lưu dữ liệu ra Excel</button>
+                <button id="resetDatabase" class="reset-button">🗑️ Xóa toàn bộ dữ liệu</button>
+              </div>
+              <div id="fileStatus" class="file-status"></div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="section-header">
+              <h2>Danh sách người chơi</h2>
+            </div>
+            <div id="playersList" class="players-grid"></div>
+          </div>
+        </div>
+
+        <!-- Matches Tab -->
+        <div class="tab-content" id="matches-tab">
+          <div class="section">
+            <h2>Tạo trận đấu mới</h2>
+            <div class="match-form">
+              <div class="team-selection">
+                <h3>Đội 1</h3>
+                <select id="team1Player1">
+                  <option value="">Chọn người chơi 1</option>
+                </select>
+                <select id="team1Player2">
+                  <option value="">Chọn người chơi 2</option>
+                </select>
+              </div>
+              
+              <div class="vs">VS</div>
+              
+              <div class="team-selection">
+                <h3>Đội 2</h3>
+                <select id="team2Player1">
+                  <option value="">Chọn người chơi 1</option>
+                </select>
+                <select id="team2Player2">
+                  <option value="">Chọn người chơi 2</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <h3>Kết quả trận đấu</h3>
+              <div class="score-input">
+                <input type="text" id="team1Score" placeholder="Tỷ số đội 1 (VD: 6-4, 6-3)" />
+                <span>vs</span>
+                <input type="text" id="team2Score" placeholder="Tỷ số đội 2 (VD: 4-6, 3-6)" />
+              </div>
+              <div class="winner-selection">
+                <label>
+                  <input type="radio" name="winner" value="team1" />
+                  Đội 1 thắng
+                </label>
+                <label>
+                  <input type="radio" name="winner" value="team2" />
+                  Đội 2 thắng
+                </label>
+              </div>
+              <button id="recordMatch">Ghi nhận trận đấu</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Rankings Tab -->
+        <div class="tab-content" id="rankings-tab">
+          <div class="section">
+            <div class="section-header">
+              <h2>Bảng xếp hạng</h2>
+              <div class="button-group">
+                <button id="databaseInfo" class="info-button">📊 Thông tin CSDL</button>
+                <button id="exportRankings">📁 Xuất Excel</button>
+              </div>
+            </div>
+            <div id="rankingsTable"></div>
+          </div>
+        </div>
+
+        <!-- History Tab -->
+        <div class="tab-content" id="history-tab">
+          <div class="section">
+            <h2>Lịch sử trận đấu</h2>
+            <div id="matchHistory"></div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>l>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Vite App</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

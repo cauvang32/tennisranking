@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  tennis-ranking:
+    build: .
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+    restart: unless-stopped
+    container_name: tennis-ranking-system
+    
+    # Health check to ensure the service is running
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/api/files"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s

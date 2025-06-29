@@ -822,6 +822,7 @@ button:active {
 .match-actions {
   display: flex;
   gap: 0.5rem;
+  margin-top: 0.5rem;
 }
 
 .edit-match, .delete-match {
@@ -1483,4 +1484,247 @@ main > .view-mode-section,
 .danger-btn:before {
   content: '⚠️ ';
   margin-right: 0.5rem;
+}
+
+/* Match actions buttons */
+.match-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.edit-btn, .delete-btn {
+  background: none;
+  border: none;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0.25rem;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.edit-btn:hover {
+  background-color: rgba(52, 152, 219, 0.2);
+}
+
+.delete-btn:hover {
+  background-color: rgba(231, 76, 60, 0.2);
+}
+
+.edit-btn:active, .delete-btn:active {
+  transform: scale(0.95);
+}
+
+/* Modal styles for match editing */
+.modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.modal-content {
+  background: white;
+  padding: 2rem;
+  border-radius: 8px;
+  max-width: 600px;
+  width: 90%;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+.modal-content h2 {
+  margin-top: 0;
+  color: #2c3e50;
+  text-align: center;
+}
+
+.form-row {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.form-group {
+  flex: 1;
+}
+
+.form-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: bold;
+  color: #2c3e50;
+}
+
+.form-group input,
+.form-group select {
+  width: 100%;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 1rem;
+}
+
+.teams-container {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+
+.team-selection {
+  flex: 1;
+  padding: 1rem;
+  border: 2px solid #e8f4f8;
+  border-radius: 8px;
+  background-color: #f8fbfc;
+}
+
+.team-selection h3 {
+  margin-top: 0;
+  margin-bottom: 1rem;
+  color: #2c3e50;
+  text-align: center;
+}
+
+.team-selection select {
+  width: 100%;
+  margin-bottom: 0.5rem;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+}
+
+.vs {
+  font-size: 1.5rem;
+  font-weight: bold;
+  color: #e74c3c;
+}
+
+.score-section {
+  margin: 1.5rem 0;
+  padding: 1rem;
+  border: 2px solid #e8f4f8;
+  border-radius: 8px;
+  background-color: #f8fbfc;
+}
+
+.score-section h3 {
+  margin-top: 0;
+  color: #2c3e50;
+  text-align: center;
+}
+
+.score-input {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.score-group {
+  flex: 1;
+  text-align: center;
+}
+
+.score-group label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: bold;
+}
+
+.score-group input {
+  width: 80px;
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  text-align: center;
+  font-size: 1.2rem;
+}
+
+.winner-selection {
+  text-align: center;
+}
+
+.winner-selection label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: bold;
+}
+
+.winner-selection select {
+  padding: 0.5rem;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 1rem;
+}
+
+.form-actions {
+  display: flex;
+  gap: 1rem;
+  justify-content: center;
+  margin-top: 2rem;
+}
+
+.form-actions button {
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: 4px;
+  font-size: 1rem;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+
+.form-actions button[type="submit"] {
+  background-color: #27ae60;
+  color: white;
+}
+
+.form-actions button[type="submit"]:hover {
+  background-color: #219a52;
+}
+
+.form-actions button[type="button"] {
+  background-color: #95a5a6;
+  color: white;
+}
+
+.form-actions button[type="button"]:hover {
+  background-color: #7f8c8d;
+}
+
+.error-message {
+  color: #e74c3c;
+  text-align: center;
+  margin-top: 1rem;
+  font-weight: bold;
+}
+
+/* Responsive modal */
+@media (max-width: 768px) {
+  .modal-content {
+    width: 95%;
+    padding: 1rem;
+  }
+  
+  .form-row {
+    flex-direction: column;
+  }
+  
+  .teams-container {
+    flex-direction: column;
+  }
+  
+  .score-input {
+    flex-direction: column;
+  }
+  
+  .form-actions {
+    flex-direction: column;
+  }
 }

@@ -397,6 +397,14 @@ class TennisRankingSystem {
         })
       }
 
+      // Add match modal
+      const addMatchModalBtn = document.getElementById('addMatchModal')
+      if (addMatchModalBtn) {
+        addMatchModalBtn.addEventListener('click', () => {
+          this.showMatchModal()
+        })
+      }
+
       // Export rankings
       const exportBtn = document.getElementById('exportRankings')
       if (exportBtn) {
@@ -885,11 +893,19 @@ class TennisRankingSystem {
       const team2Players = `${match.player3_name} & ${match.player4_name}`
       const winnerClass = match.winning_team === 1 ? 'team1-win' : 'team2-win'
       
+      const editDeleteButtons = this.isAuthenticated ? `
+        <div class="match-actions edit-only">
+          <button data-action="edit-match" data-id="${match.id}" class="edit-btn" title="Sửa trận đấu">✏️</button>
+          <button data-action="delete-match" data-id="${match.id}" class="delete-btn" title="Xóa trận đấu">🗑️</button>
+        </div>
+      ` : ''
+      
       return `
         <div class="match-card ${winnerClass}">
           <div class="match-info">
             <div class="match-date">📅 ${this.formatDate(match.play_date)}</div>
             <div class="match-season">🏆 ${match.season_name}</div>
+            ${editDeleteButtons}
           </div>
           <div class="match-details">
             <div class="team ${match.winning_team === 1 ? 'winner' : ''}">
@@ -905,6 +921,22 @@ class TennisRankingSystem {
         </div>
       `
     }).join('')
+
+    // Add event listeners for match actions
+    if (this.isAuthenticated) {
+      container.querySelectorAll('[data-action]').forEach(button => {
+        button.addEventListener('click', (e) => {
+          const action = e.target.dataset.action
+          const matchId = parseInt(e.target.dataset.id)
+          
+          if (action === 'edit-match') {
+            this.editMatch(matchId)
+          } else if (action === 'delete-match') {
+            this.deleteMatch(matchId)
+          }
+        })
+      })
+    }
   }
 
   updatePlayerSelects() {
@@ -1429,7 +1461,284 @@ class TennisRankingSystem {
     }
   }
 
-  // ...existing code...
+  // ...existing methods...
+
+  async editMatch(matchId) {
+    if (!this.isAuthenticated) {
+      this.updateFileStatus('❌ Cần đăng nhập để sửa trận đấu', 'error')
+      return
+    }
+
+    try {
+      // Get match data
+      const response = await fetch(`${this.apiBase}/matches/${matchId}`, {
+        headers: {
+          'Authorization': `Bearer ${this.authToken}`,
+          'Content-Type': 'application/json'
+        }
+      })
+
+      if (!response.ok) {
+        this.updateFileStatus('❌ Không tìm thấy trận đấu', 'error')
+        return
+      }
+
+      const match = await response.json()
+      this.showMatchModal(match)
+    } catch (error) {
+      console.error('Error getting match:', error)
+      this.updateFileStatus('❌ Lỗi khi tải thông tin trận đấu', 'error')
+    }
+  }
+
+  async deleteMatch(matchId) {
+    if (!this.isAuthenticated) {
+      this.updateFileStatus('❌ Cần đăng nhập để xóa trận đấu', 'error')
+      return
+    }
+
+    const confirmDelete = confirm(
+      '⚠️ CẢNH BÁO ⚠️\n\n' +
+      'Bạn có chắc chắn muốn xóa trận đấu này?\n\n' +
+      'Hành động này sẽ:\n' +
+      '• Xóa vĩnh viễn trận đấu\n' +
+      '• Cập nhật lại tất cả thống kê\n' +
+      '• Không thể hoàn tác\n\n' +
+      'Bạn có muốn tiếp tục?'
+    )
+
+    if (!confirmDelete) return
+
+    try {
+      const response = await fetch(`${this.apiBase}/matches/${matchId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${this.authToken}`,
+          'Content-Type': 'application/json'
+        }
+      })
+
+      const data = await response.json()
+
+      if (response.ok) {
+        // Reload all data since deleting a match affects rankings and statistics
+        await Promise.all([
+          this.loadMatches(),
+          this.loadPlayDates()
+        ])
+
+        this.renderRankings()
+        this.renderMatchHistory()
+        this.updateDateSelector()
+        
+        this.updateFileStatus('✅ Đã xóa trận đấu thành công', 'success')
+      } else {
+        this.updateFileStatus(`❌ ${data.error || 'Lỗi khi xóa trận đấu'}`, 'error')
+      }
+    } catch (error) {
+      console.error('Error deleting match:', error)
+      this.updateFileStatus('❌ Lỗi kết nối khi xóa trận đấu', 'error')
+    }
+  }
+
+  showMatchModal(match = null) {
+    const isEdit = match !== null
+    const modal = document.createElement('div')
+    modal.className = 'modal'
+    modal.innerHTML = `
+      <div class="modal-content">
+        <h2>${isEdit ? 'Sửa trận đấu' : 'Ghi nhận trận đấu mới'}</h2>
+        <form id="matchForm">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="modalMatchDate">Ngày đánh:</label>
+              <input type="date" id="modalMatchDate" value="${match ? match.play_date : ''}" required>
+            </div>
+            <div class="form-group">
+              <label for="modalSeasonId">Mùa giải:</label>
+              <select id="modalSeasonId" required>
+                <option value="">Chọn mùa giải...</option>
+              </select>
+            </div>
+          </div>
+          
+          <div class="teams-container">
+            <div class="team-selection">
+              <h3>Đội 1</h3>
+              <select id="modalPlayer1" required>
+                <option value="">Chọn người chơi 1</option>
+              </select>
+              <select id="modalPlayer2" required>
+                <option value="">Chọn người chơi 2</option>
+              </select>
+            </div>
+            
+            <div class="vs">VS</div>
+            
+            <div class="team-selection">
+              <h3>Đội 2</h3>
+              <select id="modalPlayer3" required>
+                <option value="">Chọn người chơi 1</option>
+              </select>
+              <select id="modalPlayer4" required>
+                <option value="">Chọn người chơi 2</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="score-section">
+            <h3>Kết quả trận đấu</h3>
+            <div class="score-input">
+              <div class="score-group">
+                <label>Điểm đội 1:</label>
+                <input type="number" id="modalTeam1Score" min="0" value="${match ? match.team1_score : ''}" required>
+              </div>
+              <div class="score-group">
+                <label>Điểm đội 2:</label>
+                <input type="number" id="modalTeam2Score" min="0" value="${match ? match.team2_score : ''}" required>
+              </div>
+            </div>
+            <div class="winner-selection">
+              <label>Đội thắng:</label>
+              <select id="modalWinningTeam" required>
+                <option value="">Chọn đội thắng</option>
+                <option value="1" ${match && match.winning_team === 1 ? 'selected' : ''}>Đội 1</option>
+                <option value="2" ${match && match.winning_team === 2 ? 'selected' : ''}>Đội 2</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-actions">
+            <button type="submit">${isEdit ? 'Cập nhật' : 'Ghi nhận'}</button>
+            <button type="button" id="cancelMatch">Hủy</button>
+          </div>
+        </form>
+        <div id="matchError" class="error-message"></div>
+      </div>
+    `
+    
+    document.body.appendChild(modal)
+    
+    // Populate player dropdowns
+    const playerOptions = this.players.map(player => 
+      `<option value="${player.id}">${player.name}</option>`
+    ).join('')
+    
+    const modalSelects = ['modalPlayer1', 'modalPlayer2', 'modalPlayer3', 'modalPlayer4']
+    modalSelects.forEach(selectId => {
+      const select = document.getElementById(selectId)
+      if (select) {
+        select.innerHTML = `<option value="">Chọn người chơi...</option>${playerOptions}`
+      }
+    })
+
+    // Populate seasons dropdown
+    const seasonOptions = this.seasons.map(season => 
+      `<option value="${season.id}">${season.name}</option>`
+    ).join('')
+    
+    const seasonSelect = document.getElementById('modalSeasonId')
+    if (seasonSelect) {
+      seasonSelect.innerHTML = `<option value="">Chọn mùa giải...</option>${seasonOptions}`
+    }
+    
+    // Set selected values if editing
+    if (match) {
+      document.getElementById('modalPlayer1').value = match.player1_id
+      document.getElementById('modalPlayer2').value = match.player2_id
+      document.getElementById('modalPlayer3').value = match.player3_id
+      document.getElementById('modalPlayer4').value = match.player4_id
+      document.getElementById('modalSeasonId').value = match.season_id
+    }
+    
+    // Form submission handler
+    document.getElementById('matchForm').addEventListener('submit', async (e) => {
+      e.preventDefault()
+      
+      const seasonId = parseInt(document.getElementById('modalSeasonId').value)
+      const playDate = document.getElementById('modalMatchDate').value
+      const player1Id = parseInt(document.getElementById('modalPlayer1').value)
+      const player2Id = parseInt(document.getElementById('modalPlayer2').value)
+      const player3Id = parseInt(document.getElementById('modalPlayer3').value)
+      const player4Id = parseInt(document.getElementById('modalPlayer4').value)
+      const team1Score = parseInt(document.getElementById('modalTeam1Score').value)
+      const team2Score = parseInt(document.getElementById('modalTeam2Score').value)
+      const winningTeam = parseInt(document.getElementById('modalWinningTeam').value)
+      const errorDiv = document.getElementById('matchError')
+      
+      // Validation
+      if (isNaN(seasonId) || !playDate || isNaN(player1Id) || isNaN(player2Id) || isNaN(player3Id) || isNaN(player4Id) || 
+          isNaN(team1Score) || isNaN(team2Score) || isNaN(winningTeam)) {
+        errorDiv.textContent = 'Vui lòng điền đầy đủ thông tin'
+        return
+      }
+      
+      const playerIds = [player1Id, player2Id, player3Id, player4Id]
+      const uniquePlayerIds = [...new Set(playerIds)]
+      if (uniquePlayerIds.length !== 4) {
+        errorDiv.textContent = 'Cần 4 người chơi khác nhau'
+        return
+      }
+      
+      try {
+        const url = isEdit ? `${this.apiBase}/matches/${match.id}` : `${this.apiBase}/matches`
+        const method = isEdit ? 'PUT' : 'POST'
+        
+        const response = await fetch(url, {
+          method,
+          headers: {
+            'Authorization': `Bearer ${this.authToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            seasonId,
+            playDate,
+            player1Id,
+            player2Id,
+            player3Id,
+            player4Id,
+            team1Score,
+            team2Score,
+            winningTeam
+          })
+        })
+
+        const data = await response.json()
+
+        if (response.ok) {
+          // Reload data
+          await Promise.all([
+            this.loadMatches(),
+            this.loadPlayDates()
+          ])
+
+          this.renderRankings()
+          this.renderMatchHistory()
+          this.updateDateSelector()
+          
+          document.body.removeChild(modal)
+          this.updateFileStatus(`✅ ${isEdit ? 'Cập nhật' : 'Ghi nhận'} trận đấu thành công`, 'success')
+        } else {
+          errorDiv.textContent = data.error || `Lỗi khi ${isEdit ? 'cập nhật' : 'ghi nhận'} trận đấu`
+        }
+      } catch (error) {
+        console.error('Error saving match:', error)
+        errorDiv.textContent = `Lỗi kết nối khi ${isEdit ? 'cập nhật' : 'ghi nhận'} trận đấu`
+      }
+    })
+    
+    // Cancel button handler
+    document.getElementById('cancelMatch').addEventListener('click', () => {
+      document.body.removeChild(modal)
+    })
+    
+    // Close modal when clicking outside
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        document.body.removeChild(modal)
+      }
+    })
+  }
 }
 
 // Initialize the application

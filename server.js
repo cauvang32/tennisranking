@@ -824,6 +824,99 @@ app.post('/api/matches',
   }
 )
 
+// Get a specific match by ID
+app.get('/api/matches/:id', 
+  checkAuth,
+  [
+    param('id').isInt().withMessage('Invalid match ID')
+  ],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const matchId = parseInt(req.params.id)
+      const match = await db.getMatchById(matchId)
+      
+      if (!match) {
+        return res.status(404).json({ error: 'Match not found' })
+      }
+      
+      res.json(match)
+    } catch (error) {
+      console.error('Error getting match:', error)
+      res.status(500).json({ error: 'Failed to get match' })
+    }
+  }
+)
+
+// Update a match (admin only)
+app.put('/api/matches/:id', 
+  authenticateToken,
+  [
+    param('id').isInt().withMessage('Invalid match ID'),
+    body('seasonId').isInt().withMessage('Valid season ID is required'),
+    body('playDate').isISO8601().withMessage('Valid play date is required'),
+    body('player1Id').isInt().withMessage('Valid player 1 ID is required'),
+    body('player2Id').isInt().withMessage('Valid player 2 ID is required'),
+    body('player3Id').isInt().withMessage('Valid player 3 ID is required'),
+    body('player4Id').isInt().withMessage('Valid player 4 ID is required'),
+    body('team1Score').isInt({ min: 0 }).withMessage('Valid team 1 score is required'),
+    body('team2Score').isInt({ min: 0 }).withMessage('Valid team 2 score is required'),
+    body('winningTeam').isInt({ min: 1, max: 2 }).withMessage('Winning team must be 1 or 2')
+  ],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const matchId = parseInt(req.params.id)
+      const { seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam } = req.body
+
+      // Validate that all players are different
+      const playerIds = [player1Id, player2Id, player3Id, player4Id]
+      const uniquePlayerIds = [...new Set(playerIds)]
+      if (uniquePlayerIds.length !== 4) {
+        return res.status(400).json({ error: 'All players must be different' })
+      }
+
+      // Check if match exists
+      const existingMatch = await db.getMatchById(matchId)
+      if (!existingMatch) {
+        return res.status(404).json({ error: 'Match not found' })
+      }
+
+      await db.updateMatch(matchId, seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam)
+      res.json({ success: true, message: 'Match updated successfully' })
+    } catch (error) {
+      console.error('Error updating match:', error)
+      res.status(500).json({ error: 'Failed to update match' })
+    }
+  }
+)
+
+// Delete a match (admin only)
+app.delete('/api/matches/:id', 
+  authenticateToken,
+  [
+    param('id').isInt().withMessage('Invalid match ID')
+  ],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const matchId = parseInt(req.params.id)
+      
+      // Check if match exists
+      const existingMatch = await db.getMatchById(matchId)
+      if (!existingMatch) {
+        return res.status(404).json({ error: 'Match not found' })
+      }
+      
+      await db.deleteMatch(matchId)
+      res.json({ success: true, message: 'Match deleted successfully' })
+    } catch (error) {
+      console.error('Error deleting match:', error)
+      res.status(500).json({ error: 'Failed to delete match' })
+    }
+  }
+)
+
 // Play dates Routes
 app.get('/api/play-dates', checkAuth, async (req, res) => {
   try {

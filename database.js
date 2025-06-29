@@ -268,7 +268,7 @@ class TennisDatabase {
             (m.winning_team = 2 AND (m.player1_id = p.id OR m.player2_id = p.id)) OR 
             (m.winning_team = 1 AND (m.player3_id = p.id OR m.player4_id = p.id))
             THEN 1 END) as losses,
-          COUNT(*) as total_matches
+          COUNT(CASE WHEN m.id IS NOT NULL THEN 1 END) as total_matches
         FROM players p
         LEFT JOIN matches m ON (m.player1_id = p.id OR m.player2_id = p.id OR m.player3_id = p.id OR m.player4_id = p.id)
         GROUP BY p.id, p.name
@@ -297,7 +297,7 @@ class TennisDatabase {
             (m.winning_team = 2 AND (m.player1_id = p.id OR m.player2_id = p.id)) OR 
             (m.winning_team = 1 AND (m.player3_id = p.id OR m.player4_id = p.id))
             THEN 1 END) as losses,
-          COUNT(*) as total_matches
+          COUNT(CASE WHEN m.id IS NOT NULL THEN 1 END) as total_matches
         FROM players p
         LEFT JOIN matches m ON (m.player1_id = p.id OR m.player2_id = p.id OR m.player3_id = p.id OR m.player4_id = p.id)
           AND m.season_id = ?
@@ -327,7 +327,7 @@ class TennisDatabase {
             (m.winning_team = 2 AND (m.player1_id = p.id OR m.player2_id = p.id)) OR 
             (m.winning_team = 1 AND (m.player3_id = p.id OR m.player4_id = p.id))
             THEN 1 END) as losses,
-          COUNT(*) as total_matches
+          COUNT(CASE WHEN m.id IS NOT NULL THEN 1 END) as total_matches
         FROM players p
         LEFT JOIN matches m ON (m.player1_id = p.id OR m.player2_id = p.id OR m.player3_id = p.id OR m.player4_id = p.id)
           AND m.play_date <= ?
@@ -375,6 +375,35 @@ class TennisDatabase {
     if (this.db) {
       await this.db.close()
     }
+  }
+
+  async updateMatch(matchId, seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam) {
+    await this.db.run(`
+      UPDATE matches 
+      SET season_id = ?, play_date = ?, player1_id = ?, player2_id = ?, 
+          player3_id = ?, player4_id = ?, team1_score = ?, team2_score = ?, 
+          winning_team = ?
+      WHERE id = ?
+    `, [seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchId])
+  }
+
+  async deleteMatch(matchId) {
+    await this.db.run('DELETE FROM matches WHERE id = ?', [matchId])
+  }
+
+  async getMatchById(matchId) {
+    return await this.db.get(`
+      SELECT m.*, s.name as season_name,
+        p1.name as player1_name, p2.name as player2_name, 
+        p3.name as player3_name, p4.name as player4_name
+      FROM matches m
+      JOIN seasons s ON m.season_id = s.id
+      JOIN players p1 ON m.player1_id = p1.id
+      JOIN players p2 ON m.player2_id = p2.id
+      JOIN players p3 ON m.player3_id = p3.id
+      JOIN players p4 ON m.player4_id = p4.id
+      WHERE m.id = ?
+    `, [matchId])
   }
 }
 

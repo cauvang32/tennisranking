@@ -11,14 +11,17 @@
       <header>
         <h1>🎾 Tennis Ranking System</h1>
         <p>Hệ thống xếp hạng tennis đôi</p>
+        <div class="admin-controls edit-only">
+          <button id="clearAllData" class="danger-btn">🗑️ Xóa tất cả dữ liệu</button>
+        </div>
       </header>
 
       <main>
         <div class="tabs">
           <button class="tab-button edit-only" data-tab="players">Quản lý người chơi</button>
           <button class="tab-button edit-only" data-tab="matches">Trận đấu</button>
+          <button class="tab-button edit-only" data-tab="seasons">Mùa giải</button>
           <button class="tab-button active" data-tab="rankings">Xếp hạng</button>
-          <button class="tab-button" data-tab="history">Lịch sử</button>
         </div>
 
         <!-- Players Tab -->
@@ -28,23 +31,6 @@
             <div class="form-group">
               <input type="text" id="playerName" placeholder="Tên người chơi" />
               <button id="addPlayer">Thêm</button>
-            </div>
-          </div>
-
-          <div class="section edit-only">
-            <div class="section-header">
-              <h2>Quản lý dữ liệu</h2>
-            </div>
-            <div class="file-management">
-              <div class="file-actions">
-                <label for="loadDataFile" class="load-button">
-                  📂 Tải dữ liệu từ Excel
-                  <input type="file" id="loadDataFile" accept=".xlsx,.xls" style="display: none;">
-                </label>
-                <button id="saveDataFile" class="save-button">💾 Lưu dữ liệu ra Excel</button>
-                <button id="resetDatabase" class="reset-button">🗑️ Xóa toàn bộ dữ liệu</button>
-              </div>
-              <div id="fileStatus" class="file-status"></div>
             </div>
           </div>
 
@@ -59,50 +45,74 @@
         <!-- Matches Tab -->
         <div class="tab-content" id="matches-tab">
           <div class="section edit-only">
-            <h2>Tạo trận đấu mới</h2>
+            <h2>Ghi nhận kết quả trận đấu</h2>
             <div class="match-form">
-              <div class="team-selection">
-                <h3>Đội 1</h3>
-                <select id="team1Player1">
-                  <option value="">Chọn người chơi 1</option>
-                </select>
-                <select id="team1Player2">
-                  <option value="">Chọn người chơi 2</option>
-                </select>
+              <div class="form-row">
+                <div class="form-group">
+                  <label for="matchDate">Ngày đánh:</label>
+                  <input type="date" id="matchDate" required>
+                </div>
               </div>
               
-              <div class="vs">VS</div>
-              
-              <div class="team-selection">
-                <h3>Đội 2</h3>
-                <select id="team2Player1">
-                  <option value="">Chọn người chơi 1</option>
-                </select>
-                <select id="team2Player2">
-                  <option value="">Chọn người chơi 2</option>
-                </select>
+              <div class="teams-container">
+                <div class="team-selection">
+                  <h3>Đội 1</h3>
+                  <select id="player1">
+                    <option value="">Chọn người chơi 1</option>
+                  </select>
+                  <select id="player2">
+                    <option value="">Chọn người chơi 2</option>
+                  </select>
+                </div>
+                
+                <div class="vs">VS</div>
+                
+                <div class="team-selection">
+                  <h3>Đội 2</h3>
+                  <select id="player3">
+                    <option value="">Chọn người chơi 1</option>
+                  </select>
+                  <select id="player4">
+                    <option value="">Chọn người chơi 2</option>
+                  </select>
+                </div>
               </div>
-            </div>
 
-            <div class="form-group edit-only">
-              <h3>Kết quả trận đấu</h3>
-              <div class="score-input">
-                <input type="text" id="team1Score" placeholder="Tỷ số đội 1 (VD: 6-4, 6-3)" />
-                <span>vs</span>
-                <input type="text" id="team2Score" placeholder="Tỷ số đội 2 (VD: 4-6, 3-6)" />
+              <div class="score-section">
+                <h3>Kết quả trận đấu</h3>
+                <div class="score-input">
+                  <div class="score-group">
+                    <label>Điểm đội 1:</label>
+                    <input type="number" id="team1Score" min="0" placeholder="0" required>
+                  </div>
+                  <div class="score-group">
+                    <label>Điểm đội 2:</label>
+                    <input type="number" id="team2Score" min="0" placeholder="0" required>
+                  </div>
+                </div>
+                <div class="winner-selection">
+                  <label>Đội thắng:</label>
+                  <select id="winningTeam" required>
+                    <option value="">Chọn đội thắng</option>
+                    <option value="1">Đội 1</option>
+                    <option value="2">Đội 2</option>
+                  </select>
+                </div>
               </div>
-              <div class="winner-selection">
-                <label>
-                  <input type="radio" name="winner" value="team1" />
-                  Đội 1 thắng
-                </label>
-                <label>
-                  <input type="radio" name="winner" value="team2" />
-                  Đội 2 thắng
-                </label>
-              </div>
-              <button id="recordMatch">Ghi nhận trận đấu</button>
+
+              <button id="recordMatch" class="record-btn">📝 Ghi nhận kết quả</button>
             </div>
+          </div>
+        </div>
+
+        <!-- Seasons Tab -->
+        <div class="tab-content" id="seasons-tab">
+          <div class="section edit-only">
+            <div class="section-header">
+              <h2>Quản lý mùa giải</h2>
+              <button id="addSeason" class="add-btn">➕ Tạo mùa giải mới</button>
+            </div>
+            <div id="seasonsList" class="seasons-grid"></div>
           </div>
         </div>
 
@@ -111,43 +121,73 @@
           <div class="section">
             <div class="section-header">
               <h2>Bảng xếp hạng</h2>
-              <div class="button-group">
-                <button id="databaseInfo" class="info-button">📊 Thông tin CSDL</button>
-                <button id="exportRankings" class="edit-only">📁 Xuất Excel</button>
+              <button id="exportRankings" class="export-btn">📊 Xuất Excel</button>
+            </div>
+            
+            <!-- View Mode Selection -->
+            <div class="view-mode-section">
+              <div class="view-mode-buttons">
+                <button id="viewModeDaily" class="view-mode-btn active">📅 Theo ngày đánh</button>
+                <button id="viewModeSeason" class="view-mode-btn">🏆 Theo mùa giải</button>
+                <button id="viewModeLifetime" class="view-mode-btn">⏳ Tổng (toàn thời gian)</button>
+              </div>
+              
+              <div class="view-controls">
+                <div id="dateSelectContainer" class="control-group">
+                  <label for="dateSelector">Chọn ngày đánh:</label>
+                  <select id="dateSelector"></select>
+                </div>
+                
+                <div id="seasonSelectContainer" class="control-group" style="display: none;">
+                  <label for="seasonSelector">Chọn mùa giải:</label>
+                  <select id="seasonSelector"></select>
+                </div>
               </div>
             </div>
-            <div class="guest-info" style="display: none;">
-              <div class="info-box">
-                <h3>👀 Chế độ xem công khai</h3>
-                <p>Bạn đang xem bảng xếp hạng ở chế độ công khai. Để thêm người chơi, ghi nhận trận đấu, hoặc quản lý dữ liệu, vui lòng đăng nhập.</p>
-              </div>
+            
+            <div class="current-view">
+              <h3 id="currentViewMode">Bảng xếp hạng theo ngày đánh gần nhất</h3>
             </div>
-            <div id="rankingsTable"></div>
-          </div>
-        </div>
 
-        <!-- History Tab -->
-        <div class="tab-content" id="history-tab">
-          <div class="section">
-            <h2>Lịch sử trận đấu</h2>
-            <div id="matchHistory"></div>
+            <div class="rankings-container">
+              <table id="rankingsTable" class="rankings-table">
+                <thead>
+                  <tr>
+                    <th>Hạng</th>
+                    <th>Tên</th>
+                    <th>Thắng</th>
+                    <th>Thua</th>
+                    <th>Tổng trận</th>
+                    <th>Điểm</th>
+                    <th>Tỷ lệ thắng</th>
+                    <th>Tiền thua</th>
+                    <th>Phong độ</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
+            
+            <!-- Matches for current view -->
+            <div class="matches-for-view">
+              <h3>Kết quả các trận trong ngày/mùa giải này</h3>
+              <div id="matchHistory" class="match-history"></div>
+            </div>
           </div>
         </div>
       </main>
+
+      <!-- Guest info box -->
+      <div class="guest-info">
+        <h3>🔍 Chế độ xem</h3>
+        <p>Bạn đang ở chế độ xem. Có thể xem bảng xếp hạng và lịch sử thi đấu.</p>
+        <p>Để thêm người chơi và ghi nhận kết quả, vui lòng đăng nhập.</p>
+      </div>
+
+      <!-- Status message -->
+      <div id="fileStatus" class="status-message"></div>
     </div>
 
-    <script type="module" src="/src/main.js"></script>
-  </body>
-</html>l>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vite App</title>
-  </head>
-  <body>
-    <div id="app"></div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

@@ -1,22 +1,30 @@
 version: '3.8'
 
 services:
-  tennis-ranking:
-    build: .
-    ports:
-      - "3001:3001"
-    volumes:
-      - ./data:/app/data
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: tennis-postgres
     environment:
-      - NODE_ENV=production
-      - PORT=3001
+      POSTGRES_DB: ${DB_NAME:-tennis_ranking}
+      POSTGRES_USER: ${DB_USER:-tennis_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-tennis_password}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - ./data/postgres-data:/var/lib/postgresql/data
+      - ./data/postgres-init:/docker-entrypoint-initdb.d
     restart: unless-stopped
-    container_name: tennis-ranking-system
-    
-    # Health check to ensure the service is running
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3001/api/files"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-tennis_user} -d ${DB_NAME:-tennis_ranking}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tennis-network
+    # Health check to ensure the service is running
+
+
+networks:
+  tennis-network:
+    driver: bridge

@@ -1,7 +1,7 @@
 import './style.css'
 import ExcelJS from 'exceljs'
 
-// Tennis Ranking System with SQLite Database
+// Tennis Ranking System with PostgreSQL Database
 class TennisRankingSystem {
   constructor() {
     this.players = []
@@ -42,9 +42,9 @@ class TennisRankingSystem {
       // Ensure rankings tab is properly activated
       this.switchTab('rankings')
       
-      const modeText = this.serverMode ? 'Server Mode - SQLite Database' : 'Local Mode'
+      const modeText = this.serverMode ? 'Server Mode - PostgreSQL Database' : 'Local Mode'
       const authText = this.isAuthenticated ? ' (Đã đăng nhập)' : ' (Chế độ xem)'
-      this.updateFileStatus(`📂 Hệ thống sẵn sàng (${modeText}${authText}). Dữ liệu được lưu trữ trong cơ sở dữ liệu SQLite!`, 'info')
+      this.updateFileStatus(`📂 Hệ thống sẵn sàng (${modeText}${authText}). Dữ liệu được lưu trữ trong PostgreSQL!`, 'info')
     } catch (error) {
       console.error('Error during initialization:', error)
       this.updateFileStatus('❌ Lỗi khởi tạo hệ thống. Vui lòng tải lại trang.', 'error')
@@ -335,7 +335,8 @@ class TennisRankingSystem {
       // Check if we have any play dates
       if (this.playDates.length > 0) {
         this.currentViewMode = 'daily'
-        this.selectedDate = this.playDates[0].play_date // Latest date
+        // Convert to date-only format to avoid timezone issues
+        this.selectedDate = this.playDates[0].play_date.split('T')[0]
       } else {
         // Fall back to season mode
         const activeSeason = this.seasons.find(s => s.is_active)
@@ -528,7 +529,8 @@ class TennisRankingSystem {
     
     // Set default selections if needed
     if (mode === 'daily' && !this.selectedDate && this.playDates.length > 0) {
-      this.selectedDate = this.playDates[0].play_date
+      // Convert to date-only format to avoid timezone issues
+      this.selectedDate = this.playDates[0].play_date.split('T')[0]
       document.getElementById('dateSelector').value = this.selectedDate
     }
     
@@ -961,12 +963,16 @@ class TennisRankingSystem {
     const selector = document.getElementById('dateSelector')
     if (!selector) return
 
-    selector.innerHTML = this.playDates.map(dateObj => 
-      `<option value="${dateObj.play_date}">${this.formatDate(dateObj.play_date)}</option>`
-    ).join('')
+    selector.innerHTML = this.playDates.map(dateObj => {
+      // Convert to date-only format (YYYY-MM-DD) to avoid timezone issues
+      const dateOnly = dateObj.play_date.split('T')[0]
+      return `<option value="${dateOnly}">${this.formatDate(dateObj.play_date)}</option>`
+    }).join('')
 
     if (this.selectedDate) {
-      selector.value = this.selectedDate
+      // Also ensure selectedDate is in date-only format
+      const selectedDateOnly = this.selectedDate.split('T')[0]
+      selector.value = selectedDateOnly
     }
   }
 

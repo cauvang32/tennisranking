@@ -343,6 +343,36 @@ class TennisDatabase {
     `, [playDate])
   }
 
+  async getPlayerStatsBySpecificDate(playDate) {
+    return await this.db.all(`
+      WITH player_stats AS (
+        SELECT 
+          p.id,
+          p.name,
+          COUNT(CASE WHEN 
+            (m.winning_team = 1 AND (m.player1_id = p.id OR m.player2_id = p.id)) OR 
+            (m.winning_team = 2 AND (m.player3_id = p.id OR m.player4_id = p.id))
+            THEN 1 END) as wins,
+          COUNT(CASE WHEN 
+            (m.winning_team = 2 AND (m.player1_id = p.id OR m.player2_id = p.id)) OR 
+            (m.winning_team = 1 AND (m.player3_id = p.id OR m.player4_id = p.id))
+            THEN 1 END) as losses,
+          COUNT(CASE WHEN m.id IS NOT NULL THEN 1 END) as total_matches
+        FROM players p
+        LEFT JOIN matches m ON (m.player1_id = p.id OR m.player2_id = p.id OR m.player3_id = p.id OR m.player4_id = p.id)
+          AND m.play_date = ?
+        GROUP BY p.id, p.name
+      )
+      SELECT 
+        *,
+        (wins * 4 + losses * 1) as points,
+        CASE WHEN (wins + losses) > 0 THEN ROUND((wins * 100.0) / (wins + losses), 1) ELSE 0 END as win_percentage,
+        losses * 20000 as money_lost
+      FROM player_stats
+      ORDER BY points DESC, win_percentage DESC, name ASC
+    `, [playDate])
+  }
+
   async getPlayerForm(playerId, limit = 5) {
     return await this.db.all(`
       SELECT 
@@ -357,6 +387,57 @@ class TennisDatabase {
       ORDER BY m.play_date DESC, m.created_at DESC
       LIMIT ?
     `, [playerId, playerId, playerId, playerId, playerId, playerId, playerId, playerId, limit])
+  }
+
+  async getPlayerFormBySeason(playerId, seasonId, limit = 5) {
+    return await this.db.all(`
+      SELECT 
+        CASE WHEN 
+          (m.winning_team = 1 AND (m.player1_id = ? OR m.player2_id = ?)) OR 
+          (m.winning_team = 2 AND (m.player3_id = ? OR m.player4_id = ?))
+          THEN 'win' ELSE 'loss' 
+        END as result,
+        m.play_date
+      FROM matches m
+      WHERE (m.player1_id = ? OR m.player2_id = ? OR m.player3_id = ? OR m.player4_id = ?)
+        AND m.season_id = ?
+      ORDER BY m.play_date DESC, m.created_at DESC
+      LIMIT ?
+    `, [playerId, playerId, playerId, playerId, playerId, playerId, playerId, playerId, seasonId, limit])
+  }
+
+  async getPlayerFormByDate(playerId, date, limit = 5) {
+    return await this.db.all(`
+      SELECT 
+        CASE WHEN 
+          (m.winning_team = 1 AND (m.player1_id = ? OR m.player2_id = ?)) OR 
+          (m.winning_team = 2 AND (m.player3_id = ? OR m.player4_id = ?))
+          THEN 'win' ELSE 'loss' 
+        END as result,
+        m.play_date
+      FROM matches m
+      WHERE (m.player1_id = ? OR m.player2_id = ? OR m.player3_id = ? OR m.player4_id = ?)
+        AND m.play_date <= ?
+      ORDER BY m.play_date DESC, m.created_at DESC
+      LIMIT ?
+    `, [playerId, playerId, playerId, playerId, playerId, playerId, playerId, playerId, date, limit])
+  }
+
+  async getPlayerFormOnSpecificDate(playerId, date, limit = 5) {
+    return await this.db.all(`
+      SELECT 
+        CASE WHEN 
+          (m.winning_team = 1 AND (m.player1_id = ? OR m.player2_id = ?)) OR 
+          (m.winning_team = 2 AND (m.player3_id = ? OR m.player4_id = ?))
+          THEN 'win' ELSE 'loss' 
+        END as result,
+        m.play_date
+      FROM matches m
+      WHERE (m.player1_id = ? OR m.player2_id = ? OR m.player3_id = ? OR m.player4_id = ?)
+        AND DATE(m.play_date) = ?
+      ORDER BY m.created_at DESC
+      LIMIT ?
+    `, [playerId, playerId, playerId, playerId, playerId, playerId, playerId, playerId, date, limit])
   }
 
   async clearAllData() {

@@ -10,7 +10,7 @@ import jwt from 'jsonwebtoken'
 import bcrypt from 'bcryptjs'
 import session from 'express-session'
 import dotenv from 'dotenv'
-import TennisDatabase from './database.js'
+import TennisDatabase from './database-postgresql.js'
 import ExcelJS from 'exceljs'
 
 // Load environment variables
@@ -963,7 +963,7 @@ app.get('/api/rankings/season/:seasonId', checkAuth, async (req, res) => {
     
     // Add form for each player (last 5 matches in this season)
     const rankingsWithForm = await Promise.all(rankings.map(async (player) => {
-      const form = await db.getPlayerForm(player.id, 5)
+      const form = await db.getPlayerFormBySeason(player.id, seasonId, 5)
       return { ...player, form }
     }))
     
@@ -977,11 +977,11 @@ app.get('/api/rankings/season/:seasonId', checkAuth, async (req, res) => {
 app.get('/api/rankings/date/:date', checkAuth, async (req, res) => {
   try {
     const { date } = req.params
-    const rankings = await db.getPlayerStatsByPlayDate(date)
+    const rankings = await db.getPlayerStatsBySpecificDate(date)
     
-    // Add form for each player (last 5 matches up to this date)
+    // Add form for each player (matches on this specific date only)
     const rankingsWithForm = await Promise.all(rankings.map(async (player) => {
-      const form = await db.getPlayerForm(player.id, 5)
+      const form = await db.getPlayerFormBySpecificDate(player.id, date, 5)
       return { ...player, form }
     }))
     

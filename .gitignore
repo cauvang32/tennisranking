@@ -25,3 +25,4 @@ dist-ssr
 .github/copilot-instructions.md
 .env
 data/tennis.db
+data/postgres-init/01-init.sql

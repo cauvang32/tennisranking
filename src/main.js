@@ -42,9 +42,7 @@ class TennisRankingSystem {
       // Ensure rankings tab is properly activated
       this.switchTab('rankings')
       
-      const modeText = this.serverMode ? 'Server Mode - PostgreSQL Database' : 'Local Mode'
-      const authText = this.isAuthenticated ? ' (Đã đăng nhập)' : ' (Chế độ xem)'
-      this.updateFileStatus(`📂 Hệ thống sẵn sàng (${modeText}${authText}). Dữ liệu được lưu trữ trong PostgreSQL!`, 'info')
+      // System is ready - no popup notification needed
     } catch (error) {
       console.error('Error during initialization:', error)
       this.updateFileStatus('❌ Lỗi khởi tạo hệ thống. Vui lòng tải lại trang.', 'error')

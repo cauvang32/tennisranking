@@ -305,6 +305,23 @@ class TennisDatabasePostgreSQL {
     return result.rows
   }
 
+  async getMatchesByDate(date) {
+    const result = await this.query(`
+      SELECT m.*, s.name as season_name,
+        p1.name as player1_name, p2.name as player2_name, 
+        p3.name as player3_name, p4.name as player4_name
+      FROM matches m
+      JOIN seasons s ON m.season_id = s.id
+      JOIN players p1 ON m.player1_id = p1.id
+      JOIN players p2 ON m.player2_id = p2.id
+      JOIN players p3 ON m.player3_id = p3.id
+      JOIN players p4 ON m.player4_id = p4.id
+      WHERE DATE(m.play_date) = $1
+      ORDER BY m.created_at DESC
+    `, [date])
+    return result.rows
+  }
+
   async getMatchById(matchId) {
     const result = await this.query(`
       SELECT m.*, s.name as season_name,

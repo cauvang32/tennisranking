@@ -992,16 +992,28 @@ class TennisRankingSystem {
     if (!display) return
 
     let modeText = ''
+    let exportText = '📊 Xuất Excel'
+    
     if (this.currentViewMode === 'daily') {
       modeText = `Bảng xếp hạng theo ngày: ${this.formatDate(this.selectedDate)}`
+      exportText = `📊 Xuất Excel (${this.formatDate(this.selectedDate)})`
     } else if (this.currentViewMode === 'season') {
       const season = this.seasons.find(s => s.id === this.selectedSeason)
-      modeText = `Bảng xếp hạng mùa giải: ${season ? season.name : 'Không xác định'}`
+      const seasonName = season ? season.name : 'Không xác định'
+      modeText = `Bảng xếp hạng mùa giải: ${seasonName}`
+      exportText = `📊 Xuất Excel (${seasonName})`
     } else {
       modeText = 'Bảng xếp hạng tổng (toàn thời gian)'
+      exportText = '📊 Xuất Excel (Toàn thời gian)'
     }
     
     display.textContent = modeText
+    
+    // Update export button text
+    const exportBtn = document.getElementById('exportRankings')
+    if (exportBtn) {
+      exportBtn.textContent = exportText
+    }
   }
 
   showSeasonModal(seasonId = null) {
@@ -1259,7 +1271,24 @@ class TennisRankingSystem {
 
   async exportToExcel() {
     try {
-      const response = await fetch(`${this.apiBase}/export-excel`)
+      // Determine the export type based on current view mode
+      let exportUrl = `${this.apiBase}/export-excel`
+      let fileName = 'tennis-rankings'
+      
+      if (this.currentViewMode === 'daily' && this.selectedDate) {
+        exportUrl += `/date/${this.selectedDate}`
+        fileName += `-${this.selectedDate}`
+      } else if (this.currentViewMode === 'season' && this.selectedSeason) {
+        exportUrl += `/season/${this.selectedSeason}`
+        fileName += `-season-${this.selectedSeason}`
+      } else if (this.currentViewMode === 'lifetime') {
+        exportUrl += '/lifetime'
+        fileName += '-lifetime'
+      }
+      
+      fileName += `-${new Date().toISOString().split('T')[0]}.xlsx`
+      
+      const response = await fetch(exportUrl)
       
       if (response.ok) {
         const blob = await response.blob()
@@ -1267,13 +1296,22 @@ class TennisRankingSystem {
         const a = document.createElement('a')
         a.style.display = 'none'
         a.href = url
-        a.download = `tennis-rankings-${new Date().toISOString().split('T')[0]}.xlsx`
+        a.download = fileName
         document.body.appendChild(a)
         a.click()
         window.URL.revokeObjectURL(url)
         document.body.removeChild(a)
         
-        this.updateFileStatus('✅ Đã xuất dữ liệu ra Excel thành công', 'success')
+        let statusMessage = '✅ Đã xuất dữ liệu ra Excel thành công'
+        if (this.currentViewMode === 'daily' && this.selectedDate) {
+          statusMessage += ` (theo ngày: ${this.formatDate(this.selectedDate)})`
+        } else if (this.currentViewMode === 'season' && this.selectedSeason) {
+          statusMessage += ` (theo mùa giải: ${this.selectedSeason})`
+        } else if (this.currentViewMode === 'lifetime') {
+          statusMessage += ' (toàn thời gian)'
+        }
+        
+        this.updateFileStatus(statusMessage, 'success')
       } else {
         this.updateFileStatus('❌ Lỗi khi xuất dữ liệu ra Excel', 'error')
       }

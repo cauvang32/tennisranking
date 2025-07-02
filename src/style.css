@@ -1491,9 +1491,11 @@ main > .view-mode-section,
   }
 
   .team-players {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: unset;
+    word-wrap: break-word;
+    hyphens: auto;
   }
 
   /* Responsive table scroll */
@@ -1944,7 +1946,11 @@ main > .view-mode-section,
 
   .team-players {
     font-size: 0.55rem;
-    max-width: 90px;
+    max-width: none;
+    white-space: normal;
+    overflow: visible;
+    word-wrap: break-word;
+    hyphens: auto;
   }
 
   .team-score {

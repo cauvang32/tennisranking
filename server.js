@@ -43,45 +43,6 @@ function generateSessionId() {
   return crypto.randomBytes(32).toString('base64url')
 }
 
-// JWT token encryption/decryption for secure cookie storage
-function encryptJWT(token) {
-  const algorithm = 'aes-256-cbc'
-  const key = crypto.scryptSync(JWT_SECRET, 'jwt-salt', 32)
-  const iv = crypto.randomBytes(16)
-  const cipher = crypto.createCipheriv(algorithm, key, iv)
-  
-  let encrypted = cipher.update(token, 'utf8', 'hex')
-  encrypted += cipher.final('hex')
-  
-  // Combine iv + encrypted data
-  return iv.toString('hex') + ':' + encrypted
-}
-
-function decryptJWT(encryptedToken) {
-  try {
-    const algorithm = 'aes-256-cbc'
-    const key = crypto.scryptSync(JWT_SECRET, 'jwt-salt', 32)
-    const parts = encryptedToken.split(':')
-    
-    if (parts.length !== 2) {
-      throw new Error('Invalid encrypted token format')
-    }
-    
-    const iv = Buffer.from(parts[0], 'hex')
-    const encrypted = parts[1]
-    
-    const decipher = crypto.createDecipheriv(algorithm, key, iv)
-    
-    let decrypted = decipher.update(encrypted, 'hex', 'utf8')
-    decrypted += decipher.final('utf8')
-    
-    return decrypted
-  } catch (error) {
-    console.error('JWT decryption failed:', error)
-    return null
-  }
-}
-
 // Admin credentials from environment
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'tennis2024!'
@@ -327,24 +288,10 @@ const sanitizeFileName = (fileName) => {
 // Authentication middleware
 const authenticateToken = (req, res, next) => {
   // Try to get token from httpOnly cookie first, then Authorization header (fallback)
-  let token = req.cookies.authToken || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1])
+  const token = req.cookies.authToken || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1])
 
   if (!token) {
     return res.status(401).json({ error: 'Access token required' })
-  }
-
-  // Decrypt JWT token if it came from cookie (encrypted) vs Authorization header (plain)
-  if (req.cookies.authToken && token === req.cookies.authToken) {
-    token = decryptJWT(token)
-    if (!token) {
-      // Clear invalid encrypted cookie
-      res.clearCookie('authToken', {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
-      })
-      return res.status(401).json({ error: 'Invalid encrypted token' })
-    }
   }
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
@@ -368,25 +315,9 @@ const authenticateToken = (req, res, next) => {
 // Check if user is authenticated (for optional auth)
 const checkAuth = (req, res, next) => {
   // Try to get token from httpOnly cookie first, then Authorization header (fallback)
-  let token = req.cookies.authToken || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1])
+  const token = req.cookies.authToken || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1])
 
   if (token) {
-    // Decrypt JWT token if it came from cookie (encrypted) vs Authorization header (plain)
-    if (req.cookies.authToken && token === req.cookies.authToken) {
-      token = decryptJWT(token)
-      if (!token) {
-        // Clear invalid encrypted cookie
-        res.clearCookie('authToken', {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
-        })
-        req.isAuthenticated = false
-        req.csrfSecret = deriveCSRFSecret(generateSessionId())
-        return next()
-      }
-    }
-    
     jwt.verify(token, JWT_SECRET, (err, user) => {
       if (!err) {
         req.user = user
@@ -484,9 +415,8 @@ app.post('/api/auth/login',
           
           const token = generateToken(user)
           
-          // Encrypt JWT token before storing in httpOnly cookie (addresses CodeQL alert)
-          const encryptedToken = encryptJWT(token)
-          res.cookie('authToken', encryptedToken, {
+          // Set JWT token in httpOnly cookie
+          res.cookie('authToken', token, {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
             sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',

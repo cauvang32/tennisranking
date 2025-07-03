@@ -436,6 +436,14 @@ class TennisRankingSystem {
         })
       }
 
+      // Delete player buttons (using event delegation)
+      document.addEventListener('click', async (e) => {
+        if (e.target.classList.contains('delete-btn') && e.target.dataset.playerId) {
+          const playerId = parseInt(e.target.dataset.playerId)
+          await this.removePlayer(playerId)
+        }
+      })
+
       // Record match
       const recordMatchBtn = document.getElementById('recordMatch')
       if (recordMatchBtn) {
@@ -796,7 +804,7 @@ class TennisRankingSystem {
         <div class="player-card">
           <span class="player-name">${player.name}</span>
           ${this.isAuthenticated ? `
-            <button class="delete-btn edit-only" onclick="app.removePlayer(${player.id})">❌</button>
+            <button class="delete-btn edit-only" data-player-id="${player.id}">❌</button>
           ` : ''}
         </div>
       `).join('')

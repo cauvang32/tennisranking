@@ -633,12 +633,8 @@ class TennisRankingSystem {
     }
 
     try {
-      const response = await fetch(`${this.apiBase}/players`, {
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/players`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.authToken}`,
-          'Content-Type': 'application/json'
-        },
         body: JSON.stringify({ name: playerName })
       })
 
@@ -672,12 +668,8 @@ class TennisRankingSystem {
     if (!confirmDelete) return
 
     try {
-      const response = await fetch(`${this.apiBase}/players/${playerId}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${this.authToken}`,
-          'Content-Type': 'application/json'
-        }
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/players/${playerId}`, {
+        method: 'DELETE'
       })
 
       if (response.ok) {
@@ -750,12 +742,8 @@ class TennisRankingSystem {
     }
 
     try {
-      const response = await fetch(`${this.apiBase}/matches`, {
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/matches`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.authToken}`,
-          'Content-Type': 'application/json'
-        },
         body: JSON.stringify({
           seasonId: activeSeason.id,
           playDate,
@@ -1158,12 +1146,8 @@ class TennisRankingSystem {
         }
       }
 
-      const response = await fetch(`${this.apiBase}/seasons`, {
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.authToken}`,
-          'Content-Type': 'application/json'
-        },
         body: JSON.stringify({ 
           name, 
           startDate,
@@ -1194,12 +1178,8 @@ class TennisRankingSystem {
 
   async updateSeason(seasonId, name, startDate, endDate) {
     try {
-      const response = await fetch(`${this.apiBase}/seasons/${seasonId}`, {
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons/${seasonId}`, {
         method: 'PUT',
-        headers: {
-          'Authorization': `Bearer ${this.authToken}`,
-          'Content-Type': 'application/json'
-        },
         body: JSON.stringify({ name, startDate, endDate })
       })
 
@@ -1223,12 +1203,8 @@ class TennisRankingSystem {
     const endDate = new Date().toISOString().split('T')[0]
     
     try {
-      const response = await fetch(`${this.apiBase}/seasons/${seasonId}/end`, {
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons/${seasonId}/end`, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.authToken}`,
-          'Content-Type': 'application/json'
-        },
         body: JSON.stringify({ endDate })
       })
 
@@ -1281,12 +1257,8 @@ class TennisRankingSystem {
     }
 
     try {
-      const response = await fetch(`${this.apiBase}/seasons/${seasonId}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${this.authToken}`,
-          'Content-Type': 'application/json'
-        }
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons/${seasonId}`, {
+        method: 'DELETE'
       })
 
       const data = await response.json()
@@ -1463,12 +1435,8 @@ class TennisRankingSystem {
     try {
       this.updateFileStatus('🔄 Đang xóa tất cả dữ liệu...', 'info')
 
-      const response = await fetch(`${this.apiBase}/clear-all-data`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${this.authToken}`,
-          'Content-Type': 'application/json'
-        }
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/clear-all-data`, {
+        method: 'DELETE'
       })
 
       const data = await response.json()
@@ -1608,9 +1576,9 @@ class TennisRankingSystem {
       // Get match data
       const response = await fetch(`${this.apiBase}/matches/${matchId}`, {
         headers: {
-          'Authorization': `Bearer ${this.authToken}`,
           'Content-Type': 'application/json'
-        }
+        },
+        credentials: 'include'
       })
 
       if (!response.ok) {
@@ -1645,12 +1613,8 @@ class TennisRankingSystem {
     if (!confirmDelete) return
 
     try {
-      const response = await fetch(`${this.apiBase}/matches/${matchId}`, {
-        method: 'DELETE',
-        headers: {
-          'Authorization': `Bearer ${this.authToken}`,
-          'Content-Type': 'application/json'
-        }
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/matches/${matchId}`, {
+        method: 'DELETE'
       })
 
       const data = await response.json()
@@ -1819,12 +1783,8 @@ class TennisRankingSystem {
         const url = isEdit ? `${this.apiBase}/matches/${match.id}` : `${this.apiBase}/matches`
         const method = isEdit ? 'PUT' : 'POST'
         
-        const response = await fetch(url, {
+        const response = await this.makeAuthenticatedRequest(url, {
           method,
-          headers: {
-            'Authorization': `Bearer ${this.authToken}`,
-            'Content-Type': 'application/json'
-          },
           body: JSON.stringify({
             seasonId,
             playDate,

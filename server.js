@@ -13,6 +13,7 @@ import dotenv from 'dotenv'
 import TennisDatabase from './database-postgresql.js'
 import ExcelJS from 'exceljs'
 import csrf from 'csrf'
+import crypto from 'crypto'
 
 // Load environment variables
 dotenv.config()
@@ -26,6 +27,21 @@ const DATA_DIR = join(__dirname, 'data')
 
 // Initialize CSRF protection
 const tokens = new csrf()
+
+// CSRF secret derivation using HMAC (fixes cleartext storage vulnerability)
+function deriveCSRFSecret(sessionId) {
+  if (!sessionId) {
+    throw new Error('Session ID is required for CSRF secret derivation')
+  }
+  // Use HMAC to derive a secret from the session ID and server secret
+  return crypto.createHmac('sha256', CSRF_SECRET)
+    .update(sessionId)
+    .digest('base64')
+}
+
+function generateSessionId() {
+  return crypto.randomBytes(32).toString('base64url')
+}
 
 // Admin credentials from environment
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin'
@@ -146,7 +162,7 @@ app.use(cors(corsOptions))
 // Cookie parser middleware for JWT in httpOnly cookies
 app.use(cookieParser())
 
-// CSRF middleware generator
+// CSRF middleware generator (deprecated - using global protection now)
 const generateCSRFMiddleware = () => {
   return (req, res, next) => {
     // Generate secret for this session if not exists
@@ -157,7 +173,7 @@ const generateCSRFMiddleware = () => {
   }
 }
 
-// CSRF token validation middleware
+// CSRF token validation middleware (deprecated - using global protection now)
 const validateCSRF = (req, res, next) => {
   const token = req.get('X-CSRF-Token') || req.body._csrf
   const secret = req.csrfSecret || CSRF_SECRET
@@ -190,6 +206,58 @@ app.use(express.static('dist', {
     res.setHeader('X-XSS-Protection', '1; mode=block')
   }
 }))
+
+// Global CSRF protection middleware (after body parsing)
+const globalCSRFProtection = (req, res, next) => {
+  // Skip CSRF for GET requests (read-only operations)
+  if (req.method === 'GET') {
+    return next()
+  }
+  
+  // Skip CSRF for login endpoint (needs to issue CSRF token)
+  if (req.path === '/api/auth/login') {
+    return next()
+  }
+  
+  // Skip CSRF for public CSRF token endpoint
+  if (req.path === '/api/csrf-token') {
+    return next()
+  }
+  
+  // Skip CSRF for non-authenticated users on logout
+  if (req.path === '/api/auth/logout' && !req.cookies.authToken) {
+    return next()
+  }
+  
+  // Apply CSRF validation for all other state-changing operations
+  const token = req.get('X-CSRF-Token') || req.body._csrf
+  
+  // Get or create session ID for CSRF secret derivation
+  let sessionId = req.cookies.csrfSessionId
+  if (!sessionId) {
+    sessionId = generateSessionId()
+    res.cookie('csrfSessionId', sessionId, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+      maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    })
+  }
+  
+  const secret = deriveCSRFSecret(sessionId)
+  
+  if (!token || !tokens.verify(secret, token)) {
+    return res.status(403).json({ 
+      error: 'Invalid CSRF token',
+      csrfRequired: true 
+    })
+  }
+  
+  next()
+}
+
+// Apply global CSRF protection
+app.use(globalCSRFProtection)
 
 // Validation middleware
 const handleValidationErrors = (req, res, next) => {
@@ -265,7 +333,21 @@ const checkAuth = (req, res, next) => {
     })
   }
   req.isAuthenticated = req.isAuthenticated || false
-  req.csrfSecret = req.cookies.csrfSecret || CSRF_SECRET
+  
+  // Get or create session ID for CSRF secret derivation
+  let sessionId = req.cookies.csrfSessionId
+  if (!sessionId) {
+    sessionId = generateSessionId()
+    res.cookie('csrfSessionId', sessionId, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+      maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    })
+  }
+  
+  // Derive CSRF secret from session ID (no cleartext storage)
+  req.csrfSecret = deriveCSRFSecret(sessionId)
   next()
 }
 
@@ -295,16 +377,11 @@ try {
 
 // Get CSRF token endpoint (public)
 app.get('/api/csrf-token', checkAuth, (req, res) => {
-  const secret = req.csrfSecret || CSRF_SECRET
+  const secret = req.csrfSecret
   const token = tokens.create(secret)
   
-  // Set CSRF secret in httpOnly cookie for future requests
-  res.cookie('csrfSecret', secret, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
-    maxAge: 24 * 60 * 60 * 1000 // 24 hours
-  })
+  // Session ID is already set by checkAuth middleware if needed
+  // No need to store secret in cleartext in cookies
   
   res.json({ csrfToken: token })
 })
@@ -346,12 +423,13 @@ app.post('/api/auth/login',
             maxAge: 24 * 60 * 60 * 1000 // 24 hours
           })
           
-          // Generate CSRF secret and token
-          const csrfSecret = tokens.secretSync()
+          // Generate new session ID for CSRF protection
+          const sessionId = generateSessionId()
+          const csrfSecret = deriveCSRFSecret(sessionId)
           const csrfToken = tokens.create(csrfSecret)
           
-          // Set CSRF secret in httpOnly cookie
-          res.cookie('csrfSecret', csrfSecret, {
+          // Set session ID in httpOnly cookie (not the secret itself)
+          res.cookie('csrfSessionId', sessionId, {
             httpOnly: true,
             secure: process.env.NODE_ENV === 'production',
             sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
@@ -387,7 +465,7 @@ app.post('/api/auth/logout', checkAuth, (req, res) => {
   if (req.isAuthenticated) {
     // Apply CSRF validation for authenticated logout
     const token = req.get('X-CSRF-Token') || req.body._csrf
-    const secret = req.csrfSecret || req.cookies.csrfSecret
+    const secret = req.csrfSecret
     
     if (!token || !tokens.verify(secret, token)) {
       return res.status(403).json({ 
@@ -404,7 +482,7 @@ app.post('/api/auth/logout', checkAuth, (req, res) => {
     sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
   })
   
-  res.clearCookie('csrfSecret', {
+  res.clearCookie('csrfSessionId', {
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
     sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
@@ -417,7 +495,7 @@ app.post('/api/auth/logout', checkAuth, (req, res) => {
 app.get('/api/auth/status', checkAuth, (req, res) => {
   if (req.isAuthenticated) {
     // Generate new CSRF token for authenticated users
-    const secret = req.csrfSecret || req.cookies.csrfSecret || CSRF_SECRET
+    const secret = req.csrfSecret
     const csrfToken = tokens.create(secret)
     
     res.json({
@@ -480,7 +558,6 @@ app.get('/api/files', checkAuth, async (req, res) => {
 // Save Excel file to data folder (requires authentication and CSRF)
 app.post('/api/save-excel', 
   authenticateToken,
-  validateCSRF,
   uploadLimiter,
   [
     body('fileName')
@@ -579,7 +656,6 @@ app.get('/api/load-excel/:fileName',
 // Delete Excel file (requires authentication and CSRF)
 app.delete('/api/delete-excel/:fileName', 
   authenticateToken,
-  validateCSRF,
   [
     param('fileName')
       .isLength({ min: 1, max: 100 })
@@ -703,7 +779,6 @@ app.get('/api/players', checkAuth, async (req, res) => {
 
 app.post('/api/players', 
   authenticateToken,
-  validateCSRF,
   [
     body('name')
       .isLength({ min: 1, max: 100 })
@@ -728,7 +803,6 @@ app.post('/api/players',
 
 app.delete('/api/players/:id', 
   authenticateToken,
-  validateCSRF,
   [
     param('id').isInt().withMessage('Invalid player ID')
   ],
@@ -768,7 +842,6 @@ app.get('/api/seasons/active', checkAuth, async (req, res) => {
 
 app.post('/api/seasons', 
   authenticateToken,
-  validateCSRF,
   [
     body('name').isLength({ min: 1, max: 100 }).withMessage('Season name is required'),
     body('startDate').isISO8601().withMessage('Valid start date is required'),
@@ -804,7 +877,6 @@ app.post('/api/seasons',
 
 app.put('/api/seasons/:id', 
   authenticateToken,
-  validateCSRF,
   [
     param('id').isInt().withMessage('Invalid season ID'),
     body('name').isLength({ min: 1, max: 100 }).withMessage('Season name is required'),
@@ -827,7 +899,6 @@ app.put('/api/seasons/:id',
 
 app.post('/api/seasons/:id/end', 
   authenticateToken,
-  validateCSRF,
   [
     param('id').isInt().withMessage('Invalid season ID'),
     body('endDate').isISO8601().withMessage('Valid end date is required')
@@ -848,7 +919,6 @@ app.post('/api/seasons/:id/end',
 
 app.delete('/api/seasons/:id', 
   authenticateToken,
-  validateCSRF,
   [
     param('id').isInt().withMessage('Invalid season ID')
   ],
@@ -912,7 +982,6 @@ app.get('/api/matches/by-season/:seasonId', checkAuth, async (req, res) => {
 
 app.post('/api/matches', 
   authenticateToken,
-  validateCSRF,
   [
     body('seasonId').isInt().withMessage('Valid season ID is required'),
     body('playDate').isISO8601().withMessage('Valid play date is required'),
@@ -972,7 +1041,6 @@ app.get('/api/matches/:id',
 // Update a match (admin only)
 app.put('/api/matches/:id', 
   authenticateToken,
-  validateCSRF,
   [
     param('id').isInt().withMessage('Invalid match ID'),
     body('seasonId').isInt().withMessage('Valid season ID is required'),
@@ -1016,7 +1084,6 @@ app.put('/api/matches/:id',
 // Delete a match (admin only)
 app.delete('/api/matches/:id', 
   authenticateToken,
-  validateCSRF,
   [
     param('id').isInt().withMessage('Invalid match ID')
   ],
@@ -1395,7 +1462,6 @@ app.get('/api/export-excel/lifetime', checkAuth, async (req, res) => {
 // Clear All Data Route (DANGEROUS!)
 app.delete('/api/clear-all-data', 
   authenticateToken,
-  validateCSRF,
   async (req, res) => {
     try {
       console.log(`⚠️ CLEAR ALL DATA requested by user: ${req.user.username}`)

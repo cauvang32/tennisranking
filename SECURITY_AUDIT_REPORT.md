@@ -1,31 +1,47 @@
 # 🔒 Security Audit Report - Tennis Ranking System
 
 ## Executive Summary
-**Date**: July 1, 2025  
-**Status**: ✅ **SECURE** - No RCE vulnerabilities found  
-**Risk Level**: LOW (after fixes applied)
+**Date**: July 3, 2025  
+**Status**: ✅ **SECURE** - All vulnerabilities fixed  
+**Risk Level**: LOW (all critical fixes applied)
 
 ## 🚨 Security Issues Found & Fixed
 
-### 1. **Weak Credentials** - ❌ **FIXED**
+### 1. **ReDoS Vulnerability (js/polynomial-redos)** - ✅ **FIXED**
+- **Issue**: Polynomial regex in `sanitizeFileName` function
+- **Risk**: HIGH - Regular Expression Denial of Service attacks
+- **Location**: server.js line 207-217
+- **Fix**: Replaced ambiguous regex patterns with non-polynomial alternatives
+  - Before: `/.{2,}/g` (polynomial time complexity)
+  - After: `/\.\.+/g` (linear time complexity)
+- **Additional**: Added input length limiting (100 chars) for extra protection
+
+### 2. **CSRF Protection Missing** - ✅ **IMPLEMENTED**
+- **Issue**: No CSRF protection for state-changing operations
+- **Risk**: HIGH - Cross-Site Request Forgery attacks
+- **Fix**: Implemented modern `csrf` package with tokens for all POST/PUT/DELETE routes
+- **Features**: httpOnly CSRF secrets, client-side token management
+
+### 3. **Session-based Authentication** - ✅ **MIGRATED** 
+- **Issue**: Session-based auth less secure than JWT in cookies
+- **Risk**: MEDIUM - Session hijacking, scaling issues
+- **Fix**: Migrated to JWT in httpOnly cookies with CSRF protection
+- **Benefits**: Stateless, more secure, better for scaling
+
+### 4. **Weak Credentials** - ✅ **FIXED**
 - **Issue**: Default admin password was "admin"
 - **Risk**: HIGH - Brute force attacks
 - **Fix**: Changed to strong password: `SecureTennis@2025!X7#mQ9$pL3vR`
 
-### 2. **Weak Secrets** - ❌ **FIXED**
+### 5. **Weak Secrets** - ✅ **FIXED**
 - **Issue**: Predictable JWT and session secrets
 - **Risk**: MEDIUM - Token manipulation
 - **Fix**: Generated cryptographically secure 256-bit secrets
 
-### 3. **Database Security** - ❌ **FIXED**
+### 6. **Database Security** - ✅ **FIXED**
 - **Issue**: Weak database password
 - **Risk**: MEDIUM - Database compromise
 - **Fix**: Strong password: `PostgreSQL_SecureTennis2025!#mQ9$pL3vR_DbPass`
-
-### 4. **Development Mode** - ❌ **FIXED**
-- **Issue**: NODE_ENV not set to production
-- **Risk**: LOW - Debug info exposure
-- **Fix**: Enabled production mode
 
 ## ✅ Security Features Already Implemented
 

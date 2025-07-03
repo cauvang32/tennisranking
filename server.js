@@ -8,10 +8,11 @@ import rateLimit from 'express-rate-limit'
 import { body, param, validationResult } from 'express-validator'
 import jwt from 'jsonwebtoken'
 import bcrypt from 'bcryptjs'
-import session from 'express-session'
+import cookieParser from 'cookie-parser'
 import dotenv from 'dotenv'
 import TennisDatabase from './database-postgresql.js'
 import ExcelJS from 'exceljs'
+import csrf from 'csrf'
 
 // Load environment variables
 dotenv.config()
@@ -23,12 +24,15 @@ const app = express()
 const PORT = process.env.PORT || 3001
 const DATA_DIR = join(__dirname, 'data')
 
+// Initialize CSRF protection
+const tokens = new csrf()
+
 // Admin credentials from environment
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin'
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'tennis2024!'
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@tennis.local'
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key'
-const SESSION_SECRET = process.env.SESSION_SECRET || 'fallback-session-secret'
+const CSRF_SECRET = process.env.CSRF_SECRET || 'fallback-csrf-secret'
 
 // Hash the admin password on startup
 const hashedAdminPassword = await bcrypt.hash(ADMIN_PASSWORD, 10)
@@ -139,18 +143,33 @@ const corsOptions = {
 
 app.use(cors(corsOptions))
 
-// Session middleware
-app.use(session({
-  secret: SESSION_SECRET,
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    secure: process.env.NODE_ENV === 'production' && process.env.FORCE_HTTPS !== 'false',
-    httpOnly: true,
-    maxAge: 24 * 60 * 60 * 1000, // 24 hours
-    sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
+// Cookie parser middleware for JWT in httpOnly cookies
+app.use(cookieParser())
+
+// CSRF middleware generator
+const generateCSRFMiddleware = () => {
+  return (req, res, next) => {
+    // Generate secret for this session if not exists
+    if (!req.csrfSecret) {
+      req.csrfSecret = tokens.secretSync()
+    }
+    next()
   }
-}))
+}
+
+// CSRF token validation middleware
+const validateCSRF = (req, res, next) => {
+  const token = req.get('X-CSRF-Token') || req.body._csrf
+  const secret = req.csrfSecret || CSRF_SECRET
+  
+  if (!token || !tokens.verify(secret, token)) {
+    return res.status(403).json({ 
+      error: 'Invalid CSRF token',
+      csrfRequired: true 
+    })
+  }
+  next()
+}
 
 app.use(express.json({ 
   limit: '10mb',
@@ -184,19 +203,24 @@ const handleValidationErrors = (req, res, next) => {
   next()
 }
 
-// File name sanitization
+// File name sanitization - secure against ReDoS attacks
 const sanitizeFileName = (fileName) => {
+  // First limit length to prevent ReDoS attacks
+  if (fileName.length > 100) {
+    fileName = fileName.substring(0, 100)
+  }
+  
   return fileName
     .replace(/[^a-zA-Z0-9\-_\.]/g, '_') // Replace invalid chars with underscore
-    .replace(/\.{2,}/g, '.') // Replace multiple dots with single dot
-    .replace(/^\.+|\.+$/g, '') // Remove leading/trailing dots
-    .substring(0, 100) // Limit length
+    .replace(/\.\.+/g, '.') // Replace multiple consecutive dots with single dot (non-polynomial)
+    .replace(/^\.+/, '') // Remove leading dots (non-ambiguous)
+    .replace(/\.+$/, '') // Remove trailing dots (non-ambiguous)
 }
 
 // Authentication middleware
 const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization']
-  const token = authHeader && authHeader.split(' ')[1]
+  // Try to get token from httpOnly cookie first, then Authorization header (fallback)
+  const token = req.cookies.authToken || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1])
 
   if (!token) {
     return res.status(401).json({ error: 'Access token required' })
@@ -204,27 +228,44 @@ const authenticateToken = (req, res, next) => {
 
   jwt.verify(token, JWT_SECRET, (err, user) => {
     if (err) {
+      // Clear invalid cookie
+      if (req.cookies.authToken) {
+        res.clearCookie('authToken', {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
+        })
+      }
       return res.status(403).json({ error: 'Invalid or expired token' })
     }
     req.user = user
+    req.isAuthenticated = true
     next()
   })
 }
 
 // Check if user is authenticated (for optional auth)
 const checkAuth = (req, res, next) => {
-  const authHeader = req.headers['authorization']
-  const token = authHeader && authHeader.split(' ')[1]
+  // Try to get token from httpOnly cookie first, then Authorization header (fallback)
+  const token = req.cookies.authToken || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1])
 
   if (token) {
     jwt.verify(token, JWT_SECRET, (err, user) => {
       if (!err) {
         req.user = user
         req.isAuthenticated = true
+      } else if (req.cookies.authToken) {
+        // Clear invalid cookie
+        res.clearCookie('authToken', {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
+        })
       }
     })
   }
   req.isAuthenticated = req.isAuthenticated || false
+  req.csrfSecret = req.cookies.csrfSecret || CSRF_SECRET
   next()
 }
 
@@ -251,6 +292,22 @@ try {
 // API Routes
 
 // Authentication Routes
+
+// Get CSRF token endpoint (public)
+app.get('/api/csrf-token', checkAuth, (req, res) => {
+  const secret = req.csrfSecret || CSRF_SECRET
+  const token = tokens.create(secret)
+  
+  // Set CSRF secret in httpOnly cookie for future requests
+  res.cookie('csrfSecret', secret, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+    maxAge: 24 * 60 * 60 * 1000 // 24 hours
+  })
+  
+  res.json({ csrfToken: token })
+})
 
 // Login endpoint
 app.post('/api/auth/login', 
@@ -281,13 +338,30 @@ app.post('/api/auth/login',
           
           const token = generateToken(user)
           
-          // Store user in session
-          req.session.user = user
+          // Set JWT token in httpOnly cookie
+          res.cookie('authToken', token, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+            maxAge: 24 * 60 * 60 * 1000 // 24 hours
+          })
+          
+          // Generate CSRF secret and token
+          const csrfSecret = tokens.secretSync()
+          const csrfToken = tokens.create(csrfSecret)
+          
+          // Set CSRF secret in httpOnly cookie
+          res.cookie('csrfSecret', csrfSecret, {
+            httpOnly: true,
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
+            maxAge: 24 * 60 * 60 * 1000 // 24 hours
+          })
           
           res.json({
             success: true,
             message: 'Login successful',
-            token,
+            csrfToken, // Send CSRF token to client
             user: {
               username: user.username,
               email: user.email,
@@ -307,23 +381,49 @@ app.post('/api/auth/login',
   }
 )
 
-// Logout endpoint
-app.post('/api/auth/logout', (req, res) => {
-  req.session.destroy((err) => {
-    if (err) {
-      console.error('Logout error:', err)
-      return res.status(500).json({ error: 'Logout failed' })
+// Logout endpoint (requires CSRF protection for authenticated users)
+app.post('/api/auth/logout', checkAuth, (req, res) => {
+  // Check if user is authenticated before applying CSRF
+  if (req.isAuthenticated) {
+    // Apply CSRF validation for authenticated logout
+    const token = req.get('X-CSRF-Token') || req.body._csrf
+    const secret = req.csrfSecret || req.cookies.csrfSecret
+    
+    if (!token || !tokens.verify(secret, token)) {
+      return res.status(403).json({ 
+        error: 'Invalid CSRF token',
+        csrfRequired: true 
+      })
     }
-    res.json({ success: true, message: 'Logged out successfully' })
+  }
+  
+  // Clear authentication and CSRF cookies
+  res.clearCookie('authToken', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
   })
+  
+  res.clearCookie('csrfSecret', {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
+  })
+  
+  res.json({ success: true, message: 'Logged out successfully' })
 })
 
 // Check authentication status
 app.get('/api/auth/status', checkAuth, (req, res) => {
   if (req.isAuthenticated) {
+    // Generate new CSRF token for authenticated users
+    const secret = req.csrfSecret || req.cookies.csrfSecret || CSRF_SECRET
+    const csrfToken = tokens.create(secret)
+    
     res.json({
       authenticated: true,
-      user: req.user
+      user: req.user,
+      csrfToken
     })
   } else {
     res.json({
@@ -377,9 +477,10 @@ app.get('/api/files', checkAuth, async (req, res) => {
   }
 })
 
-// Save Excel file to data folder (requires authentication)
+// Save Excel file to data folder (requires authentication and CSRF)
 app.post('/api/save-excel', 
   authenticateToken,
+  validateCSRF,
   uploadLimiter,
   [
     body('fileName')
@@ -475,9 +576,10 @@ app.get('/api/load-excel/:fileName',
   }
 )
 
-// Delete Excel file (requires authentication)
+// Delete Excel file (requires authentication and CSRF)
 app.delete('/api/delete-excel/:fileName', 
   authenticateToken,
+  validateCSRF,
   [
     param('fileName')
       .isLength({ min: 1, max: 100 })
@@ -601,6 +703,7 @@ app.get('/api/players', checkAuth, async (req, res) => {
 
 app.post('/api/players', 
   authenticateToken,
+  validateCSRF,
   [
     body('name')
       .isLength({ min: 1, max: 100 })
@@ -625,6 +728,7 @@ app.post('/api/players',
 
 app.delete('/api/players/:id', 
   authenticateToken,
+  validateCSRF,
   [
     param('id').isInt().withMessage('Invalid player ID')
   ],
@@ -664,6 +768,7 @@ app.get('/api/seasons/active', checkAuth, async (req, res) => {
 
 app.post('/api/seasons', 
   authenticateToken,
+  validateCSRF,
   [
     body('name').isLength({ min: 1, max: 100 }).withMessage('Season name is required'),
     body('startDate').isISO8601().withMessage('Valid start date is required'),
@@ -699,6 +804,7 @@ app.post('/api/seasons',
 
 app.put('/api/seasons/:id', 
   authenticateToken,
+  validateCSRF,
   [
     param('id').isInt().withMessage('Invalid season ID'),
     body('name').isLength({ min: 1, max: 100 }).withMessage('Season name is required'),
@@ -721,6 +827,7 @@ app.put('/api/seasons/:id',
 
 app.post('/api/seasons/:id/end', 
   authenticateToken,
+  validateCSRF,
   [
     param('id').isInt().withMessage('Invalid season ID'),
     body('endDate').isISO8601().withMessage('Valid end date is required')
@@ -741,6 +848,7 @@ app.post('/api/seasons/:id/end',
 
 app.delete('/api/seasons/:id', 
   authenticateToken,
+  validateCSRF,
   [
     param('id').isInt().withMessage('Invalid season ID')
   ],
@@ -804,6 +912,7 @@ app.get('/api/matches/by-season/:seasonId', checkAuth, async (req, res) => {
 
 app.post('/api/matches', 
   authenticateToken,
+  validateCSRF,
   [
     body('seasonId').isInt().withMessage('Valid season ID is required'),
     body('playDate').isISO8601().withMessage('Valid play date is required'),
@@ -863,6 +972,7 @@ app.get('/api/matches/:id',
 // Update a match (admin only)
 app.put('/api/matches/:id', 
   authenticateToken,
+  validateCSRF,
   [
     param('id').isInt().withMessage('Invalid match ID'),
     body('seasonId').isInt().withMessage('Valid season ID is required'),
@@ -906,6 +1016,7 @@ app.put('/api/matches/:id',
 // Delete a match (admin only)
 app.delete('/api/matches/:id', 
   authenticateToken,
+  validateCSRF,
   [
     param('id').isInt().withMessage('Invalid match ID')
   ],
@@ -1100,7 +1211,7 @@ app.get('/api/export-excel/date/:date', checkAuth, async (req, res) => {
       { header: 'Phong độ gần đây', key: 'form_text', width: 30 }
     ]
     
-    const rankings = await db.getPlayerStatsByDate(date)
+    const rankings = await db.getPlayerStatsByPlayDate(date)
     const rankedData = rankings.map((player, index) => ({
       rank: index + 1,
       ...player,
@@ -1284,6 +1395,7 @@ app.get('/api/export-excel/lifetime', checkAuth, async (req, res) => {
 // Clear All Data Route (DANGEROUS!)
 app.delete('/api/clear-all-data', 
   authenticateToken,
+  validateCSRF,
   async (req, res) => {
     try {
       console.log(`⚠️ CLEAR ALL DATA requested by user: ${req.user.username}`)

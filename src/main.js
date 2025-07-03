@@ -16,7 +16,7 @@ class TennisRankingSystem {
     this.apiBase = window.location.origin + '/api'
     this.isAuthenticated = false
     this.user = null
-    this.authToken = localStorage.getItem('authToken')
+    this.csrfToken = null // CSRF token for secure requests
     this.init()
   }
 
@@ -76,21 +76,19 @@ class TennisRankingSystem {
     try {
       const response = await fetch(`${this.apiBase}/auth/status`, {
         method: 'GET',
-        headers: {
-          'Authorization': this.authToken ? `Bearer ${this.authToken}` : '',
-          'Content-Type': 'application/json'
-        },
-        credentials: 'include'
+        credentials: 'include' // Use httpOnly cookies instead of Authorization header
       })
       
       if (response.ok) {
         const data = await response.json()
         this.isAuthenticated = data.authenticated
         this.user = data.user
+        this.csrfToken = data.csrfToken // Get CSRF token for authenticated users
       }
     } catch (error) {
       console.log('Auth status check failed:', error)
       this.isAuthenticated = false
+      this.csrfToken = null
     }
   }
 
@@ -110,8 +108,7 @@ class TennisRankingSystem {
       if (response.ok) {
         this.isAuthenticated = true
         this.user = data.user
-        this.authToken = data.token
-        localStorage.setItem('authToken', data.token)
+        this.csrfToken = data.csrfToken // Store CSRF token from login response
         this.updateUIForAuthStatus()
         await this.loadInitialData() // Reload data after login
         return { success: true, message: data.message }
@@ -125,12 +122,17 @@ class TennisRankingSystem {
 
   async logout() {
     try {
+      // Include CSRF token if authenticated
+      const headers = {
+        'Content-Type': 'application/json'
+      }
+      if (this.csrfToken) {
+        headers['X-CSRF-Token'] = this.csrfToken
+      }
+      
       await fetch(`${this.apiBase}/auth/logout`, {
         method: 'POST',
-        headers: {
-          'Authorization': this.authToken ? `Bearer ${this.authToken}` : '',
-          'Content-Type': 'application/json'
-        },
+        headers,
         credentials: 'include'
       })
     } catch (error) {
@@ -139,8 +141,7 @@ class TennisRankingSystem {
     
     this.isAuthenticated = false
     this.user = null
-    this.authToken = null
-    localStorage.removeItem('authToken')
+    this.csrfToken = null
     this.updateUIForAuthStatus()
   }
 
@@ -172,6 +173,53 @@ class TennisRankingSystem {
     
     this.renderPlayers()
     this.renderSeasons()
+  }
+
+  // Helper method to get CSRF token
+  async getCSRFToken() {
+    if (this.csrfToken) {
+      return this.csrfToken
+    }
+    
+    try {
+      const response = await fetch(`${this.apiBase}/csrf-token`, {
+        credentials: 'include'
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        this.csrfToken = data.csrfToken
+        return this.csrfToken
+      }
+    } catch (error) {
+      console.error('Failed to get CSRF token:', error)
+    }
+    
+    return null
+  }
+
+  // Helper method to make authenticated requests with CSRF protection
+  async makeAuthenticatedRequest(url, options = {}) {
+    if (!this.isAuthenticated) {
+      throw new Error('Authentication required')
+    }
+    
+    const csrfToken = await this.getCSRFToken()
+    if (!csrfToken) {
+      throw new Error('CSRF token required')
+    }
+    
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': csrfToken,
+      ...options.headers
+    }
+    
+    return fetch(url, {
+      ...options,
+      headers,
+      credentials: 'include'
+    })
   }
 
   updateAuthHeader() {
@@ -1503,7 +1551,52 @@ class TennisRankingSystem {
     }
   }
 
-  // ...existing methods...
+  // Helper method to get CSRF token
+  async getCSRFToken() {
+    if (this.csrfToken) {
+      return this.csrfToken
+    }
+    
+    try {
+      const response = await fetch(`${this.apiBase}/csrf-token`, {
+        credentials: 'include'
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        this.csrfToken = data.csrfToken
+        return this.csrfToken
+      }
+    } catch (error) {
+      console.error('Failed to get CSRF token:', error)
+    }
+    
+    return null
+  }
+
+  // Helper method to make authenticated requests with CSRF protection
+  async makeAuthenticatedRequest(url, options = {}) {
+    if (!this.isAuthenticated) {
+      throw new Error('Authentication required')
+    }
+    
+    const csrfToken = await this.getCSRFToken()
+    if (!csrfToken) {
+      throw new Error('CSRF token required')
+    }
+    
+    const headers = {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': csrfToken,
+      ...options.headers
+    }
+    
+    return fetch(url, {
+      ...options,
+      headers,
+      credentials: 'include'
+    })
+  }
 
   async editMatch(matchId) {
     if (!this.isAuthenticated) {

@@ -14,7 +14,7 @@ This is a web-based tennis doubles ranking system with the following key feature
 
 ## Technical Stack:
 - **Frontend**: Vanilla JavaScript with Vite
-- **Storage**: Local Storage for data persistence
+- **Storage**: Local Storage (posgreSQL)
 - **Export**: XLSX library for Excel export
 - **UI**: Responsive design with modern CSS
 
@@ -26,7 +26,7 @@ This is a web-based tennis doubles ranking system with the following key feature
 5. Money lost tracking
 6. Export rankings to Excel (.xlsx)
 7. Responsive web interface
-
+8. Data saved in to posgreSQL database
 ## Code Guidelines:
 - Use modern JavaScript (ES6+)
 - Implement responsive design

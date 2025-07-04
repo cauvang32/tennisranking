@@ -1,7 +1,6 @@
 import express from 'express'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
-import fs from 'fs/promises'
 import cors from 'cors'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
@@ -23,7 +22,6 @@ const __dirname = dirname(__filename)
 
 const app = express()
 const PORT = process.env.PORT || 3001
-const DATA_DIR = join(__dirname, 'data')
 
 // Initialize CSRF protection
 const tokens = new csrf()
@@ -153,16 +151,64 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
 })
 
-const uploadLimiter = rateLimit({
+// Additional specialized rate limiters for enhanced security
+const deleteLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10, // Limit each IP to 10 uploads per windowMs
-  message: 'Too many upload requests from this IP, please try again later.',
+  max: 5, // Limit each IP to 5 delete operations per windowMs
+  message: 'Too many delete requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
 })
 
-app.use(generalLimiter)
-app.use('/api', apiLimiter)
+const createLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20, // Limit each IP to 20 create operations per windowMs
+  message: 'Too many create requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+
+const exportLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 15, // Limit each IP to 15 export operations per windowMs
+  message: 'Too many export requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+
+const criticalLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 1, // Limit each IP to 1 critical operation per hour
+  message: 'Critical operation limit exceeded. Please wait 1 hour before trying again.',
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+
+const restoreLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000, // 1 hour
+  max: 5, // Limit each IP to 5 restore operations per hour
+  message: 'Too many restore requests from this IP, please try again later.',
+  standardHeaders: true,
+  legacyHeaders: false,
+})
+
+// Apply rate limiting conditionally based on environment
+if (process.env.NODE_ENV !== 'development') {
+  app.use(generalLimiter)
+  app.use('/api', apiLimiter)
+} else {
+  console.log('🚧 Development mode: Rate limiting disabled')
+}
+
+// Conditional rate limiter - bypasses in development
+const conditionalRateLimit = (limiter) => {
+  return (req, res, next) => {
+    if (process.env.NODE_ENV === 'development') {
+      return next() // Skip rate limiting in development
+    }
+    return limiter(req, res, next)
+  }
+}
 
 // CORS configuration with security
 const corsOptions = {
@@ -310,20 +356,6 @@ const handleValidationErrors = (req, res, next) => {
   next()
 }
 
-// File name sanitization - secure against ReDoS attacks
-const sanitizeFileName = (fileName) => {
-  // First limit length to prevent ReDoS attacks
-  if (fileName.length > 100) {
-    fileName = fileName.substring(0, 100)
-  }
-  
-  return fileName
-    .replace(/[^a-zA-Z0-9\-_\.]/g, '_') // Replace invalid chars with underscore
-    .replace(/\.\.+/g, '.') // Replace multiple consecutive dots with single dot (non-polynomial)
-    .replace(/^\.+/, '') // Remove leading dots (non-ambiguous)
-    .replace(/\.+$/, '') // Remove trailing dots (non-ambiguous)
-}
-
 // Authentication middleware
 const authenticateToken = (req, res, next) => {
   // Try to get token from httpOnly cookie first, then Authorization header (fallback)
@@ -431,13 +463,6 @@ const generateToken = (user) => {
     JWT_SECRET, 
     { expiresIn: '24h' }
   )
-}
-
-// Ensure data directory exists with proper permissions
-try {
-  await fs.access(DATA_DIR)
-} catch {
-  await fs.mkdir(DATA_DIR, { recursive: true, mode: 0o755 })
 }
 
 // API Routes
@@ -580,261 +605,7 @@ app.get('/api/auth/status', checkAuth, (req, res) => {
   }
 })
 
-// Data Routes (Read-only routes don't require authentication)
-
-// Get list of Excel files (public)
-app.get('/api/files', checkAuth, async (req, res) => {
-  try {
-    const files = await fs.readdir(DATA_DIR)
-    const excelFiles = files
-      .filter(file => file.endsWith('.xlsx'))
-      .map(file => {
-        return {
-          name: file,
-          path: join(DATA_DIR, file)
-        }
-      })
-    
-    // Get file stats for each file
-    const filesWithStats = await Promise.all(
-      excelFiles.map(async (file) => {
-        try {
-          const stats = await fs.stat(file.path)
-          return {
-            name: file.name,
-            size: stats.size,
-            modified: stats.mtime,
-            created: stats.birthtime
-          }
-        } catch (error) {
-          return {
-            name: file.name,
-            size: 0,
-            modified: new Date(),
-            created: new Date(),
-            error: 'Could not read file stats'
-          }
-        }
-      })
-    )
-
-    res.json(filesWithStats.sort((a, b) => b.modified - a.modified))
-  } catch (error) {
-    console.error('Error reading data directory:', error)
-    res.status(500).json({ error: 'Failed to read data files' })
-  }
-})
-
-// Save Excel file to data folder (requires authentication and CSRF)
-app.post('/api/save-excel', 
-  authenticateToken,
-  uploadLimiter,
-  [
-    body('fileName')
-      .isLength({ min: 1, max: 100 })
-      .matches(/^[a-zA-Z0-9\-_\.]+$/)
-      .withMessage('Invalid file name'),
-    body('data')
-      .isBase64()
-      .isLength({ min: 1, max: 50 * 1024 * 1024 }) // Max 50MB
-      .withMessage('Invalid or too large file data')
-  ],
-  handleValidationErrors,
-  async (req, res) => {
-    try {
-      const { fileName, data } = req.body
-      
-      // Additional security: validate file size after decoding
-      const buffer = Buffer.from(data, 'base64')
-      if (buffer.length > 50 * 1024 * 1024) { // 50MB limit
-        return res.status(413).json({ error: 'File too large' })
-      }
-      
-      // Sanitize filename
-      const safeFileName = sanitizeFileName(fileName)
-      const fullFileName = safeFileName.endsWith('.xlsx') ? safeFileName : `${safeFileName}.xlsx`
-      const filePath = join(DATA_DIR, fullFileName)
-      
-      // Ensure we're not writing outside the data directory
-      if (!filePath.startsWith(DATA_DIR)) {
-        return res.status(400).json({ error: 'Invalid file path' })
-      }
-
-      await fs.writeFile(filePath, buffer, { mode: 0o644 })
-
-      res.json({ 
-        success: true, 
-        message: `File saved to ${fullFileName}`,
-        fileName: fullFileName,
-        size: buffer.length
-      })
-    } catch (error) {
-      console.error('Error saving Excel file:', error)
-      res.status(500).json({ error: 'Failed to save Excel file' })
-    }
-  }
-)
-
-// Load Excel file from data folder (public)
-app.get('/api/load-excel/:fileName', 
-  checkAuth,
-  [
-    param('fileName')
-      .isLength({ min: 1, max: 100 })
-      .matches(/^[a-zA-Z0-9\-_\.]+\.xlsx$/)
-      .withMessage('Invalid file name')
-  ],
-  handleValidationErrors,
-  async (req, res) => {
-    try {
-      const { fileName } = req.params
-      const sanitizedFileName = sanitizeFileName(fileName)
-      const filePath = join(DATA_DIR, sanitizedFileName)
-
-      // Ensure we're not reading outside the data directory
-      if (!filePath.startsWith(DATA_DIR)) {
-        return res.status(400).json({ error: 'Invalid file path' })
-      }
-
-      // Check if file exists
-      try {
-        const stats = await fs.stat(filePath)
-        if (!stats.isFile()) {
-          return res.status(404).json({ error: 'File not found' })
-        }
-      } catch {
-        return res.status(404).json({ error: 'File not found' })
-      }
-
-      // Read and return file as base64
-      const buffer = await fs.readFile(filePath)
-      const base64Data = buffer.toString('base64')
-
-      res.json({
-        success: true,
-        fileName: sanitizedFileName,
-        data: base64Data,
-        size: buffer.length
-      })
-    } catch (error) {
-      console.error('Error loading Excel file:', error)
-      res.status(500).json({ error: 'Failed to load Excel file' })
-    }
-  }
-)
-
-// Delete Excel file (requires authentication and CSRF)
-app.delete('/api/delete-excel/:fileName', 
-  authenticateToken,
-  [
-    param('fileName')
-      .isLength({ min: 1, max: 100 })
-      .matches(/^[a-zA-Z0-9\-_\.]+\.xlsx$/)
-      .withMessage('Invalid file name')
-  ],
-  handleValidationErrors,
-  async (req, res) => {
-    try {
-      const { fileName } = req.params
-      const sanitizedFileName = sanitizeFileName(fileName)
-      const filePath = join(DATA_DIR, sanitizedFileName)
-
-      // Ensure we're not deleting outside the data directory
-      if (!filePath.startsWith(DATA_DIR)) {
-        return res.status(400).json({ error: 'Invalid file path' })
-      }
-
-      // Check if file exists
-      try {
-        const stats = await fs.stat(filePath)
-        if (!stats.isFile()) {
-          return res.status(404).json({ error: 'File not found' })
-        }
-      } catch {
-        return res.status(404).json({ error: 'File not found' })
-      }
-
-      await fs.unlink(filePath)
-      res.json({ success: true, message: `File ${sanitizedFileName} deleted successfully` })
-    } catch (error) {
-      console.error('Error deleting Excel file:', error)
-      res.status(500).json({ error: 'Failed to delete Excel file' })
-    }
-  }
-)
-
-// Get current data file (latest or specified) (public)
-app.get('/api/current-data/:fileName?', 
-  checkAuth,
-  [
-    param('fileName')
-      .optional()
-      .isLength({ min: 1, max: 100 })
-      .matches(/^[a-zA-Z0-9\-_\.]+\.xlsx$/)
-      .withMessage('Invalid file name')
-  ],
-  handleValidationErrors,
-  async (req, res) => {
-    try {
-      let fileName = req.params.fileName
-
-      if (!fileName) {
-        // Get the most recent Excel file
-        const files = await fs.readdir(DATA_DIR)
-        const excelFiles = files.filter(file => 
-          file.endsWith('.xlsx') && 
-          /^[a-zA-Z0-9\-_\.]+\.xlsx$/.test(file) // Additional safety check
-        )
-        
-        if (excelFiles.length === 0) {
-          return res.json({ success: false, message: 'No data files found' })
-        }
-
-        // Get the most recently modified file
-        const filesWithStats = await Promise.all(
-          excelFiles.map(async (file) => {
-            try {
-              const stats = await fs.stat(join(DATA_DIR, file))
-              return { name: file, modified: stats.mtime }
-            } catch {
-              return null
-            }
-          })
-        )
-        
-        const validFiles = filesWithStats.filter(f => f !== null)
-        if (validFiles.length === 0) {
-          return res.json({ success: false, message: 'No valid data files found' })
-        }
-        
-        fileName = validFiles.sort((a, b) => b.modified - a.modified)[0].name
-      }
-
-      const sanitizedFileName = sanitizeFileName(fileName)
-      const filePath = join(DATA_DIR, sanitizedFileName)
-      
-      // Ensure we're not reading outside the data directory
-      if (!filePath.startsWith(DATA_DIR)) {
-        return res.status(400).json({ error: 'Invalid file path' })
-      }
-      
-      const buffer = await fs.readFile(filePath)
-      const base64Data = buffer.toString('base64')
-
-      res.json({
-        success: true,
-        fileName: sanitizedFileName,
-        data: base64Data,
-        size: buffer.length
-      })
-    } catch (error) {
-      console.error('Error getting current data:', error)
-      res.status(500).json({ error: 'Failed to get current data' })
-    }
-  }
-)
-
-// New Database API Routes
+// Database API Routes
 
 // Players Routes
 app.get('/api/players', checkAuth, async (req, res) => {
@@ -849,6 +620,7 @@ app.get('/api/players', checkAuth, async (req, res) => {
 
 app.post('/api/players', 
   authenticateToken,
+  conditionalRateLimit(createLimiter),
   [
     body('name')
       .isLength({ min: 1, max: 100 })
@@ -873,6 +645,7 @@ app.post('/api/players',
 
 app.delete('/api/players/:id', 
   authenticateToken,
+  conditionalRateLimit(deleteLimiter),
   [
     param('id').isInt().withMessage('Invalid player ID')
   ],
@@ -912,6 +685,7 @@ app.get('/api/seasons/active', checkAuth, async (req, res) => {
 
 app.post('/api/seasons', 
   authenticateToken,
+  conditionalRateLimit(createLimiter),
   [
     body('name').isLength({ min: 1, max: 100 }).withMessage('Season name is required'),
     body('startDate').isISO8601().withMessage('Valid start date is required'),
@@ -989,6 +763,7 @@ app.post('/api/seasons/:id/end',
 
 app.delete('/api/seasons/:id', 
   authenticateToken,
+  conditionalRateLimit(deleteLimiter),
   [
     param('id').isInt().withMessage('Invalid season ID')
   ],
@@ -1052,6 +827,7 @@ app.get('/api/matches/by-season/:seasonId', checkAuth, async (req, res) => {
 
 app.post('/api/matches', 
   authenticateToken,
+  conditionalRateLimit(createLimiter),
   [
     body('seasonId').isInt().withMessage('Valid season ID is required'),
     body('playDate').isISO8601().withMessage('Valid play date is required'),
@@ -1154,6 +930,7 @@ app.put('/api/matches/:id',
 // Delete a match (admin only)
 app.delete('/api/matches/:id', 
   authenticateToken,
+  conditionalRateLimit(deleteLimiter),
   [
     param('id').isInt().withMessage('Invalid match ID')
   ],
@@ -1253,7 +1030,7 @@ app.get('/api/rankings/date/:date', checkAuth, async (req, res) => {
 })
 
 // Excel Export Route
-app.get('/api/export-excel', checkAuth, async (req, res) => {
+app.get('/api/export-excel', checkAuth, conditionalRateLimit(exportLimiter), async (req, res) => {
   try {
     const workbook = new ExcelJS.Workbook()
     
@@ -1329,7 +1106,7 @@ app.get('/api/export-excel', checkAuth, async (req, res) => {
 })
 
 // Export Excel by Date
-app.get('/api/export-excel/date/:date', checkAuth, async (req, res) => {
+app.get('/api/export-excel/date/:date', checkAuth, conditionalRateLimit(exportLimiter), async (req, res) => {
   try {
     const { date } = req.params
     const workbook = new ExcelJS.Workbook()
@@ -1386,7 +1163,7 @@ app.get('/api/export-excel/date/:date', checkAuth, async (req, res) => {
 })
 
 // Export Excel by Season
-app.get('/api/export-excel/season/:seasonId', checkAuth, async (req, res) => {
+app.get('/api/export-excel/season/:seasonId', checkAuth, conditionalRateLimit(exportLimiter), async (req, res) => {
   try {
     const { seasonId } = req.params
     const workbook = new ExcelJS.Workbook()
@@ -1447,7 +1224,7 @@ app.get('/api/export-excel/season/:seasonId', checkAuth, async (req, res) => {
 })
 
 // Export Excel Lifetime
-app.get('/api/export-excel/lifetime', checkAuth, async (req, res) => {
+app.get('/api/export-excel/lifetime', checkAuth, conditionalRateLimit(exportLimiter), async (req, res) => {
   try {
     const workbook = new ExcelJS.Workbook()
     
@@ -1532,6 +1309,7 @@ app.get('/api/export-excel/lifetime', checkAuth, async (req, res) => {
 // Clear All Data Route (DANGEROUS!)
 app.delete('/api/clear-all-data', 
   authenticateToken,
+  conditionalRateLimit(criticalLimiter),
   async (req, res) => {
     try {
       console.log(`⚠️ CLEAR ALL DATA requested by user: ${req.user.username}`)
@@ -1552,6 +1330,206 @@ app.delete('/api/clear-all-data',
   }
 )
 
+// Backup Data Route (exports all data as JSON)
+app.get('/api/backup-data', 
+  authenticateToken,
+  conditionalRateLimit(exportLimiter),
+  async (req, res) => {
+    try {
+      console.log(`📦 BACKUP DATA requested by user: ${req.user.username}`)
+      
+      // Get all data from database
+      const [players, seasons, matches] = await Promise.all([
+        db.getPlayers(),
+        db.getSeasons(),
+        db.getMatches()
+      ])
+      
+      const backupData = {
+        version: '1.0',
+        timestamp: new Date().toISOString(),
+        exportedBy: req.user.username,
+        data: {
+          players,
+          seasons,
+          matches
+        },
+        metadata: {
+          playersCount: players.length,
+          seasonsCount: seasons.length,
+          matchesCount: matches.length
+        }
+      }
+      
+      const fileName = `tennis-backup-${new Date().toISOString().split('T')[0]}-${Date.now()}.json`
+      
+      res.setHeader('Content-Type', 'application/json')
+      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`)
+      res.json(backupData)
+      
+      console.log('✅ Backup data exported successfully')
+    } catch (error) {
+      console.error('Error creating backup:', error)
+      res.status(500).json({ error: 'Failed to create backup' })
+    }
+  }
+)
+
+// Restore Data Route (imports data from JSON backup)
+app.post('/api/restore-data', 
+  authenticateToken,
+  conditionalRateLimit(restoreLimiter),
+  [
+    body('backupData')
+      .isObject()
+      .withMessage('Backup data must be a valid JSON object'),
+    body('clearExisting')
+      .optional()
+      .isBoolean()
+      .withMessage('clearExisting must be boolean'),
+    body('backupData.version')
+      .exists()
+      .withMessage('Backup file must have version'),
+    body('backupData.data')
+      .isObject()
+      .withMessage('Backup data must contain data object')
+  ],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const { backupData, clearExisting = false } = req.body
+      
+      console.log(`🔄 RESTORE DATA requested by user: ${req.user.username}`)
+      console.log(`📊 Backup info: Version ${backupData.version}, Created: ${backupData.timestamp}`)
+      
+      // Validate backup data structure
+      if (!backupData.data || !backupData.data.players || !backupData.data.seasons || !backupData.data.matches) {
+        return res.status(400).json({ error: 'Invalid backup file structure' })
+      }
+      
+      // Clear existing data if requested
+      if (clearExisting) {
+        console.log('🗑️ Clearing existing data before restore...')
+        await db.clearAllData()
+      }
+      
+      const { players, seasons, matches } = backupData.data
+      const results = {
+        playersImported: 0,
+        seasonsImported: 0,
+        matchesImported: 0,
+        errors: []
+      }
+      
+      // Import players
+      for (const player of players) {
+        try {
+          await db.addPlayer(player.name)
+          results.playersImported++
+        } catch (error) {
+          if (!error.message.includes('UNIQUE constraint failed')) {
+            results.errors.push(`Player ${player.name}: ${error.message}`)
+          }
+          // Skip duplicate players silently if not clearing existing data
+        }
+      }
+      
+      // Import seasons - first pass: create all seasons
+      const seasonMapping = new Map() // To map old season names to new IDs
+      
+      for (const season of seasons) {
+        try {
+          const seasonId = await db.createSeason(season.name, season.start_date)
+          seasonMapping.set(season.name, seasonId)
+          
+          // Handle end date (but not active state yet)
+          if (season.end_date) {
+            await db.endSeason(seasonId, season.end_date)
+          }
+          
+          results.seasonsImported++
+        } catch (error) {
+          results.errors.push(`Season ${season.name}: ${error.message}`)
+        }
+      }
+      
+      // Second pass: Set active states correctly
+      // First, ensure no seasons are active
+      await db.query('UPDATE seasons SET is_active = false', [])
+      
+      // Then set the correct active season(s) from backup
+      for (const season of seasons) {
+        if (season.is_active) {
+          const seasonId = seasonMapping.get(season.name)
+          if (seasonId) {
+            try {
+              console.log(`Setting season ${season.name} as active: ${seasonId}`)
+              await db.query('UPDATE seasons SET is_active = $1 WHERE id = $2', [true, seasonId])
+              
+              // If this season was active but had an end date, we need to remove the end date
+              // because active seasons shouldn't have end dates
+              if (season.end_date) {
+                await db.query('UPDATE seasons SET end_date = NULL WHERE id = $1', [seasonId])
+              }
+            } catch (error) {
+              results.errors.push(`Setting season ${season.name} as active: ${error.message}`)
+            }
+          }
+        }
+      }
+      
+      // Import matches (this is more complex as we need to map player names to IDs)
+      const currentPlayers = await db.getPlayers()
+      
+      for (const match of matches) {
+        try {
+          // Find player IDs by name
+          const player1 = currentPlayers.find(p => p.name === match.player1_name)
+          const player2 = currentPlayers.find(p => p.name === match.player2_name)
+          const player3 = currentPlayers.find(p => p.name === match.player3_name)
+          const player4 = currentPlayers.find(p => p.name === match.player4_name)
+          
+          // Find season ID using our mapping
+          const seasonId = seasonMapping.get(match.season_name)
+          
+          if (!player1 || !player2 || !player3 || !player4 || !seasonId) {
+            results.errors.push(`Match ${match.id}: Missing players or season`)
+            continue
+          }
+          
+          await db.addMatch(
+            seasonId,
+            match.play_date,
+            player1.id,
+            player2.id,
+            player3.id,
+            player4.id,
+            match.team1_score,
+            match.team2_score,
+            match.winning_team
+          )
+          results.matchesImported++
+        } catch (error) {
+          results.errors.push(`Match ${match.id}: ${error.message}`)
+        }
+      }
+      
+      console.log('✅ Data restore completed')
+      console.log(`📊 Results: ${results.playersImported} players, ${results.seasonsImported} seasons, ${results.matchesImported} matches`)
+      
+      res.json({
+        success: true,
+        message: 'Data restored successfully',
+        results,
+        timestamp: new Date().toISOString()
+      })
+    } catch (error) {
+      console.error('Error restoring data:', error)
+      res.status(500).json({ error: 'Failed to restore data' })
+    }
+  }
+)
+
 // Serve the application
 app.get('*', (req, res) => {
   res.sendFile(join(__dirname, 'dist', 'index.html'))
@@ -1559,5 +1537,5 @@ app.get('*', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🎾 Tennis Ranking System Server running on http://localhost:${PORT}`)
-  console.log(`📁 Data files stored in: ${DATA_DIR}`)
+  console.log(`�️ Using PostgreSQL database for data storage`)
 })

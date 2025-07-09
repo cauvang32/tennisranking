@@ -60,49 +60,55 @@
               </div>
               
               <div class="teams-container">
-                <div class="team-selection">
+                <div class="team-section">
                   <h3>Đội 1</h3>
-                  <select id="player1">
-                    <option value="">Chọn người chơi 1</option>
-                  </select>
-                  <select id="player2">
-                    <option value="">Chọn người chơi 2</option>
-                  </select>
+                  <div class="team-players">
+                    <select id="player1">
+                      <option value="">Chọn người chơi 1</option>
+                    </select>
+                    <select id="player2">
+                      <option value="">Chọn người chơi 2</option>
+                    </select>
+                  </div>
+                  <div class="team-score">
+                    <label>Điểm:</label>
+                    <input type="number" id="team1Score" min="0" placeholder="0" required>
+                  </div>
                 </div>
                 
                 <div class="vs">VS</div>
                 
-                <div class="team-selection">
+                <div class="team-section">
                   <h3>Đội 2</h3>
-                  <select id="player3">
-                    <option value="">Chọn người chơi 1</option>
-                  </select>
-                  <select id="player4">
-                    <option value="">Chọn người chơi 2</option>
-                  </select>
-                </div>
-              </div>
-
-              <div class="score-section">
-                <h3>Kết quả trận đấu</h3>
-                <div class="score-input">
-                  <div class="score-group">
-                    <label>Điểm đội 1:</label>
-                    <input type="number" id="team1Score" min="0" placeholder="0" required>
+                  <div class="team-players">
+                    <select id="player3">
+                      <option value="">Chọn người chơi 1</option>
+                    </select>
+                    <select id="player4">
+                      <option value="">Chọn người chơi 2</option>
+                    </select>
                   </div>
-                  <div class="score-group">
-                    <label>Điểm đội 2:</label>
+                  <div class="team-score">
+                    <label>Điểm:</label>
                     <input type="number" id="team2Score" min="0" placeholder="0" required>
                   </div>
                 </div>
-                <div class="winner-selection">
-                  <label>Đội thắng:</label>
-                  <select id="winningTeam" required>
+              </div>
+
+              <div class="winner-section">
+                <div class="auto-winner">
+                  <span id="winnerDisplay">Nhập điểm số để tự động xác định đội thắng</span>
+                </div>
+                <div class="manual-winner" style="display: none;">
+                  <label>Chọn đội thắng thủ công:</label>
+                  <select id="winningTeam">
                     <option value="">Chọn đội thắng</option>
                     <option value="1">Đội 1</option>
                     <option value="2">Đội 2</option>
                   </select>
+                  <button type="button" id="useAutoWinner" class="small-btn">Dùng tự động</button>
                 </div>
+                <button type="button" id="useManualWinner" class="small-btn">Chọn thủ công</button>
               </div>
 
               <button id="recordMatch" class="record-btn">📝 Ghi nhận kết quả</button>

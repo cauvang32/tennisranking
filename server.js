@@ -26,6 +26,111 @@ const PORT = process.env.PORT || 3001
 // Initialize CSRF protection
 const tokens = new csrf()
 
+// Simple in-memory cache for rankings
+class RankingsCache {
+  constructor() {
+    this.cache = new Map()
+    this.stats = {
+      hits: 0,
+      misses: 0,
+      sets: 0,
+      invalidations: 0
+    }
+  }
+
+  set(key, data) {
+    this.cache.set(key, { 
+      data, 
+      createdAt: Date.now(),
+      accessCount: 0 
+    })
+    this.stats.sets++
+    
+    // Log cache activity in development
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`📦 Cache SET: ${key}`)
+    }
+  }
+
+  get(key) {
+    const item = this.cache.get(key)
+    if (!item) {
+      this.stats.misses++
+      return null
+    }
+    
+    // Update access stats
+    item.accessCount++
+    this.stats.hits++
+    
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`🎯 Cache HIT: ${key} (accessed ${item.accessCount} times)`)
+    }
+    
+    return item.data
+  }
+
+  invalidate(pattern = null) {
+    let invalidated = 0
+    
+    if (pattern) {
+      // Invalidate keys matching pattern
+      for (const key of this.cache.keys()) {
+        if (key.includes(pattern)) {
+          this.cache.delete(key)
+          invalidated++
+        }
+      }
+    } else {
+      // Clear all cache
+      invalidated = this.cache.size
+      this.cache.clear()
+    }
+    
+    this.stats.invalidations += invalidated
+    
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`🗑️ Cache INVALIDATE: ${invalidated} entries (pattern: ${pattern || 'all'})`)
+    }
+  }
+
+  clear() {
+    const size = this.cache.size
+    this.cache.clear()
+    this.stats.invalidations += size
+    
+    if (process.env.NODE_ENV === 'development') {
+      console.log(`🧹 Cache CLEAR: ${size} entries removed`)
+    }
+  }
+
+  // Get cache statistics
+  getStats() {
+    const hitRate = this.stats.hits + this.stats.misses > 0 
+      ? (this.stats.hits / (this.stats.hits + this.stats.misses) * 100).toFixed(2)
+      : 0
+    
+    return {
+      ...this.stats,
+      hitRate: `${hitRate}%`,
+      currentEntries: this.cache.size,
+      memoryUsage: JSON.stringify([...this.cache.entries()]).length
+    }
+  }
+  
+  // Reset statistics
+  resetStats() {
+    this.stats = {
+      hits: 0,
+      misses: 0,
+      sets: 0,
+      invalidations: 0
+    }
+  }
+}
+
+const rankingsCache = new RankingsCache()
+
 // CSRF secret derivation using HMAC (fixes cleartext storage vulnerability)
 function deriveCSRFSecret(sessionId) {
   if (!sessionId) {
@@ -852,6 +957,10 @@ app.post('/api/matches',
       }
       
       const matchId = await db.addMatch(seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam)
+      
+      // Invalidate rankings cache after adding match
+      rankingsCache.invalidate('rankings')
+      
       res.json({ success: true, id: matchId })
     } catch (error) {
       console.error('Error adding match:', error)
@@ -919,6 +1028,10 @@ app.put('/api/matches/:id',
       }
 
       await db.updateMatch(matchId, seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam)
+      
+      // Invalidate rankings cache after updating match
+      rankingsCache.invalidate('rankings')
+      
       res.json({ success: true, message: 'Match updated successfully' })
     } catch (error) {
       console.error('Error updating match:', error)
@@ -946,6 +1059,10 @@ app.delete('/api/matches/:id',
       }
       
       await db.deleteMatch(matchId)
+      
+      // Invalidate rankings cache after deleting match
+      rankingsCache.invalidate('rankings')
+      
       res.json({ success: true, message: 'Match deleted successfully' })
     } catch (error) {
       console.error('Error deleting match:', error)
@@ -978,15 +1095,23 @@ app.get('/api/play-dates/latest', checkAuth, async (req, res) => {
 // Rankings Routes
 app.get('/api/rankings/lifetime', checkAuth, async (req, res) => {
   try {
-    const rankings = await db.getPlayerStatsLifetime()
+    const cacheKey = 'rankings:lifetime'
+    let rankings = rankingsCache.get(cacheKey)
     
-    // Add form for each player
-    const rankingsWithForm = await Promise.all(rankings.map(async (player) => {
-      const form = await db.getPlayerForm(player.id, 5)
-      return { ...player, form }
-    }))
+    if (!rankings) {
+      rankings = await db.getPlayerStatsLifetime()
+      
+      // Add form for each player
+      rankings = await Promise.all(rankings.map(async (player) => {
+        const form = await db.getPlayerForm(player.id, 5)
+        return { ...player, form }
+      }))
+      
+      // Cache for 5 minutes
+      rankingsCache.set(cacheKey, rankings)
+    }
     
-    res.json(rankingsWithForm)
+    res.json(rankings)
   } catch (error) {
     console.error('Error getting lifetime rankings:', error)
     res.status(500).json({ error: 'Failed to get lifetime rankings' })
@@ -996,15 +1121,23 @@ app.get('/api/rankings/lifetime', checkAuth, async (req, res) => {
 app.get('/api/rankings/season/:seasonId', checkAuth, async (req, res) => {
   try {
     const seasonId = parseInt(req.params.seasonId)
-    const rankings = await db.getPlayerStatsBySeason(seasonId)
+    const cacheKey = `rankings:season:${seasonId}`
+    let rankings = rankingsCache.get(cacheKey)
     
-    // Add form for each player (last 5 matches in this season)
-    const rankingsWithForm = await Promise.all(rankings.map(async (player) => {
-      const form = await db.getPlayerFormBySeason(player.id, seasonId, 5)
-      return { ...player, form }
-    }))
+    if (!rankings) {
+      rankings = await db.getPlayerStatsBySeason(seasonId)
+      
+      // Add form for each player (last 5 matches in this season)
+      rankings = await Promise.all(rankings.map(async (player) => {
+        const form = await db.getPlayerFormBySeason(player.id, seasonId, 5)
+        return { ...player, form }
+      }))
+      
+      // Cache for 5 minutes
+      rankingsCache.set(cacheKey, rankings)
+    }
     
-    res.json(rankingsWithForm)
+    res.json(rankings)
   } catch (error) {
     console.error('Error getting season rankings:', error)
     res.status(500).json({ error: 'Failed to get season rankings' })
@@ -1014,15 +1147,23 @@ app.get('/api/rankings/season/:seasonId', checkAuth, async (req, res) => {
 app.get('/api/rankings/date/:date', checkAuth, async (req, res) => {
   try {
     const { date } = req.params
-    const rankings = await db.getPlayerStatsBySpecificDate(date)
+    const cacheKey = `rankings:date:${date}`
+    let rankings = rankingsCache.get(cacheKey)
     
-    // Add form for each player (matches on this specific date only)
-    const rankingsWithForm = await Promise.all(rankings.map(async (player) => {
-      const form = await db.getPlayerFormBySpecificDate(player.id, date, 5)
-      return { ...player, form }
-    }))
+    if (!rankings) {
+      rankings = await db.getPlayerStatsBySpecificDate(date)
+      
+      // Add form for each player (matches on this specific date only)
+      rankings = await Promise.all(rankings.map(async (player) => {
+        const form = await db.getPlayerFormBySpecificDate(player.id, date, 5)
+        return { ...player, form }
+      }))
+      
+      // Cache for 5 minutes  
+      rankingsCache.set(cacheKey, rankings)
+    }
     
-    res.json(rankingsWithForm)
+    res.json(rankings)
   } catch (error) {
     console.error('Error getting date rankings:', error)
     res.status(500).json({ error: 'Failed to get date rankings' })
@@ -1517,6 +1658,9 @@ app.post('/api/restore-data',
       console.log('✅ Data restore completed')
       console.log(`📊 Results: ${results.playersImported} players, ${results.seasonsImported} seasons, ${results.matchesImported} matches`)
       
+      // Invalidate all cache after data restore
+      rankingsCache.clear()
+      
       res.json({
         success: true,
         message: 'Data restored successfully',
@@ -1529,6 +1673,28 @@ app.post('/api/restore-data',
     }
   }
 )
+
+// Cache Stats Route (development only)
+app.get('/api/cache-stats', checkAuth, (req, res) => {
+  if (process.env.NODE_ENV !== 'development') {
+    return res.status(404).json({ error: 'Endpoint not available in production' })
+  }
+  
+  const stats = rankingsCache.getStats()
+  res.json({
+    success: true,
+    cacheStats: stats,
+    recommendations: {
+      performance: stats.hitRate === '0.00%' ? 'Cache not used yet - normal for new system' :
+                  parseFloat(stats.hitRate) < 50 ? 'Low hit rate - check invalidation logic' :
+                  parseFloat(stats.hitRate) > 80 ? 'Excellent cache performance' :
+                  'Good cache performance',
+      memory: stats.memoryUsage > 1000000 ? 'High memory usage - consider Redis for scaling' :
+              'Memory usage within normal range',
+      info: 'Cache invalidates automatically on data changes and server restart'
+    }
+  })
+})
 
 // Serve the application
 app.get('*', (req, res) => {

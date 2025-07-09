@@ -506,17 +506,71 @@ button:active {
   align-items: start;
 }
 
-.team-selection {
+.team-section {
   display: flex;
   flex-direction: column;
   gap: 1rem;
+  padding: 1.5rem;
+  background: #f8f9fa;
+  border-radius: 12px;
+  border: 2px solid #e9ecef;
+  transition: all 0.3s ease;
 }
 
-.team-selection h3 {
+.team-section:hover {
+  border-color: #667eea;
+  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.1);
+}
+
+.team-section h3 {
   text-align: center;
   color: #667eea;
   font-size: 1.2rem;
-  margin: 0 0 1rem 0;
+  margin: 0;
+  font-weight: 600;
+}
+
+.team-players {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.team-score {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 2px solid #e9ecef;
+}
+
+.team-score label {
+  font-weight: 600;
+  color: #495057;
+  text-align: center;
+}
+
+.team-score input {
+  padding: 0.75rem;
+  border: 2px solid #dee2e6;
+  border-radius: 8px;
+  font-size: 1.2rem;
+  text-align: center;
+  font-weight: bold;
+  transition: all 0.3s ease;
+}
+
+.team-score input:focus {
+  outline: none;
+  border-color: #667eea;
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+.team-section.winner .team-score input {
+  border-color: #28a745;
+  background-color: #d4edda;
+  color: #155724;
 }
 
 .vs {
@@ -532,6 +586,59 @@ button:active {
   height: 60px;
   align-self: center;
   margin-top: 2rem;
+  border: 2px solid #e9ecef;
+}
+
+.winner-section {
+  margin-top: 2rem;
+  padding: 1.5rem;
+  background: #f8f9fa;
+  border-radius: 12px;
+  border: 2px solid #e9ecef;
+}
+
+.auto-winner {
+  text-align: center;
+  padding: 1rem;
+  background: #e3f2fd;
+  border-radius: 8px;
+  margin-bottom: 1rem;
+}
+
+.auto-winner span {
+  font-weight: 500;
+  color: #1976d2;
+}
+
+.auto-winner.winner-determined {
+  background: #d4edda;
+}
+
+.auto-winner.winner-determined span {
+  color: #155724;
+}
+
+.manual-winner {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.small-btn {
+  padding: 0.5rem 1rem;
+  background: #6c757d;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+}
+
+.small-btn:hover {
+  background: #5a6268;
+  transform: translateY(-1px);
 }
 
 .score-section {

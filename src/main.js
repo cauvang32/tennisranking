@@ -17,6 +17,8 @@ class TennisRankingSystem {
     this.isAuthenticated = false
     this.user = null
     this.csrfToken = null // CSRF token for secure requests
+    this.currentWinningTeam = null
+    this.isManualWinnerMode = false
     this.init()
   }
 
@@ -42,9 +44,10 @@ class TennisRankingSystem {
       // Ensure rankings tab is properly activated
       this.switchTab('rankings')
       
-      // System is ready - no popup notification needed
+      // System is ready
+      this.updateFileStatus('✅ Hệ thống đã sẵn sàng', 'success')
     } catch (error) {
-      console.error('Error during initialization:', error)
+      console.error('Error initializing system:', error)
       this.updateFileStatus('❌ Lỗi khởi tạo hệ thống. Vui lòng tải lại trang.', 'error')
     }
   }
@@ -545,6 +548,22 @@ class TennisRankingSystem {
         })
       }
 
+      // Auto-winner detection for score inputs
+      const team1ScoreInput = document.getElementById('team1Score')
+      const team2ScoreInput = document.getElementById('team2Score')
+      if (team1ScoreInput && team2ScoreInput) {
+        team1ScoreInput.addEventListener('input', () => this.updateAutoWinner())
+        team2ScoreInput.addEventListener('input', () => this.updateAutoWinner())
+      }
+
+      // Manual winner toggle
+      const useManualWinnerBtn = document.getElementById('useManualWinner')
+      const useAutoWinnerBtn = document.getElementById('useAutoWinner')
+      if (useManualWinnerBtn && useAutoWinnerBtn) {
+        useManualWinnerBtn.addEventListener('click', () => this.toggleWinnerMode(true))
+        useAutoWinnerBtn.addEventListener('click', () => this.toggleWinnerMode(false))
+      }
+
 
     } catch (error) {
       console.error('Error setting up event listeners:', error)
@@ -760,7 +779,13 @@ class TennisRankingSystem {
       return
     }
 
-    if (winningTeam !== 1 && winningTeam !== 2) {
+    // Use auto-selected winner if available
+    let finalWinningTeam = winningTeam
+    if (!this.isManualWinnerMode && this.currentWinningTeam) {
+      finalWinningTeam = this.currentWinningTeam
+    }
+
+    if (finalWinningTeam !== 1 && finalWinningTeam !== 2) {
       this.updateFileStatus('❌ Vui lòng chọn đội thắng', 'error')
       return
     }
@@ -777,7 +802,7 @@ class TennisRankingSystem {
           player4Id,
           team1Score,
           team2Score,
-          winningTeam
+          winningTeam: finalWinningTeam
         })
       })
 
@@ -792,6 +817,10 @@ class TennisRankingSystem {
         document.getElementById('team1Score').value = ''
         document.getElementById('team2Score').value = ''
         document.getElementById('winningTeam').value = ''
+        
+        // Reset to auto winner mode
+        this.toggleWinnerMode(false)
+        this.setTodaysDate()
         
         // Update displays
         this.renderRankings()
@@ -1948,6 +1977,100 @@ class TennisRankingSystem {
         document.body.removeChild(modal)
       }
     })
+  }
+
+  // Auto-winner detection based on scores
+  updateAutoWinner() {
+    if (this.isManualWinnerMode) return // Don't auto-update if in manual mode
+
+    const team1ScoreInput = document.getElementById('team1Score')
+    const team2ScoreInput = document.getElementById('team2Score')
+    const winnerDisplay = document.getElementById('winnerDisplay')
+    const winningTeamSelect = document.getElementById('winningTeam')
+
+    if (!team1ScoreInput || !team2ScoreInput || !winnerDisplay) return
+
+    const team1Score = parseInt(team1ScoreInput.value) || 0
+    const team2Score = parseInt(team2ScoreInput.value) || 0
+
+    // Only auto-select winner if scores are different and at least one is > 0
+    if (team1Score !== team2Score && (team1Score > 0 || team2Score > 0)) {
+      const winningTeam = team1Score > team2Score ? 1 : 2
+      
+      // Update the hidden select value for form submission
+      if (winningTeamSelect) {
+        winningTeamSelect.value = winningTeam
+      }
+      
+      // Update the display text
+      winnerDisplay.textContent = `🏆 Đội ${winningTeam} thắng (${team1Score > team2Score ? team1Score + ' - ' + team2Score : team2Score + ' - ' + team1Score})`
+      winnerDisplay.style.color = '#28a745'
+      winnerDisplay.style.fontWeight = 'bold'
+      
+      // Store the current winning team
+      this.currentWinningTeam = winningTeam
+    } else if (team1Score === team2Score && team1Score > 0) {
+      // Handle tie case
+      winnerDisplay.textContent = `⚖️ Hòa (${team1Score} - ${team2Score}). Vui lòng chọn thủ công.`
+      winnerDisplay.style.color = '#ffc107'
+      winnerDisplay.style.fontWeight = 'bold'
+      if (winningTeamSelect) {
+        winningTeamSelect.value = ''
+      }
+      this.currentWinningTeam = null
+    } else {
+      // No scores or both are 0
+      winnerDisplay.textContent = 'Nhập điểm số để tự động xác định đội thắng'
+      winnerDisplay.style.color = '#6c757d'
+      winnerDisplay.style.fontWeight = 'normal'
+      if (winningTeamSelect) {
+        winningTeamSelect.value = ''
+      }
+      this.currentWinningTeam = null
+    }
+  }
+
+  // Show match modal for quick match entry
+  showMatchModal() {
+    // For now, just switch to the matches tab
+    this.switchTab('matches')
+    
+    // Scroll to the match form
+    const matchForm = document.querySelector('#matches-tab .match-form')
+    if (matchForm) {
+      matchForm.scrollIntoView({ behavior: 'smooth' })
+    }
+  }
+
+  // Toggle between auto and manual winner selection mode
+  toggleWinnerMode(isManual) {
+    this.isManualWinnerMode = isManual
+    
+    const autoWinnerDiv = document.querySelector('.auto-winner')
+    const manualWinnerDiv = document.querySelector('.manual-winner')
+    const useManualWinnerBtn = document.getElementById('useManualWinner')
+    const useAutoWinnerBtn = document.getElementById('useAutoWinner')
+    const winningTeamSelect = document.getElementById('winningTeam')
+
+    if (isManual) {
+      // Switch to manual mode
+      if (autoWinnerDiv) autoWinnerDiv.style.display = 'none'
+      if (manualWinnerDiv) manualWinnerDiv.style.display = 'flex'
+      if (useManualWinnerBtn) useManualWinnerBtn.style.display = 'none'
+      if (useAutoWinnerBtn) useAutoWinnerBtn.style.display = 'inline-block'
+    } else {
+      // Switch to auto mode
+      if (autoWinnerDiv) autoWinnerDiv.style.display = 'block'
+      if (manualWinnerDiv) manualWinnerDiv.style.display = 'none'
+      if (useManualWinnerBtn) useManualWinnerBtn.style.display = 'inline-block'
+      if (useAutoWinnerBtn) useAutoWinnerBtn.style.display = 'none'
+      
+      // Reset manual winner selection
+      if (winningTeamSelect) winningTeamSelect.value = ''
+      
+      // Update winner based on current scores
+      this.updateAutoWinner()
+    }
   }
 
   // ...existing code...

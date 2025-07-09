@@ -643,16 +643,31 @@ app.post('/api/auth/login',
             maxAge: 24 * 60 * 60 * 1000 // 24 hours
           })
           
-          res.json({
+          // Detect client type - API clients should include 'Accept: application/json' header
+          // and no 'Accept: text/html' (which browsers send)
+          const isAPIClient = !req.headers.accept?.includes('text/html') && 
+                             req.headers.accept?.includes('application/json')
+          
+          const response = {
             success: true,
             message: 'Login successful',
-            csrfToken, // Send CSRF token to client
+            csrfToken, // Always send CSRF token for form protection
             user: {
               username: user.username,
               email: user.email,
               role: user.role
             }
-          })
+          }
+          
+          // Only include JWT token for API clients (security best practice)
+          if (isAPIClient) {
+            response.token = token
+            response.authMethod = 'bearer_token'
+          } else {
+            response.authMethod = 'httponly_cookie'
+          }
+          
+          res.json(response)
         } else {
           res.status(401).json({ error: 'Invalid credentials' })
         }

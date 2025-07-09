@@ -198,7 +198,14 @@ const hashedAdminPassword = await bcrypt.hash(ADMIN_PASSWORD, 10)
 // Initialize database
 const db = new TennisDatabase()
 await db.init()
-console.log('✅ Database initialized successfully')
+
+// Periodic cache stats logging (every 30 minutes)
+setInterval(() => {
+  const stats = rankingsCache.getStats()
+  if (stats.totalOperations > 0) {
+    console.log(`📊 Cache Stats: ${stats.currentEntries} entries, ${stats.hitRate} hit rate, ${stats.hits + stats.misses} total operations`)
+  }
+}, 30 * 60 * 1000) // 30 minutes
 
 // Trust proxy (required for Cloudflare and other reverse proxies)
 app.set('trust proxy', true)
@@ -1097,8 +1104,10 @@ app.get('/api/rankings/lifetime', checkAuth, async (req, res) => {
   try {
     const cacheKey = 'rankings:lifetime'
     let rankings = rankingsCache.get(cacheKey)
+    let cacheHit = true
     
     if (!rankings) {
+      cacheHit = false
       rankings = await db.getPlayerStatsLifetime()
       
       // Add form for each player
@@ -1107,9 +1116,12 @@ app.get('/api/rankings/lifetime', checkAuth, async (req, res) => {
         return { ...player, form }
       }))
       
-      // Cache for 5 minutes
       rankingsCache.set(cacheKey, rankings)
     }
+    
+    // Add cache info to response headers
+    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('X-Cache-Key', cacheKey)
     
     res.json(rankings)
   } catch (error) {
@@ -1123,8 +1135,10 @@ app.get('/api/rankings/season/:seasonId', checkAuth, async (req, res) => {
     const seasonId = parseInt(req.params.seasonId)
     const cacheKey = `rankings:season:${seasonId}`
     let rankings = rankingsCache.get(cacheKey)
+    let cacheHit = true
     
     if (!rankings) {
+      cacheHit = false
       rankings = await db.getPlayerStatsBySeason(seasonId)
       
       // Add form for each player (last 5 matches in this season)
@@ -1133,9 +1147,12 @@ app.get('/api/rankings/season/:seasonId', checkAuth, async (req, res) => {
         return { ...player, form }
       }))
       
-      // Cache for 5 minutes
       rankingsCache.set(cacheKey, rankings)
     }
+    
+    // Add cache info to response headers
+    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('X-Cache-Key', cacheKey)
     
     res.json(rankings)
   } catch (error) {
@@ -1149,8 +1166,10 @@ app.get('/api/rankings/date/:date', checkAuth, async (req, res) => {
     const { date } = req.params
     const cacheKey = `rankings:date:${date}`
     let rankings = rankingsCache.get(cacheKey)
+    let cacheHit = true
     
     if (!rankings) {
+      cacheHit = false
       rankings = await db.getPlayerStatsBySpecificDate(date)
       
       // Add form for each player (matches on this specific date only)
@@ -1159,9 +1178,12 @@ app.get('/api/rankings/date/:date', checkAuth, async (req, res) => {
         return { ...player, form }
       }))
       
-      // Cache for 5 minutes  
       rankingsCache.set(cacheKey, rankings)
     }
+    
+    // Add cache info to response headers
+    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('X-Cache-Key', cacheKey)
     
     res.json(rankings)
   } catch (error) {
@@ -1693,6 +1715,29 @@ app.get('/api/cache-stats', checkAuth, (req, res) => {
               'Memory usage within normal range',
       info: 'Cache invalidates automatically on data changes and server restart'
     }
+  })
+})
+
+// System Health Route (admin only)
+app.get('/api/health', authenticateToken, (req, res) => {
+  const stats = rankingsCache.getStats()
+  const uptime = process.uptime()
+  
+  res.json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    uptime: {
+      seconds: Math.floor(uptime),
+      human: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`
+    },
+    cache: {
+      isActive: stats.currentEntries > 0,
+      entries: stats.currentEntries,
+      efficiency: stats.hitRate,
+      totalOperations: stats.hits + stats.misses
+    },
+    database: 'postgresql',
+    environment: process.env.NODE_ENV || 'development'
   })
 })
 

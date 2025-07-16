@@ -651,7 +651,7 @@ app.post('/api/auth/login',
           const response = {
             success: true,
             message: 'Login successful',
-            csrfToken, // Always send CSRF token for form protection
+            csrfToken: csrfToken, // Always send CSRF token for form protection
             user: {
               username: user.username,
               email: user.email,
@@ -1753,6 +1753,49 @@ app.get('/api/health', authenticateToken, (req, res) => {
     },
     database: 'postgresql',
     environment: process.env.NODE_ENV || 'development'
+  })
+})
+
+// System Performance Route (admin only - for monitoring concurrent load)
+app.get('/api/performance', authenticateToken, async (req, res) => {
+  const stats = rankingsCache.getStats()
+  const memUsage = process.memoryUsage()
+  
+  // Get database pool stats
+  let dbStats = { error: 'Database stats not available' }
+  try {
+    dbStats = {
+      totalConnections: db.pool.totalCount,
+      idleConnections: db.pool.idleCount,
+      waitingClients: db.pool.waitingCount
+    }
+  } catch (error) {
+    console.log('Could not get DB stats:', error.message)
+  }
+  
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    performance: {
+      memory: {
+        rss: `${Math.round(memUsage.rss / 1024 / 1024)}MB`,
+        heapUsed: `${Math.round(memUsage.heapUsed / 1024 / 1024)}MB`,
+        heapTotal: `${Math.round(memUsage.heapTotal / 1024 / 1024)}MB`,
+        external: `${Math.round(memUsage.external / 1024 / 1024)}MB`
+      },
+      database: dbStats,
+      cache: {
+        entries: stats.currentEntries,
+        hitRate: stats.hitRate,
+        operations: stats.hits + stats.misses
+      },
+      uptime: Math.floor(process.uptime()),
+      recommendations: {
+        memory: memUsage.heapUsed < 100 * 1024 * 1024 ? 'Good' : 'Consider monitoring',
+        database: dbStats.totalConnections > 15 ? 'High connection usage' : 'Normal',
+        cache: parseFloat(stats.hitRate) > 70 ? 'Excellent' : 'Consider optimization'
+      }
+    }
   })
 })
 

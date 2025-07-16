@@ -26,7 +26,7 @@ const PORT = process.env.PORT || 3001
 // Initialize CSRF protection
 const tokens = new csrf()
 
-// Simple in-memory cache for rankings
+// Enhanced in-memory cache for rankings with better hit rates
 class RankingsCache {
   constructor() {
     this.cache = new Map()
@@ -34,7 +34,8 @@ class RankingsCache {
       hits: 0,
       misses: 0,
       sets: 0,
-      invalidations: 0
+      invalidations: 0,
+      preloads: 0
     }
   }
 
@@ -42,7 +43,8 @@ class RankingsCache {
     this.cache.set(key, { 
       data, 
       createdAt: Date.now(),
-      accessCount: 0 
+      accessCount: 0,
+      lastAccessed: Date.now()
     })
     this.stats.sets++
     
@@ -56,11 +58,16 @@ class RankingsCache {
     const item = this.cache.get(key)
     if (!item) {
       this.stats.misses++
+      // Log misses to understand patterns
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`❌ Cache MISS: ${key}`)
+      }
       return null
     }
     
     // Update access stats
     item.accessCount++
+    item.lastAccessed = Date.now()
     this.stats.hits++
     
     if (process.env.NODE_ENV === 'development') {
@@ -68,6 +75,44 @@ class RankingsCache {
     }
     
     return item.data
+  }
+
+  // Preload commonly accessed data
+  async preloadCommonData(db) {
+    try {
+      // Preload lifetime rankings (most common request)
+      if (!this.cache.has('rankings:lifetime')) {
+        const rankings = await db.getPlayerStatsLifetime()
+        const enhancedRankings = await Promise.all(rankings.map(async (player) => {
+          const form = await db.getPlayerForm(player.id, 5)
+          return { ...player, form }
+        }))
+        this.set('rankings:lifetime', enhancedRankings)
+        this.stats.preloads++
+        
+        if (process.env.NODE_ENV === 'development') {
+          console.log('🚀 Cache PRELOAD: rankings:lifetime')
+        }
+      }
+
+      // Preload active season rankings
+      const activeSeason = await db.getActiveSeason()
+      if (activeSeason && !this.cache.has(`rankings:season:${activeSeason.id}`)) {
+        const seasonRankings = await db.getPlayerStatsBySeason(activeSeason.id)
+        const enhancedSeasonRankings = await Promise.all(seasonRankings.map(async (player) => {
+          const form = await db.getPlayerFormBySeason(player.id, activeSeason.id, 5)
+          return { ...player, form }
+        }))
+        this.set(`rankings:season:${activeSeason.id}`, enhancedSeasonRankings)
+        this.stats.preloads++
+        
+        if (process.env.NODE_ENV === 'development') {
+          console.log(`🚀 Cache PRELOAD: rankings:season:${activeSeason.id}`)
+        }
+      }
+    } catch (error) {
+      console.log('Cache preload error (non-critical):', error.message)
+    }
   }
 
   invalidate(pattern = null) {
@@ -198,6 +243,13 @@ const hashedAdminPassword = await bcrypt.hash(ADMIN_PASSWORD, 10)
 // Initialize database
 const db = new TennisDatabase()
 await db.init()
+
+// Preload common cache data for better hit rates
+setTimeout(async () => {
+  console.log('🚀 Preloading cache with common data...')
+  await rankingsCache.preloadCommonData(db)
+  console.log('✅ Cache preload completed')
+}, 2000) // Wait 2 seconds after startup
 
 // Periodic cache stats logging (every 30 minutes)
 setInterval(() => {
@@ -983,6 +1035,9 @@ app.post('/api/matches',
       // Invalidate rankings cache after adding match
       rankingsCache.invalidate('rankings')
       
+      // Preload common data for better hit rates
+      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      
       res.json({ success: true, id: matchId })
     } catch (error) {
       console.error('Error adding match:', error)
@@ -1054,6 +1109,9 @@ app.put('/api/matches/:id',
       // Invalidate rankings cache after updating match
       rankingsCache.invalidate('rankings')
       
+      // Preload common data for better hit rates
+      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      
       res.json({ success: true, message: 'Match updated successfully' })
     } catch (error) {
       console.error('Error updating match:', error)
@@ -1084,6 +1142,9 @@ app.delete('/api/matches/:id',
       
       // Invalidate rankings cache after deleting match
       rankingsCache.invalidate('rankings')
+      
+      // Preload common data for better hit rates
+      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
       
       res.json({ success: true, message: 'Match deleted successfully' })
     } catch (error) {
@@ -1756,8 +1817,12 @@ app.get('/api/health', authenticateToken, (req, res) => {
   })
 })
 
-// System Performance Route (admin only - for monitoring concurrent load)
+// System Performance Route (admin only - development only)
 app.get('/api/performance', authenticateToken, async (req, res) => {
+  if (process.env.NODE_ENV !== 'development') {
+    return res.status(404).json({ error: 'Endpoint not available in production' })
+  }
+  
   const stats = rankingsCache.getStats()
   const memUsage = process.memoryUsage()
   

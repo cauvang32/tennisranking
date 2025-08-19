@@ -10,23 +10,39 @@ const __dirname = dirname(__filename)
 
 class TennisDatabasePostgreSQL {
   constructor() {
-    this.pool = null
-    this.connectionConfig = {
+    this.config = {
       host: process.env.DB_HOST || 'localhost',
       port: parseInt(process.env.DB_PORT) || 5432,
-      database: process.env.DB_NAME || 'tennis_ranking',
-      user: process.env.DB_USER || 'tennis_user',
-      password: process.env.DB_PASSWORD || 'tennis_password',
-      max: 20, // maximum number of connections in the pool
-      idleTimeoutMillis: 30000, // how long a client is allowed to remain idle before being closed
-      connectionTimeoutMillis: 2000, // how long to wait when connecting a client
+      database: process.env.DB_NAME,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+      max: 20, // Maximum pool size
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 2000,
+    }
+    
+    // Validate required database configuration
+    if (!this.config.database) {
+      console.error('❌ DB_NAME environment variable is required')
+      process.exit(1)
+    }
+    
+    if (!this.config.user) {
+      console.error('❌ DB_USER environment variable is required')
+      process.exit(1)
+    }
+    
+    if (!this.config.password) {
+      console.error('❌ DB_PASSWORD environment variable is required')
+      process.exit(1)
     }
   }
 
   async init() {
     try {
       // Create connection pool
-      this.pool = new Pool(this.connectionConfig)
+      this.pool = new Pool(this.config)
 
       // Test connection
       const client = await this.pool.connect()

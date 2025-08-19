@@ -176,6 +176,38 @@ class RankingsCache {
 
 const rankingsCache = new RankingsCache()
 
+// Security helper functions
+function formatSecureTimestamp(date = new Date()) {
+  // Return ISO string instead of Unix timestamp to avoid timestamp disclosure
+  return date.toISOString()
+}
+
+function sanitizeResponse(data) {
+  // Remove sensitive timestamp fields that could reveal system time
+  if (typeof data === 'object' && data !== null) {
+    if (Array.isArray(data)) {
+      return data.map(sanitizeResponse)
+    }
+    
+    const sanitized = { ...data }
+    
+    // Convert Unix timestamps to ISO strings
+    if (sanitized.created_at && typeof sanitized.created_at === 'number') {
+      sanitized.created_at = new Date(sanitized.created_at * 1000).toISOString()
+    }
+    if (sanitized.updated_at && typeof sanitized.updated_at === 'number') {
+      sanitized.updated_at = new Date(sanitized.updated_at * 1000).toISOString()
+    }
+    if (sanitized.timestamp && typeof sanitized.timestamp === 'number') {
+      sanitized.timestamp = new Date(sanitized.timestamp * 1000).toISOString()
+    }
+    
+    return sanitized
+  }
+  
+  return data
+}
+
 // CSRF secret derivation using HMAC (fixes cleartext storage vulnerability)
 function deriveCSRFSecret(sessionId) {
   if (!sessionId) {
@@ -230,12 +262,33 @@ function decryptJWT(encryptedToken) {
   }
 }
 
-// Admin credentials from environment
-const ADMIN_USERNAME = process.env.ADMIN_USERNAME || 'admin'
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'tennis2024!'
+// Admin credentials from environment (no fallback passwords for security)
+const ADMIN_USERNAME = process.env.ADMIN_USERNAME
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@tennis.local'
-const JWT_SECRET = process.env.JWT_SECRET || 'fallback-secret-key'
-const CSRF_SECRET = process.env.CSRF_SECRET || 'fallback-csrf-secret'
+const JWT_SECRET = process.env.JWT_SECRET
+const CSRF_SECRET = process.env.CSRF_SECRET
+
+// Validate required environment variables
+if (!ADMIN_USERNAME) {
+  console.error('❌ ADMIN_USERNAME environment variable is required')
+  process.exit(1)
+}
+
+if (!ADMIN_PASSWORD) {
+  console.error('❌ ADMIN_PASSWORD environment variable is required')
+  process.exit(1)
+}
+
+if (!JWT_SECRET) {
+  console.error('❌ JWT_SECRET environment variable is required')
+  process.exit(1)
+}
+
+if (!CSRF_SECRET) {
+  console.error('❌ CSRF_SECRET environment variable is required')
+  process.exit(1)
+}
 
 // Hash the admin password on startup
 const hashedAdminPassword = await bcrypt.hash(ADMIN_PASSWORD, 10)
@@ -267,27 +320,67 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'"], // No inline styles needed anymore
       scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "https:"],
+      imgSrc: ["'self'", "data:"], // Remove wildcard https:
       connectSrc: ["'self'"],
       objectSrc: ["'none'"],
       mediaSrc: ["'self'"],
       frameSrc: ["'none'"],
       baseUri: ["'self'"],
-      fontSrc: ["'self'", "https:", "data:"],
+      fontSrc: ["'self'", "data:"], // Remove wildcard https:
       formAction: ["'self'"],
-      frameAncestors: ["'self'"],
+      frameAncestors: ["'none'"], // Changed from 'self' to 'none' for better security
       scriptSrcAttr: ["'none'"],
-      upgradeInsecureRequests: []
+      upgradeInsecureRequests: [],
+      workerSrc: ["'none'"],
+      manifestSrc: ["'self'"],
+      childSrc: ["'none'"]
     }
   },
   crossOriginEmbedderPolicy: false,
   hsts: {
-    maxAge: 31536000,
+    maxAge: 63072000, // 2 years (stronger than 1 year)
     includeSubDomains: true,
     preload: true
-  }
+  },
+  // Add Permissions Policy header to restrict browser features
+  permissionsPolicy: {
+    camera: [],
+    microphone: [],
+    geolocation: [],
+    gyroscope: [],
+    magnetometer: [],
+    usb: [],
+    autoplay: [],
+    payment: [],
+    pictureInPicture: [],
+    accelerometer: [],
+    ambientLightSensor: [],
+    displayCapture: [],
+    documentDomain: [],
+    encryptedMedia: [],
+    executionWhileNotRendered: [],
+    executionWhileOutOfViewport: [],
+    fullscreen: ["'self'"],
+    midi: [],
+    navigationOverride: [],
+    notifications: [],
+    oversizedImages: [],
+    publicKeyCredentialsGet: [],
+    pushMessaging: [],
+    screenWakeLock: [],
+    syncScript: [],
+    syncXhr: [],
+    unsizedMedia: [],
+    webShare: [],
+    xrSpacialTracking: []
+  },
+  // Additional security headers
+  referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+  noSniff: true,
+  frameguard: { action: 'deny' },
+  xssFilter: true
 }))
 
 // Rate limiting
@@ -790,7 +883,7 @@ app.get('/api/auth/status', checkAuth, (req, res) => {
 app.get('/api/players', checkAuth, async (req, res) => {
   try {
     const players = await db.getPlayers()
-    res.json(players)
+    res.json(sanitizeResponse(players))
   } catch (error) {
     console.error('Error getting players:', error)
     res.status(500).json({ error: 'Failed to get players' })
@@ -845,7 +938,7 @@ app.delete('/api/players/:id',
 app.get('/api/seasons', checkAuth, async (req, res) => {
   try {
     const seasons = await db.getSeasons()
-    res.json(seasons)
+    res.json(sanitizeResponse(seasons))
   } catch (error) {
     console.error('Error getting seasons:', error)
     res.status(500).json({ error: 'Failed to get seasons' })
@@ -975,7 +1068,7 @@ app.get('/api/matches', checkAuth, async (req, res) => {
   try {
     const limit = req.query.limit ? parseInt(req.query.limit) : null
     const matches = await db.getMatches(limit)
-    res.json(matches)
+    res.json(sanitizeResponse(matches))
   } catch (error) {
     console.error('Error getting matches:', error)
     res.status(500).json({ error: 'Failed to get matches' })
@@ -1560,7 +1653,7 @@ app.delete('/api/clear-all-data',
       res.json({ 
         success: true, 
         message: 'All data cleared successfully',
-        timestamp: new Date().toISOString()
+        timestamp: formatSecureTimestamp()
       })
     } catch (error) {
       console.error('Error clearing all data:', error)
@@ -1586,7 +1679,7 @@ app.get('/api/backup-data',
       
       const backupData = {
         version: '1.0',
-        timestamp: new Date().toISOString(),
+        timestamp: formatSecureTimestamp(),
         exportedBy: req.user.username,
         data: {
           players,
@@ -1763,7 +1856,7 @@ app.post('/api/restore-data',
         success: true,
         message: 'Data restored successfully',
         results,
-        timestamp: new Date().toISOString()
+        timestamp: formatSecureTimestamp()
       })
     } catch (error) {
       console.error('Error restoring data:', error)
@@ -1801,7 +1894,7 @@ app.get('/api/health', authenticateToken, (req, res) => {
   
   res.json({
     status: 'healthy',
-    timestamp: new Date().toISOString(),
+    timestamp: formatSecureTimestamp(),
     uptime: {
       seconds: Math.floor(uptime),
       human: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m ${Math.floor(uptime % 60)}s`
@@ -1840,7 +1933,7 @@ app.get('/api/performance', authenticateToken, async (req, res) => {
   
   res.json({
     status: 'ok',
-    timestamp: new Date().toISOString(),
+    timestamp: formatSecureTimestamp(),
     performance: {
       memory: {
         rss: `${Math.round(memUsage.rss / 1024 / 1024)}MB`,

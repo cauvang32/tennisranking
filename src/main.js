@@ -57,7 +57,7 @@ class TennisRankingSystem {
       // Hide any view mode sections that might be visible outside their proper containers
       const viewModeSections = document.querySelectorAll('.view-mode-section')
       viewModeSections.forEach(section => {
-        section.style.display = 'none'
+        section.classList.add('hidden')
       })
     } catch (error) {
       console.error('Error hiding view mode sections:', error)
@@ -153,21 +153,29 @@ class TennisRankingSystem {
     
     const editElements = document.querySelectorAll('.edit-only')
     editElements.forEach(element => {
-      element.style.display = this.isAuthenticated ? '' : 'none'
+      if (this.isAuthenticated) {
+        element.classList.remove('hidden')
+      } else {
+        element.classList.add('hidden')
+      }
     })
     
     const guestInfo = document.querySelector('.guest-info')
     if (guestInfo) {
-      guestInfo.style.display = this.isAuthenticated ? 'none' : 'block'
+      if (this.isAuthenticated) {
+        guestInfo.classList.add('hidden')
+      } else {
+        guestInfo.classList.remove('hidden')
+      }
     }
     
     // Hide/show auth-required tabs
     const authTabs = document.querySelectorAll('[data-tab="players"], [data-tab="matches"], [data-tab="seasons"]')
     authTabs.forEach(tab => {
       if (this.isAuthenticated) {
-        tab.style.display = ''
+        tab.classList.remove('hidden')
       } else {
-        tab.style.display = 'none'
+        tab.classList.add('hidden')
         if (tab.classList.contains('active')) {
           this.switchTab('rankings')
         }
@@ -584,7 +592,7 @@ class TennisRankingSystem {
       // Show view mode section only in rankings tab
       const viewModeSection = document.querySelector('#rankings-tab .view-mode-section')
       if (viewModeSection) {
-        viewModeSection.style.display = 'block'
+        viewModeSection.classList.remove('hidden')
       }
       
       // Setup view mode UI when switching to rankings
@@ -613,8 +621,24 @@ class TennisRankingSystem {
     document.getElementById(`viewMode${mode.charAt(0).toUpperCase() + mode.slice(1)}`).classList.add('active')
     
     // Show/hide relevant selectors
-    document.getElementById('dateSelectContainer').style.display = mode === 'daily' ? 'block' : 'none'
-    document.getElementById('seasonSelectContainer').style.display = mode === 'season' ? 'block' : 'none'
+    const dateContainer = document.getElementById('dateSelectContainer')
+    const seasonContainer = document.getElementById('seasonSelectContainer')
+    
+    if (dateContainer) {
+      if (mode === 'daily') {
+        dateContainer.classList.remove('hidden')
+      } else {
+        dateContainer.classList.add('hidden')
+      }
+    }
+    
+    if (seasonContainer) {
+      if (mode === 'season') {
+        seasonContainer.classList.remove('hidden')
+      } else {
+        seasonContainer.classList.add('hidden')
+      }
+    }
     
     // Set default selections if needed
     if (mode === 'daily' && !this.selectedDate && this.playDates.length > 0) {
@@ -649,11 +673,19 @@ class TennisRankingSystem {
       const seasonContainer = document.getElementById('seasonSelectContainer')
       
       if (dateContainer) {
-        dateContainer.style.display = this.currentViewMode === 'daily' ? 'block' : 'none'
+        if (this.currentViewMode === 'daily') {
+          dateContainer.classList.remove('hidden')
+        } else {
+          dateContainer.classList.add('hidden')
+        }
       }
       
       if (seasonContainer) {
-        seasonContainer.style.display = this.currentViewMode === 'season' ? 'block' : 'none'
+        if (this.currentViewMode === 'season') {
+          seasonContainer.classList.remove('hidden')
+        } else {
+          seasonContainer.classList.add('hidden')
+        }
       }
       
       // Update view mode display
@@ -951,8 +983,8 @@ class TennisRankingSystem {
     if (!form || form.length === 0) return ''
     
     return form.map(match => {
-      const color = match.result === 'win' ? '#4CAF50' : '#f44336'
-      return `<span class="form-dot" style="background-color: ${color};" title="${match.result === 'win' ? 'Thắng' : 'Thua'} - ${this.formatDate(match.play_date)}"></span>`
+      const cssClass = match.result === 'win' ? 'form-dot-win' : 'form-dot-loss'
+      return `<span class="form-dot ${cssClass}" title="${match.result === 'win' ? 'Thắng' : 'Thua'} - ${this.formatDate(match.play_date)}"></span>`
     }).join('')
   }
 
@@ -1367,7 +1399,7 @@ class TennisRankingSystem {
         const blob = await response.blob()
         const url = window.URL.createObjectURL(blob)
         const a = document.createElement('a')
-        a.style.display = 'none'
+        a.classList.add('hidden')
         a.href = url
         a.download = fileName
         document.body.appendChild(a)
@@ -1539,7 +1571,7 @@ class TennisRankingSystem {
         const blob = await response.blob()
         const url = window.URL.createObjectURL(blob)
         const a = document.createElement('a')
-        a.style.display = 'none'
+        a.classList.add('hidden')
         a.href = url
         
         // Get filename from response header or create default
@@ -1579,7 +1611,7 @@ class TennisRankingSystem {
     const input = document.createElement('input')
     input.type = 'file'
     input.accept = '.json'
-    input.style.display = 'none'
+    input.classList.add('hidden')
     
     input.onchange = async (event) => {
       const file = event.target.files[0]
@@ -2004,16 +2036,14 @@ class TennisRankingSystem {
       
       // Update the display text
       winnerDisplay.textContent = `🏆 Đội ${winningTeam} thắng (${team1Score > team2Score ? team1Score + ' - ' + team2Score : team2Score + ' - ' + team1Score})`
-      winnerDisplay.style.color = '#28a745'
-      winnerDisplay.style.fontWeight = 'bold'
+      winnerDisplay.className = 'winner-display-auto'
       
       // Store the current winning team
       this.currentWinningTeam = winningTeam
     } else if (team1Score === team2Score && team1Score > 0) {
       // Handle tie case
       winnerDisplay.textContent = `⚖️ Hòa (${team1Score} - ${team2Score}). Vui lòng chọn thủ công.`
-      winnerDisplay.style.color = '#ffc107'
-      winnerDisplay.style.fontWeight = 'bold'
+      winnerDisplay.className = 'winner-display-manual'
       if (winningTeamSelect) {
         winningTeamSelect.value = ''
       }
@@ -2021,8 +2051,7 @@ class TennisRankingSystem {
     } else {
       // No scores or both are 0
       winnerDisplay.textContent = 'Nhập điểm số để tự động xác định đội thắng'
-      winnerDisplay.style.color = '#6c757d'
-      winnerDisplay.style.fontWeight = 'normal'
+      winnerDisplay.className = 'winner-display-no-winner'
       if (winningTeamSelect) {
         winningTeamSelect.value = ''
       }
@@ -2054,16 +2083,25 @@ class TennisRankingSystem {
 
     if (isManual) {
       // Switch to manual mode
-      if (autoWinnerDiv) autoWinnerDiv.style.display = 'none'
-      if (manualWinnerDiv) manualWinnerDiv.style.display = 'flex'
-      if (useManualWinnerBtn) useManualWinnerBtn.style.display = 'none'
-      if (useAutoWinnerBtn) useAutoWinnerBtn.style.display = 'inline-block'
+      if (autoWinnerDiv) autoWinnerDiv.classList.add('hidden')
+      if (manualWinnerDiv) {
+        manualWinnerDiv.classList.remove('hidden')
+        manualWinnerDiv.classList.add('flex')
+      }
+      if (useManualWinnerBtn) useManualWinnerBtn.classList.add('hidden')
+      if (useAutoWinnerBtn) {
+        useAutoWinnerBtn.classList.remove('hidden')
+        useAutoWinnerBtn.classList.add('inline-block')
+      }
     } else {
       // Switch to auto mode
-      if (autoWinnerDiv) autoWinnerDiv.style.display = 'block'
-      if (manualWinnerDiv) manualWinnerDiv.style.display = 'none'
-      if (useManualWinnerBtn) useManualWinnerBtn.style.display = 'inline-block'
-      if (useAutoWinnerBtn) useAutoWinnerBtn.style.display = 'none'
+      if (autoWinnerDiv) autoWinnerDiv.classList.remove('hidden')
+      if (manualWinnerDiv) manualWinnerDiv.classList.add('hidden')
+      if (useManualWinnerBtn) {
+        useManualWinnerBtn.classList.remove('hidden')
+        useManualWinnerBtn.classList.add('inline-block')
+      }
+      if (useAutoWinnerBtn) useAutoWinnerBtn.classList.add('hidden')
       
       // Reset manual winner selection
       if (winningTeamSelect) winningTeamSelect.value = ''

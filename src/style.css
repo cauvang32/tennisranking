@@ -10,6 +10,39 @@
   display: none !important;
 }
 
+.visible {
+  display: block !important;
+}
+
+.inline-block {
+  display: inline-block !important;
+}
+
+/* Winner display states */
+.winner-display-determined {
+  color: #28a745 !important;
+  font-weight: bold !important;
+}
+
+.winner-display-tie {
+  color: #ffc107 !important;
+  font-weight: bold !important;
+}
+
+.winner-display-default {
+  color: #6c757d !important;
+  font-weight: normal !important;
+}
+
+/* Form indicator classes */
+.form-dot-win {
+  background-color: #4CAF50 !important;
+}
+
+.form-dot-loss {
+  background-color: #f44336 !important;
+}
+
 body {
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   line-height: 1.6;

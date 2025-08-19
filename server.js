@@ -26,23 +26,27 @@ const PORT = process.env.PORT || 3001
 // Initialize CSRF protection
 const tokens = new csrf()
 
-// Enhanced in-memory cache for rankings with better hit rates
+// Enhanced in-memory cache for rankings with better hit rates and TTL
 class RankingsCache {
   constructor() {
     this.cache = new Map()
+    this.defaultTTL = 5 * 60 * 1000 // 5 minutes default TTL
     this.stats = {
       hits: 0,
       misses: 0,
       sets: 0,
       invalidations: 0,
-      preloads: 0
+      preloads: 0,
+      expired: 0
     }
   }
 
-  set(key, data) {
+  set(key, data, ttl = this.defaultTTL) {
+    const expiresAt = Date.now() + ttl
     this.cache.set(key, { 
       data, 
       createdAt: Date.now(),
+      expiresAt,
       accessCount: 0,
       lastAccessed: Date.now()
     })
@@ -50,7 +54,7 @@ class RankingsCache {
     
     // Log cache activity in development
     if (process.env.NODE_ENV === 'development') {
-      console.log(`📦 Cache SET: ${key}`)
+      console.log(`📦 Cache SET: ${key} (TTL: ${ttl}ms)`)
     }
   }
 
@@ -65,13 +69,26 @@ class RankingsCache {
       return null
     }
     
+    // Check if item has expired
+    if (Date.now() > item.expiresAt) {
+      this.cache.delete(key)
+      this.stats.expired++
+      this.stats.misses++
+      
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`⏰ Cache EXPIRED: ${key}`)
+      }
+      return null
+    }
+    
     // Update access stats
     item.accessCount++
     item.lastAccessed = Date.now()
     this.stats.hits++
     
     if (process.env.NODE_ENV === 'development') {
-      console.log(`🎯 Cache HIT: ${key} (accessed ${item.accessCount} times)`)
+      const timeLeft = Math.round((item.expiresAt - Date.now()) / 1000)
+      console.log(`🎯 Cache HIT: ${key} (accessed ${item.accessCount} times, expires in ${timeLeft}s)`)
     }
     
     return item.data
@@ -80,39 +97,66 @@ class RankingsCache {
   // Preload commonly accessed data
   async preloadCommonData(db) {
     try {
-      // Preload lifetime rankings (most common request)
-      if (!this.cache.has('rankings:lifetime')) {
+      // Preload lifetime rankings (most common request) with longer TTL
+      if (!this.cache.has('rankings:lifetime') || this.isExpired('rankings:lifetime')) {
         const rankings = await db.getPlayerStatsLifetime()
         const enhancedRankings = await Promise.all(rankings.map(async (player) => {
           const form = await db.getPlayerForm(player.id, 5)
           return { ...player, form }
         }))
-        this.set('rankings:lifetime', enhancedRankings)
+        this.set('rankings:lifetime', enhancedRankings, 10 * 60 * 1000) // 10 minutes for lifetime data
         this.stats.preloads++
         
         if (process.env.NODE_ENV === 'development') {
-          console.log('🚀 Cache PRELOAD: rankings:lifetime')
+          console.log('🚀 Cache PRELOAD: rankings:lifetime (10min TTL)')
         }
       }
 
       // Preload active season rankings
       const activeSeason = await db.getActiveSeason()
-      if (activeSeason && !this.cache.has(`rankings:season:${activeSeason.id}`)) {
+      if (activeSeason && (!this.cache.has(`rankings:season:${activeSeason.id}`) || this.isExpired(`rankings:season:${activeSeason.id}`))) {
         const seasonRankings = await db.getPlayerStatsBySeason(activeSeason.id)
         const enhancedSeasonRankings = await Promise.all(seasonRankings.map(async (player) => {
           const form = await db.getPlayerFormBySeason(player.id, activeSeason.id, 5)
           return { ...player, form }
         }))
-        this.set(`rankings:season:${activeSeason.id}`, enhancedSeasonRankings)
+        this.set(`rankings:season:${activeSeason.id}`, enhancedSeasonRankings, 3 * 60 * 1000) // 3 minutes for season data
         this.stats.preloads++
         
         if (process.env.NODE_ENV === 'development') {
-          console.log(`🚀 Cache PRELOAD: rankings:season:${activeSeason.id}`)
+          console.log(`🚀 Cache PRELOAD: rankings:season:${activeSeason.id} (3min TTL)`)
         }
       }
     } catch (error) {
       console.log('Cache preload error (non-critical):', error.message)
     }
+  }
+
+  // Check if a cache entry has expired
+  isExpired(key) {
+    const item = this.cache.get(key)
+    if (!item) return true
+    return Date.now() > item.expiresAt
+  }
+
+  // Clean up expired entries manually
+  cleanupExpired() {
+    let cleanedCount = 0
+    for (const [key, item] of this.cache.entries()) {
+      if (Date.now() > item.expiresAt) {
+        this.cache.delete(key)
+        cleanedCount++
+      }
+    }
+    
+    if (cleanedCount > 0) {
+      this.stats.expired += cleanedCount
+      if (process.env.NODE_ENV === 'development') {
+        console.log(`🧹 Cache CLEANUP: ${cleanedCount} expired entries removed`)
+      }
+    }
+    
+    return cleanedCount
   }
 
   invalidate(pattern = null) {
@@ -155,10 +199,19 @@ class RankingsCache {
       ? (this.stats.hits / (this.stats.hits + this.stats.misses) * 100).toFixed(2)
       : 0
     
+    // Count expired entries
+    let expiredCount = 0
+    for (const [key, item] of this.cache.entries()) {
+      if (Date.now() > item.expiresAt) {
+        expiredCount++
+      }
+    }
+    
     return {
       ...this.stats,
       hitRate: `${hitRate}%`,
       currentEntries: this.cache.size,
+      expiredEntries: expiredCount,
       memoryUsage: JSON.stringify([...this.cache.entries()]).length
     }
   }
@@ -169,7 +222,9 @@ class RankingsCache {
       hits: 0,
       misses: 0,
       sets: 0,
-      invalidations: 0
+      invalidations: 0,
+      preloads: 0,
+      expired: 0
     }
   }
 }
@@ -304,13 +359,17 @@ setTimeout(async () => {
   console.log('✅ Cache preload completed')
 }, 2000) // Wait 2 seconds after startup
 
-// Periodic cache stats logging (every 30 minutes)
+// Periodic cache stats logging and cleanup (every 15 minutes)
 setInterval(() => {
+  // Clean up expired entries
+  const cleanedCount = rankingsCache.cleanupExpired()
+  
+  // Log stats
   const stats = rankingsCache.getStats()
-  if (stats.totalOperations > 0) {
-    console.log(`📊 Cache Stats: ${stats.currentEntries} entries, ${stats.hitRate} hit rate, ${stats.hits + stats.misses} total operations`)
+  if (stats.hits + stats.misses > 0) {
+    console.log(`📊 Cache Stats: ${stats.currentEntries} entries (${stats.expiredEntries} expired), ${stats.hitRate} hit rate, ${stats.hits + stats.misses} total operations, ${cleanedCount} cleaned`)
   }
-}, 30 * 60 * 1000) // 30 minutes
+}, 15 * 60 * 1000) // 15 minutes
 
 // Trust proxy (required for Cloudflare and other reverse proxies)
 app.set('trust proxy', true)
@@ -903,6 +962,13 @@ app.post('/api/players',
     try {
       const { name } = req.body
       const playerId = await db.addPlayer(name)
+      
+      // Invalidate all cache when players change
+      rankingsCache.clear()
+      
+      // Preload common data for better hit rates
+      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      
       res.json({ success: true, id: playerId, name })
     } catch (error) {
       if (error.message.includes('UNIQUE constraint failed')) {
@@ -926,6 +992,13 @@ app.delete('/api/players/:id',
     try {
       const playerId = parseInt(req.params.id)
       await db.removePlayer(playerId)
+      
+      // Invalidate all cache when players are removed
+      rankingsCache.clear()
+      
+      // Preload common data for better hit rates
+      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      
       res.json({ success: true, message: 'Player removed successfully' })
     } catch (error) {
       console.error('Error removing player:', error)
@@ -983,6 +1056,13 @@ app.post('/api/seasons',
       }
       
       const seasonId = await db.createSeason(name, startDate)
+      
+      // Invalidate all cache when seasons change
+      rankingsCache.clear()
+      
+      // Preload common data for better hit rates
+      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      
       res.json({ success: true, id: seasonId, name, startDate })
     } catch (error) {
       console.error('Error creating season:', error)
@@ -1005,6 +1085,13 @@ app.put('/api/seasons/:id',
       const seasonId = parseInt(req.params.id)
       const { name, startDate, endDate } = req.body
       await db.updateSeason(seasonId, name, startDate, endDate)
+      
+      // Invalidate all cache when seasons are updated
+      rankingsCache.clear()
+      
+      // Preload common data for better hit rates
+      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      
       res.json({ success: true, message: 'Season updated successfully' })
     } catch (error) {
       console.error('Error updating season:', error)
@@ -1025,6 +1112,13 @@ app.post('/api/seasons/:id/end',
       const seasonId = parseInt(req.params.id)
       const { endDate } = req.body
       await db.endSeason(seasonId, endDate)
+      
+      // Invalidate all cache when seasons are ended
+      rankingsCache.clear()
+      
+      // Preload common data for better hit rates
+      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      
       res.json({ success: true, message: 'Season ended successfully' })
     } catch (error) {
       console.error('Error ending season:', error)
@@ -1055,6 +1149,13 @@ app.delete('/api/seasons/:id',
       }
       
       await db.deleteSeason(seasonId)
+      
+      // Invalidate all cache when seasons are deleted
+      rankingsCache.clear()
+      
+      // Preload common data for better hit rates
+      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      
       res.json({ success: true, message: 'Season deleted successfully' })
     } catch (error) {
       console.error('Error deleting season:', error)
@@ -1125,8 +1226,8 @@ app.post('/api/matches',
       
       const matchId = await db.addMatch(seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam)
       
-      // Invalidate rankings cache after adding match
-      rankingsCache.invalidate('rankings')
+      // Invalidate all cache after adding match
+      rankingsCache.clear()
       
       // Preload common data for better hit rates
       setTimeout(() => rankingsCache.preloadCommonData(db), 100)
@@ -1199,8 +1300,8 @@ app.put('/api/matches/:id',
 
       await db.updateMatch(matchId, seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam)
       
-      // Invalidate rankings cache after updating match
-      rankingsCache.invalidate('rankings')
+      // Invalidate all cache after updating match
+      rankingsCache.clear()
       
       // Preload common data for better hit rates
       setTimeout(() => rankingsCache.preloadCommonData(db), 100)
@@ -1233,8 +1334,8 @@ app.delete('/api/matches/:id',
       
       await db.deleteMatch(matchId)
       
-      // Invalidate rankings cache after deleting match
-      rankingsCache.invalidate('rankings')
+      // Invalidate all cache after deleting match
+      rankingsCache.clear()
       
       // Preload common data for better hit rates
       setTimeout(() => rankingsCache.preloadCommonData(db), 100)
@@ -1285,7 +1386,8 @@ app.get('/api/rankings/lifetime', checkAuth, async (req, res) => {
         return { ...player, form }
       }))
       
-      rankingsCache.set(cacheKey, rankings)
+      // Lifetime data changes less frequently, use longer TTL
+      rankingsCache.set(cacheKey, rankings, 10 * 60 * 1000) // 10 minutes
     }
     
     // Add cache info to response headers
@@ -1316,7 +1418,8 @@ app.get('/api/rankings/season/:seasonId', checkAuth, async (req, res) => {
         return { ...player, form }
       }))
       
-      rankingsCache.set(cacheKey, rankings)
+      // Season data changes more frequently during active season, shorter TTL
+      rankingsCache.set(cacheKey, rankings, 3 * 60 * 1000) // 3 minutes
     }
     
     // Add cache info to response headers
@@ -1347,7 +1450,8 @@ app.get('/api/rankings/date/:date', checkAuth, async (req, res) => {
         return { ...player, form }
       }))
       
-      rankingsCache.set(cacheKey, rankings)
+      // Date-specific data is historical and rarely changes, longer TTL
+      rankingsCache.set(cacheKey, rankings, 15 * 60 * 1000) // 15 minutes
     }
     
     // Add cache info to response headers
@@ -1649,6 +1753,9 @@ app.delete('/api/clear-all-data',
       // Clear all data from database
       await db.clearAllData()
       
+      // Clear all cache after clearing database
+      rankingsCache.clear()
+      
       console.log('✅ All data cleared successfully')
       res.json({ 
         success: true, 
@@ -1851,6 +1958,9 @@ app.post('/api/restore-data',
       
       // Invalidate all cache after data restore
       rankingsCache.clear()
+      
+      // Preload common data for better hit rates
+      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
       
       res.json({
         success: true,

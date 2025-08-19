@@ -321,7 +321,7 @@ app.use(helmet({
     directives: {
       defaultSrc: ["'self'"],
       styleSrc: ["'self'"], // No inline styles needed anymore
-      scriptSrc: ["'self'"],
+  scriptSrc: ["'self'", "https://static.cloudflareinsights.com"],
       imgSrc: ["'self'", "data:"], // Remove wildcard https:
       connectSrc: ["'self'"],
       objectSrc: ["'none'"],

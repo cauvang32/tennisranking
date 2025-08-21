@@ -9,7 +9,15 @@
     "preview": "vite preview",
     "server": "node server.js",
     "start": "npm run build && npm run server",
-    "dev-full": "concurrently \"npm run dev\" \"npm run server\""
+    "dev-full": "concurrently \"npm run dev\" \"npm run server\"",
+    "build:subpath": "BASE_PATH=/tennis/ vite build",
+    "build:subdomain": "BASE_PATH=/ vite build",
+    "deploy:production": "NODE_ENV=production npm run build && npm run server",
+    "preview:subpath": "npm run build:subpath && vite preview",
+    "deploy:subpath": "BASE_PATH=/tennis/ NODE_ENV=production npm run build && NODE_ENV=production npm run server",
+    "deploy:subdomain": "BASE_PATH=/ NODE_ENV=production npm run build && NODE_ENV=production npm run server",
+    "test:cors": "curl -H \"Origin: https://mydomain.com\" -I http://localhost:3001/api/auth/status",
+    "health-check": "curl -I http://localhost:3001/health || echo 'Health check endpoint not available'"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",

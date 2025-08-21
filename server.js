@@ -372,7 +372,13 @@ setInterval(() => {
 }, 15 * 60 * 1000) // 15 minutes
 
 // Trust proxy (required for Cloudflare and other reverse proxies)
-app.set('trust proxy', true)
+// Proxy configuration for Nginx Proxy Manager
+if (process.env.TRUST_PROXY === 'true' || process.env.BEHIND_PROXY === 'true') {
+  app.set('trust proxy', true)
+  console.log('🔗 Trust proxy enabled for reverse proxy setup')
+} else {
+  app.set('trust proxy', false)
+}
 
 // Middleware
 app.use(helmet({
@@ -529,28 +535,58 @@ const conditionalRateLimit = (limiter) => {
 // CORS configuration with security
 const corsOptions = {
   origin: function (origin, callback) {
-    console.log('CORS Origin:', origin) // Debug logging
+    // Only log in development mode
+    if (process.env.NODE_ENV === 'development') {
+      console.log('CORS Origin:', origin)
+    }
     
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true)
     
-    // Get allowed origins from environment or use defaults
-    const allowedOrigins = process.env.ALLOWED_ORIGINS ? 
-      process.env.ALLOWED_ORIGINS.split(',') : 
-      [
+    // Build allowed origins dynamically from environment
+    const allowedOrigins = []
+    
+    // Add configured origins from environment
+    if (process.env.ALLOWED_ORIGINS) {
+      allowedOrigins.push(...process.env.ALLOWED_ORIGINS.split(','))
+    }
+    
+    // Add dynamic domain from PUBLIC_DOMAIN and BASE_PATH
+    if (process.env.PUBLIC_DOMAIN) {
+      const protocol = process.env.NODE_ENV === 'production' ? 'https' : 'http'
+      const basePath = process.env.BASE_PATH || '/'
+      const domain = `${protocol}://${process.env.PUBLIC_DOMAIN}`
+      allowedOrigins.push(domain)
+      
+      // Also add www version if it's a main domain
+      if (!process.env.PUBLIC_DOMAIN.includes('www.')) {
+        allowedOrigins.push(`${protocol}://www.${process.env.PUBLIC_DOMAIN}`)
+      }
+    }
+    
+    // Fallback for development
+    if (process.env.NODE_ENV === 'development') {
+      allowedOrigins.push(
         'http://localhost:3001',
         'http://127.0.0.1:3001',
-        'https://tennis.quocanh.shop'
-      ]
+        'http://localhost:5173', // Vite dev server
+        'http://127.0.0.1:5173'
+      )
+    }
     
-    // Allow local network IPs (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
+    // Allow local network IPs in development
     const localNetworkRegex = /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):\d+$/
     
-    if (allowedOrigins.includes(origin) || localNetworkRegex.test(origin)) {
-      console.log('CORS: Origin allowed:', origin)
+    if (allowedOrigins.includes(origin) || (process.env.NODE_ENV === 'development' && localNetworkRegex.test(origin))) {
+      if (process.env.NODE_ENV === 'development') {
+        console.log('CORS: Origin allowed:', origin)
+      }
       callback(null, true)
     } else {
-      console.log('CORS: Origin blocked:', origin)
+      if (process.env.NODE_ENV === 'development') {
+        console.log('CORS: Origin blocked:', origin)
+        console.log('Allowed origins:', allowedOrigins)
+      }
       callback(new Error('Not allowed by CORS'))
     }
   },
@@ -599,14 +635,26 @@ app.use(express.json({
     }
   }
 }))
-app.use(express.static('dist', {
-  setHeaders: (res, path) => {
-    // Security headers for static files
-    res.setHeader('X-Content-Type-Options', 'nosniff')
-    res.setHeader('X-Frame-Options', 'DENY')
-    res.setHeader('X-XSS-Protection', '1; mode=block')
-  }
-}))
+
+// Subpath configuration
+const SUBPATH = process.env.SUBPATH || '/tennis'
+const isDevelopment = process.env.NODE_ENV === 'development'
+
+// Serve static files with subpath support
+if (isDevelopment) {
+  // In development, Vite handles static files
+  console.log('🚧 Development mode: Static files handled by Vite')
+} else {
+  // In production, serve static files from dist directory
+  app.use(SUBPATH, express.static('dist', {
+    setHeaders: (res, path) => {
+      // Security headers for static files
+      res.setHeader('X-Content-Type-Options', 'nosniff')
+      res.setHeader('X-Frame-Options', 'DENY')
+      res.setHeader('X-XSS-Protection', '1; mode=block')
+    }
+  }))
+}
 
 // Global CSRF protection middleware (after body parsing)
 const globalCSRFProtection = (req, res, next) => {
@@ -2067,10 +2115,56 @@ app.get('/api/performance', authenticateToken, async (req, res) => {
   })
 })
 
-// Serve the application
-app.get('*', (req, res) => {
-  res.sendFile(join(__dirname, 'dist', 'index.html'))
+// Serve the application with subpath support
+if (isDevelopment) {
+  // In development, just serve a redirect or simple message
+  app.get(SUBPATH, (req, res) => {
+    res.send(`
+      <html>
+        <head><title>Tennis Ranking - Development</title></head>
+        <body>
+          <h2>Tennis Ranking System</h2>
+          <p>Development mode: Please use <a href="http://localhost:5173${SUBPATH}">http://localhost:5173${SUBPATH}</a></p>
+        </body>
+      </html>
+    `)
+  })
+} else {
+  // In production, serve the built application
+  app.get(SUBPATH, (req, res) => {
+    res.sendFile(join(__dirname, 'dist', 'index.html'))
+  })
+  
+  // Catch all routes within the subpath
+  app.get(`${SUBPATH}/*`, (req, res) => {
+    res.sendFile(join(__dirname, 'dist', 'index.html'))
+  })
+}
+
+// Redirect root to subpath (optional)
+app.get('/', (req, res) => {
+  res.redirect(SUBPATH)
 })
+
+// Health check endpoint for monitoring
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    version: process.env.npm_package_version || '1.0.0',
+    environment: process.env.NODE_ENV || 'development',
+    domain: process.env.PUBLIC_DOMAIN || 'localhost',
+    basePath: process.env.BASE_PATH || '/',
+    uptime: process.uptime()
+  })
+})
+
+// Fallback for any other routes (in production)
+if (!isDevelopment) {
+  app.get('*', (req, res) => {
+    res.status(404).json({ error: 'Not found' })
+  })
+}
 
 app.listen(PORT, () => {
   console.log(`🎾 Tennis Ranking System Server running on http://localhost:${PORT}`)

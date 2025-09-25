@@ -466,6 +466,12 @@ app.use(helmet({
 
 // Enhanced rate limiting with comprehensive IP detection
 const createProxyAwareRateLimiter = (options) => {
+  // Check if rate limiting is disabled
+  if (process.env.DISABLE_RATE_LIMITING === 'true') {
+    console.log('🚫 Rate limiting is disabled via environment variable');
+    return (req, res, next) => next();
+  }
+
   return rateLimit({
     ...options,
     standardHeaders: 'draft-8', // Use the latest IETF draft standard
@@ -500,7 +506,7 @@ const createProxyAwareRateLimiter = (options) => {
       // Log the rate limit violation
       logError(new Error(`Rate limit exceeded: ${req.method} ${req.path}`), req, req.user);
       
-      // Send the default rate limit response
+      // Send the default rate limit response in English
       res.status(options.statusCode || 429).json(
         options.message || { error: 'Too many requests from this IP, please try again later.' }
       );
@@ -508,53 +514,63 @@ const createProxyAwareRateLimiter = (options) => {
   });
 };
 
-// Rate limiting configurations
+// Rate limiting configurations with environment variable debugging
+const rateLimitWindowMs = parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000;
+const rateLimitMaxRequests = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 1000;
+const rateLimitApiMax = parseInt(process.env.RATE_LIMIT_API_MAX) || 100;
+
+console.log(`🔧 Rate Limiting Configuration:`);
+console.log(`   Window: ${rateLimitWindowMs}ms (${rateLimitWindowMs / 60000} minutes)`);
+console.log(`   General Limit: ${rateLimitMaxRequests} requests`);
+console.log(`   API Limit: ${rateLimitApiMax} requests`);
+console.log(`   Disabled: ${process.env.DISABLE_RATE_LIMITING === 'true'}`);
+
 const generalLimiter = createProxyAwareRateLimiter({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
-  limit: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 1000, // Limit each IP to 1000 requests per windowMs
+  windowMs: rateLimitWindowMs,
+  limit: rateLimitMaxRequests,
   message: { error: 'Too many requests from this IP, please try again later.' }
 });
 
 const apiLimiter = createProxyAwareRateLimiter({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  limit: parseInt(process.env.RATE_LIMIT_API_MAX) || 100, // Limit each IP to 100 API requests per windowMs
+  windowMs: rateLimitWindowMs, // Use same window as general limiter
+  limit: rateLimitApiMax,
   message: { error: 'Too many API requests from this IP, please try again later.' }
 });
 
 const authLimiter = createProxyAwareRateLimiter({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  limit: 5, // Limit each IP to 5 login attempts per windowMs
-  message: { error: 'Too many login attempts from this IP, please try again after 15 minutes.' }
+  windowMs: rateLimitWindowMs, // Use same window as general limiter
+  limit: 5, // Keep strict limit for auth attempts
+  message: { error: 'Too many login attempts from this IP, please try again later.' }
 });
 
 // Additional specialized rate limiters for enhanced security
 const deleteLimiter = createProxyAwareRateLimiter({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  limit: 5, // Limit each IP to 5 delete operations per windowMs
+  windowMs: rateLimitWindowMs, // Use same window as general limiter
+  limit: 50, // More lenient for delete operations
   message: { error: 'Too many delete requests from this IP, please try again later.' }
 });
 
 const createLimiter = createProxyAwareRateLimiter({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  limit: 20, // Limit each IP to 20 create operations per windowMs
+  windowMs: rateLimitWindowMs, // Use same window as general limiter
+  limit: 200, // More lenient for create operations
   message: { error: 'Too many create requests from this IP, please try again later.' }
 });
 
 const exportLimiter = createProxyAwareRateLimiter({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  limit: 15, // Limit each IP to 15 export operations per windowMs
+  windowMs: rateLimitWindowMs, // Use same window as general limiter
+  limit: 150, // More lenient for export operations
   message: { error: 'Too many export requests from this IP, please try again later.' }
 });
 
 const criticalLimiter = createProxyAwareRateLimiter({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  limit: 1, // Limit each IP to 1 critical operation per hour
+  windowMs: 60 * 60 * 1000, // 1 hour for critical operations
+  limit: 10, // More lenient for critical operations
   message: { error: 'Critical operation limit exceeded. Please wait 1 hour before trying again.' }
 });
 
 const restoreLimiter = createProxyAwareRateLimiter({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  limit: 5, // Limit each IP to 5 restore operations per hour
+  windowMs: 60 * 60 * 1000, // 1 hour for restore operations
+  limit: 50, // More lenient for restore operations
   message: { error: 'Too many restore requests from this IP, please try again later.' }
 });
 

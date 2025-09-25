@@ -151,9 +151,32 @@ class TennisRankingSystem {
   updateUIForAuthStatus() {
     this.updateAuthHeader()
     
+    const userRole = this.user?.role || null
+    
+    // Handle general edit elements (for any authenticated user)
     const editElements = document.querySelectorAll('.edit-only')
     editElements.forEach(element => {
       if (this.isAuthenticated) {
+        element.classList.remove('hidden')
+      } else {
+        element.classList.add('hidden')
+      }
+    })
+    
+    // Handle admin-only elements
+    const adminElements = document.querySelectorAll('.admin-only')
+    adminElements.forEach(element => {
+      if (userRole === 'admin') {
+        element.classList.remove('hidden')
+      } else {
+        element.classList.add('hidden')
+      }
+    })
+    
+    // Handle editor elements (admin or editor)
+    const editorElements = document.querySelectorAll('.editor-only')
+    editorElements.forEach(element => {
+      if (userRole === 'admin' || userRole === 'editor') {
         element.classList.remove('hidden')
       } else {
         element.classList.add('hidden')
@@ -169,21 +192,38 @@ class TennisRankingSystem {
       }
     }
     
-    // Hide/show auth-required tabs
-    const authTabs = document.querySelectorAll('[data-tab="players"], [data-tab="matches"], [data-tab="seasons"]')
-    authTabs.forEach(tab => {
-      if (this.isAuthenticated) {
-        tab.classList.remove('hidden')
-      } else {
-        tab.classList.add('hidden')
-        if (tab.classList.contains('active')) {
-          this.switchTab('rankings')
+    // Show/hide tabs based on role
+    const playerTab = document.querySelector('[data-tab="players"]')
+    const matchTab = document.querySelector('[data-tab="matches"]')
+    const seasonTab = document.querySelector('[data-tab="seasons"]')
+    
+    // Admin gets access to all tabs
+    if (userRole === 'admin') {
+      [playerTab, matchTab, seasonTab].forEach(tab => {
+        if (tab) tab.classList.remove('hidden')
+      })
+    }
+    // Editor gets limited access - only matches for editing
+    else if (userRole === 'editor') {
+      if (playerTab) playerTab.classList.add('hidden')
+      if (matchTab) matchTab.classList.remove('hidden')
+      if (seasonTab) seasonTab.classList.add('hidden')
+    }
+    // Guests see no editing tabs
+    else {
+      [playerTab, matchTab, seasonTab].forEach(tab => {
+        if (tab) {
+          tab.classList.add('hidden')
+          if (tab.classList.contains('active')) {
+            this.switchTab('rankings')
+          }
         }
-      }
-    })
+      })
+    }
     
     this.renderPlayers()
     this.renderSeasons()
+    this.renderMatchHistory()
   }
 
   // Helper method to get CSRF token
@@ -244,9 +284,13 @@ class TennisRankingSystem {
     }
     
     if (this.isAuthenticated) {
+      const roleLabel = this.user.role === 'admin' ? '👑 Quản trị viên' : '✏️ Biên tập viên'
+      const roleClass = this.user.role === 'admin' ? 'admin-role' : 'editor-role'
+      
       authDiv.innerHTML = `
         <div class="user-info">
-          <span>👤 ${this.user.username}</span>
+          <span class="user-name">👤 ${this.user.username}</span>
+          <span class="user-role ${roleClass}">${roleLabel}</span>
           <button id="logoutBtn" class="logout-btn">Đăng xuất</button>
         </div>
       `
@@ -877,11 +921,13 @@ class TennisRankingSystem {
         return
       }
 
+      const userRole = this.user?.role
+      
       container.innerHTML = this.players.map(player => `
         <div class="player-card">
           <span class="player-name">${player.name}</span>
-          ${this.isAuthenticated ? `
-            <button class="delete-btn edit-only" data-player-id="${player.id}">❌</button>
+          ${userRole === 'admin' ? `
+            <button class="delete-btn" data-player-id="${player.id}">❌</button>
           ` : ''}
         </div>
       `).join('')
@@ -898,6 +944,8 @@ class TennisRankingSystem {
         return
       }
 
+      const userRole = this.user?.role
+
       container.innerHTML = this.seasons.map(season => `
         <div class="season-card ${season.is_active ? 'active' : ''}">
           <div class="season-info">
@@ -905,8 +953,8 @@ class TennisRankingSystem {
             <p>📅 Từ: ${this.formatDate(season.start_date)}</p>
             ${season.end_date ? `<p>📅 Đến: ${this.formatDate(season.end_date)}</p>` : ''}
           </div>
-          ${this.isAuthenticated ? `
-            <div class="season-actions edit-only">
+          ${userRole === 'admin' ? `
+            <div class="season-actions">
               ${season.is_active ? `
                 <button data-action="end-season" data-id="${season.id}" class="end-season-btn">Kết thúc</button>
               ` : ''}
@@ -918,7 +966,7 @@ class TennisRankingSystem {
       `).join('')
 
       // Add event listeners for season actions
-      if (this.isAuthenticated) {
+      if (userRole === 'admin') {
         container.querySelectorAll('[data-action]').forEach(button => {
           button.addEventListener('click', (e) => {
             const action = e.target.dataset.action
@@ -1014,12 +1062,23 @@ class TennisRankingSystem {
       const team2Players = `${match.player3_name} & ${match.player4_name}`
       const winnerClass = match.winning_team === 1 ? 'team1-win' : 'team2-win'
       
-      const editDeleteButtons = this.isAuthenticated ? `
-        <div class="match-actions edit-only">
-          <button data-action="edit-match" data-id="${match.id}" class="edit-btn" title="Sửa trận đấu">✏️</button>
-          <button data-action="delete-match" data-id="${match.id}" class="delete-btn" title="Xóa trận đấu">🗑️</button>
-        </div>
-      ` : ''
+      const userRole = this.user?.role
+      let editDeleteButtons = ''
+      
+      if (userRole === 'admin') {
+        editDeleteButtons = `
+          <div class="match-actions">
+            <button data-action="edit-match" data-id="${match.id}" class="edit-btn" title="Sửa trận đấu">✏️</button>
+            <button data-action="delete-match" data-id="${match.id}" class="delete-btn" title="Xóa trận đấu">🗑️</button>
+          </div>
+        `
+      } else if (userRole === 'editor') {
+        editDeleteButtons = `
+          <div class="match-actions">
+            <button data-action="edit-match" data-id="${match.id}" class="edit-btn" title="Sửa trận đấu">✏️</button>
+          </div>
+        `
+      }
       
       return `
         <div class="match-card ${winnerClass}">

@@ -18,6 +18,13 @@
   display: inline-block !important;
 }
 
+/* Authentication classes */
+.edit-only.hidden,
+.admin-only.hidden,
+.editor-only.hidden {
+  display: none !important;
+}
+
 /* Winner display states */
 .winner-display-determined {
   color: #28a745 !important;
@@ -104,6 +111,31 @@ header p {
   padding: 0.5rem 1rem;
   border-radius: 25px;
   color: white;
+}
+
+.user-name {
+  font-weight: 500;
+}
+
+.user-role {
+  background: rgba(255, 255, 255, 0.3);
+  padding: 0.3rem 0.8rem;
+  border-radius: 15px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+}
+
+.user-role.admin-role {
+  background: rgba(255, 215, 0, 0.3);
+  border-color: rgba(255, 215, 0, 0.5);
+  color: #ffd700;
+}
+
+.user-role.editor-role {
+  background: rgba(0, 123, 255, 0.3);
+  border-color: rgba(0, 123, 255, 0.5);
+  color: #007bff;
 }
 
 .login-section {

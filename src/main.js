@@ -1170,17 +1170,11 @@ class TennisRankingSystem {
       const userRole = this.user?.role
       let editDeleteButtons = ''
       
-      if (userRole === 'admin') {
+      if (userRole === 'admin' || userRole === 'editor') {
         editDeleteButtons = `
           <div class="match-actions">
             <button data-action="edit-match" data-id="${match.id}" class="edit-btn" title="Sửa trận đấu">✏️</button>
             <button data-action="delete-match" data-id="${match.id}" class="delete-btn" title="Xóa trận đấu">🗑️</button>
-          </div>
-        `
-      } else if (userRole === 'editor') {
-        editDeleteButtons = `
-          <div class="match-actions">
-            <button data-action="edit-match" data-id="${match.id}" class="edit-btn" title="Sửa trận đấu">✏️</button>
           </div>
         `
       }

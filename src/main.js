@@ -13,13 +13,69 @@ class TennisRankingSystem {
     this.selectedSeason = null
     this.autoSaveEnabled = true
     this.serverMode = true
-    this.apiBase = window.location.origin + '/api'
+    this.apiBase = this.getApiBaseUrl()
     this.isAuthenticated = false
     this.user = null
     this.csrfToken = null // CSRF token for secure requests
     this.currentWinningTeam = null
     this.isManualWinnerMode = false
     this.init()
+  }
+
+  // Auto-detect API base URL for subpath deployments
+  getApiBaseUrl() {
+    const currentPath = window.location.pathname
+    const currentOrigin = window.location.origin
+    const currentHost = window.location.host
+    
+    console.log('🔍 Detecting API base URL...')
+    console.log('📍 Current path:', currentPath)
+    console.log('🌐 Current origin:', currentOrigin)
+    console.log('🏠 Current host:', currentHost)
+    
+    // Special case: if we're on hungsanity.com or similar production domains
+    // and the path starts with /tennis, use tennis subpath
+    if (currentPath.startsWith('/tennis')) {
+      const apiBase = `${currentOrigin}/tennis/api`
+      console.log('✅ Tennis subpath deployment detected')
+      console.log('🔗 API Base URL:', apiBase)
+      return apiBase
+    }
+    
+    // Check if we're on a production domain (not localhost)
+    const isProduction = !currentHost.includes('localhost') && !currentHost.includes('127.0.0.1')
+    
+    if (isProduction) {
+      // For production domains, check if we need to use a subpath
+      const pathSegments = currentPath.split('/').filter(segment => segment && segment !== 'index.html')
+      
+      if (pathSegments.length > 0) {
+        const potentialSubpath = pathSegments[0]
+        const commonSubpaths = ['tennis', 'app', 'ranking', 'admin', 'dashboard']
+        
+        if (commonSubpaths.includes(potentialSubpath)) {
+          const apiBase = `${currentOrigin}/${potentialSubpath}/api`
+          console.log('✅ Production subpath detected:', potentialSubpath)
+          console.log('🔗 API Base URL:', apiBase)
+          return apiBase
+        }
+      }
+      
+      // Production domain but no clear subpath - try tennis as default
+      // This handles cases where the app is served from /tennis/ but accessed directly
+      const testApiBase = `${currentOrigin}/tennis/api`
+      console.log('✅ Production domain - trying tennis subpath as default')
+      console.log('🔗 API Base URL (will test):', testApiBase)
+      
+      // We'll test this URL and fall back to root if it doesn't work
+      return testApiBase
+    }
+    
+    // Development or localhost - use root API
+    const apiBase = `${currentOrigin}/api`
+    console.log('✅ Development/localhost detected - using root API')
+    console.log('🔗 API Base URL:', apiBase)
+    return apiBase
   }
 
   async init() {
@@ -66,10 +122,59 @@ class TennisRankingSystem {
 
   async detectServerMode() {
     try {
-      const response = await fetch(`${this.apiBase}/players`)
-      this.serverMode = response.ok
+      const response = await fetch(`${this.apiBase}/players`, {
+        credentials: 'include',
+        headers: {
+          'Accept': 'application/json'
+        }
+      })
+      
+      if (response.ok) {
+        this.serverMode = true
+        console.log('✅ Server mode detected - using server database')
+        console.log('✅ API base URL confirmed:', this.apiBase)
+        return
+      } else {
+        throw new Error(`Server responded with ${response.status}`)
+      }
     } catch (error) {
+      console.log('⚠️ Primary API URL failed:', this.apiBase)
+      console.log('🔄 Trying fallback API URL...')
+      
+      // Try fallback URL - if we tried subpath, try root, and vice versa
+      let fallbackApiBase
+      const currentOrigin = window.location.origin
+      
+      if (this.apiBase.includes('/tennis/api')) {
+        // We tried tennis subpath, try root
+        fallbackApiBase = `${currentOrigin}/api`
+      } else {
+        // We tried root, try tennis subpath
+        fallbackApiBase = `${currentOrigin}/tennis/api`
+      }
+      
+      try {
+        console.log('🔄 Testing fallback:', fallbackApiBase)
+        const fallbackResponse = await fetch(`${fallbackApiBase}/players`, {
+          credentials: 'include',
+          headers: {
+            'Accept': 'application/json'
+          }
+        })
+        
+        if (fallbackResponse.ok) {
+          this.apiBase = fallbackApiBase
+          this.serverMode = true
+          console.log('✅ Fallback API URL works - updated API base:', this.apiBase)
+          return
+        }
+      } catch (fallbackError) {
+        console.log('❌ Fallback API URL also failed')
+      }
+      
+      console.log('⚠️ No server available, falling back to local storage mode')
       this.serverMode = false
+      this.apiBase = null
     }
   }
 

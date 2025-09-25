@@ -714,9 +714,13 @@ app.use(express.json({
   }
 }))
 
-// Subpath configuration
-const SUBPATH = process.env.SUBPATH || '/tennis'
+// Subpath configuration - support both SUBPATH and BASE_PATH env vars
+// Use root path for development, tennis subpath for production by default
+const SUBPATH = process.env.SUBPATH || process.env.BASE_PATH || (process.env.NODE_ENV === 'production' ? '/tennis' : '/')
 const isDevelopment = process.env.NODE_ENV === 'development'
+
+console.log('🎯 Server subpath configuration:', SUBPATH)
+console.log('🔧 Environment:', process.env.NODE_ENV)
 
 // Serve static files with subpath support
 if (isDevelopment) {
@@ -732,6 +736,24 @@ if (isDevelopment) {
       res.setHeader('X-XSS-Protection', '1; mode=block')
     }
   }))
+  console.log(`📁 Static files served from: ${SUBPATH}`)
+}
+
+// Add API routing for both subpath and direct access compatibility
+if (SUBPATH !== '/' && !isDevelopment) {
+  // Log subpath API requests
+  app.use(`${SUBPATH}/api`, (req, res, next) => {
+    console.log(`🔗 Subpath API: ${req.method} ${SUBPATH}/api${req.path}`)
+    next()
+  })
+  
+  // Log direct API requests (for backward compatibility)
+  app.use('/api', (req, res, next) => {
+    console.log(`🔗 Direct API: ${req.method} /api${req.path}`)
+    next()
+  })
+  
+  console.log(`🔀 API routes configured for both ${SUBPATH}/api and /api`)
 }
 
 // Global CSRF protection middleware (after body parsing)
@@ -2481,6 +2503,59 @@ app.get('/api/admin/security-dashboard',
     }
   }
 )
+
+// API Configuration Diagnostic Endpoint (helps debug subpath issues)
+app.get('/api/debug/config', checkAuth, (req, res) => {
+  const currentIP = getRealClientIP(req)
+  
+  res.json({
+    success: true,
+    serverConfig: {
+      subpath: SUBPATH,
+      isDevelopment: isDevelopment,
+      nodeEnv: process.env.NODE_ENV,
+      publicDomain: process.env.PUBLIC_DOMAIN,
+      trustProxy: app.get('trust proxy') !== false,
+      behindProxy: process.env.BEHIND_PROXY === 'true'
+    },
+    requestInfo: {
+      method: req.method,
+      url: req.url,
+      originalUrl: req.originalUrl,
+      path: req.path,
+      baseUrl: req.baseUrl,
+      protocol: req.protocol,
+      secure: req.secure,
+      clientIP: currentIP,
+      userAgent: req.get('User-Agent')
+    },
+    proxyHeaders: {
+      host: req.get('Host'),
+      xForwardedHost: req.get('X-Forwarded-Host'),
+      xForwardedProto: req.get('X-Forwarded-Proto'),
+      xForwardedFor: req.get('X-Forwarded-For'),
+      xRealIP: req.get('X-Real-IP'),
+      cfConnectingIP: req.get('CF-Connecting-IP')
+    },
+    apiRouting: {
+      subpathAPI: `${SUBPATH}/api`,
+      directAPI: '/api',
+      recommendedFrontendAPIBase: req.get('Host') ? 
+        `${req.protocol}://${req.get('Host')}${SUBPATH}/api` : 
+        `${req.protocol}://${req.get('X-Forwarded-Host') || 'localhost'}${SUBPATH}/api`
+    },
+    user: req.user || null,
+    timestamp: formatSecureTimestamp()
+  })
+})
+
+// Add the debug endpoint to subpath as well for compatibility
+if (SUBPATH !== '/' && !isDevelopment) {
+  app.get(`${SUBPATH}/api/debug/config`, checkAuth, (req, res) => {
+    // Redirect to the main debug endpoint to avoid duplication
+    res.redirect('/api/debug/config')
+  })
+}
 
 // Helper function to check if IP is local/private (moved here for access by admin endpoints)
 function isLocalIP(ip) {

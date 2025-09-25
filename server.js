@@ -1452,7 +1452,7 @@ app.get('/api/matches/by-season/:seasonId', checkAuth, async (req, res) => {
 
 app.post('/api/matches', 
   authenticateToken,
-  requireAdmin,
+  requireEditor,
   conditionalRateLimit(createLimiter),
   [
     body('seasonId').isInt().withMessage('Valid season ID is required'),
@@ -1568,10 +1568,10 @@ app.put('/api/matches/:id',
   }
 )
 
-// Delete a match (admin only)
+// Delete a match (admin or editor)
 app.delete('/api/matches/:id', 
   authenticateToken,
-  requireAdmin,
+  requireEditor,
   conditionalRateLimit(deleteLimiter),
   [
     param('id').isInt().withMessage('Invalid match ID')

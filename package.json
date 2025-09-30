@@ -21,7 +21,7 @@
   },
   "devDependencies": {
     "concurrently": "^8.2.2",
-    "vite": "^6.3.5"
+    "vite": "^6.3.6"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",

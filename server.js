@@ -28,6 +28,40 @@ const PORT = process.env.PORT || 3001
 // Initialize CSRF protection
 const tokens = new csrf()
 
+// Cookie security configuration (allow overrides for local HTTPS testing)
+const determineSecureCookies = () => {
+  const raw = process.env.COOKIE_SECURE
+  if (raw !== undefined) {
+    const normalized = raw.toString().toLowerCase()
+    if (normalized === 'true') return true
+    if (normalized === 'false') return false
+  }
+  return process.env.NODE_ENV === 'production'
+}
+
+const secureCookiesEnabled = determineSecureCookies()
+const sameSitePolicy = process.env.COOKIE_SAMESITE || (secureCookiesEnabled ? 'strict' : 'lax')
+const cookieDomain = process.env.COOKIE_DOMAIN || undefined
+
+const sharedCookieDefaults = {
+  secure: secureCookiesEnabled,
+  sameSite: sameSitePolicy
+}
+
+const withCookieDefaults = (options = {}) => {
+  const base = {
+    ...sharedCookieDefaults,
+    path: '/',
+    ...options
+  }
+
+  if (cookieDomain) {
+    base.domain = cookieDomain
+  }
+
+  return base
+}
+
 // Enhanced in-memory cache for rankings with better hit rates and TTL
 class RankingsCache {
   constructor() {
@@ -733,6 +767,9 @@ const validateCSRF = (req, res, next) => {
 app.use(express.json({ 
   limit: '10mb',
   verify: (req, res, buf) => {
+    if (!buf || buf.length === 0) {
+      return
+    }
     try {
       JSON.parse(buf)
     } catch (e) {
@@ -749,6 +786,33 @@ const isDevelopment = process.env.NODE_ENV === 'development'
 
 console.log('🎯 Server subpath configuration:', SUBPATH)
 console.log('🔧 Environment:', process.env.NODE_ENV)
+
+const getCookiePathsToClear = () => {
+  const paths = new Set(['/'])
+  const normalizedSubpath = SUBPATH && SUBPATH !== '/' ? SUBPATH : null
+  if (normalizedSubpath) {
+    const cleanSubpath = normalizedSubpath.endsWith('/') ? normalizedSubpath.slice(0, -1) : normalizedSubpath
+    paths.add(cleanSubpath)
+    paths.add(`${cleanSubpath}/`)
+    paths.add(`${cleanSubpath}/api`)
+    paths.add(`${cleanSubpath}/api/`)
+  }
+  paths.add('/api')
+  paths.add('/api/')
+  return Array.from(paths)
+}
+
+const clearCookieAllPaths = (res, name, extraOptions = {}) => {
+  const paths = getCookiePathsToClear()
+  paths.forEach((path) => {
+    res.clearCookie(name, {
+      ...sharedCookieDefaults,
+      httpOnly: true,
+      path,
+      ...extraOptions
+    })
+  })
+}
 
 // Serve static files with subpath support
 if (isDevelopment) {
@@ -796,6 +860,17 @@ if (SUBPATH !== '/' && !isDevelopment) {
   console.log(`🔀 API routes configured for both ${SUBPATH}/api and /api`)
 }
 
+// Normalize API requests when served from a subpath so `/tennis/api/...` hits `/api/...`
+if (SUBPATH !== '/' && !isDevelopment) {
+  app.use((req, res, next) => {
+    if (req.originalUrl?.startsWith(`${SUBPATH}/api`)) {
+      const normalized = req.originalUrl.slice(SUBPATH.length)
+      req.url = normalized.startsWith('/') ? normalized : `/${normalized}`
+    }
+    next()
+  })
+}
+
 // Prevent caching of API responses (dynamic data)
 const apiCachePaths = [
   '/api',
@@ -812,6 +887,15 @@ if (apiCachePaths.length) {
 }
 
 // Global CSRF protection middleware (after body parsing)
+const matchesApiRoute = (req, route) => {
+  if (!route) return false
+  const { path, originalUrl } = req
+  if (path === route) return true
+  const normalized = originalUrl?.split('?')[0]
+  if (normalized === route) return true
+  return normalized?.endsWith(route)
+}
+
 const globalCSRFProtection = (req, res, next) => {
   // Skip CSRF for GET requests (read-only operations)
   if (req.method === 'GET') {
@@ -819,17 +903,17 @@ const globalCSRFProtection = (req, res, next) => {
   }
   
   // Skip CSRF for login endpoint (needs to issue CSRF token)
-  if (req.path === '/api/auth/login') {
+  if (matchesApiRoute(req, '/api/auth/login')) {
     return next()
   }
   
   // Skip CSRF for public CSRF token endpoint
-  if (req.path === '/api/csrf-token') {
+  if (matchesApiRoute(req, '/api/csrf-token')) {
     return next()
   }
   
   // Skip CSRF for non-authenticated users on logout
-  if (req.path === '/api/auth/logout' && !req.cookies.authToken) {
+  if (matchesApiRoute(req, '/api/auth/logout') && !req.cookies.authToken) {
     return next()
   }
   
@@ -840,12 +924,10 @@ const globalCSRFProtection = (req, res, next) => {
   let sessionId = req.cookies.csrfSessionId
   if (!sessionId) {
     sessionId = generateSessionId()
-    res.cookie('csrfSessionId', sessionId, {
+    res.cookie('csrfSessionId', sessionId, withCookieDefaults({
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
       maxAge: 24 * 60 * 60 * 1000 // 24 hours
-    })
+    }))
   }
   
   const secret = deriveCSRFSecret(sessionId)
@@ -907,12 +989,8 @@ const authenticateToken = (req, res, next) => {
   if (req.cookies.authToken && token === req.cookies.authToken) {
     token = decryptJWT(token)
     if (!token) {
-      // Clear invalid encrypted cookie
-      res.clearCookie('authToken', {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
-      })
+      // Clear invalid encrypted cookie across paths
+      clearCookieAllPaths(res, 'authToken')
       return res.status(401).json({ error: 'Invalid encrypted token' })
     }
   }
@@ -921,11 +999,7 @@ const authenticateToken = (req, res, next) => {
     if (err) {
       // Clear invalid cookie
       if (req.cookies.authToken) {
-        res.clearCookie('authToken', {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
-        })
+        clearCookieAllPaths(res, 'authToken')
       }
       return res.status(403).json({ error: 'Invalid or expired token' })
     }
@@ -947,11 +1021,9 @@ const checkAuth = (req, res, next) => {
       if (!token) {
         // Clear invalid encrypted cookie only if headers not sent
         if (!res.headersSent) {
-          res.clearCookie('authToken', {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
-          })
+          res.clearCookie('authToken', withCookieDefaults({
+            httpOnly: true
+          }))
         }
         req.isAuthenticated = false
         req.csrfSecret = deriveCSRFSecret(generateSessionId())
@@ -965,11 +1037,7 @@ const checkAuth = (req, res, next) => {
         req.isAuthenticated = true
       } else if (req.cookies.authToken && !res.headersSent) {
         // Clear invalid cookie only if headers not sent
-        res.clearCookie('authToken', {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
-        })
+        clearCookieAllPaths(res, 'authToken')
       }
     })
   }
@@ -981,12 +1049,10 @@ const checkAuth = (req, res, next) => {
     sessionId = generateSessionId()
     // Only set cookie if headers haven't been sent
     if (!res.headersSent) {
-      res.cookie('csrfSessionId', sessionId, {
+      res.cookie('csrfSessionId', sessionId, withCookieDefaults({
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
         maxAge: 24 * 60 * 60 * 1000 // 24 hours
-      })
+      }))
     }
   }
   
@@ -1094,12 +1160,10 @@ app.post('/api/auth/login',
           
           // Encrypt JWT token before storing in httpOnly cookie (addresses CodeQL alert)
           const encryptedToken = encryptJWT(token)
-          res.cookie('authToken', encryptedToken, {
+          res.cookie('authToken', encryptedToken, withCookieDefaults({
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
             maxAge: 24 * 60 * 60 * 1000 // 24 hours
-          })
+          }))
           
           // Generate new session ID for CSRF protection
           const sessionId = generateSessionId()
@@ -1107,12 +1171,10 @@ app.post('/api/auth/login',
           const csrfToken = tokens.create(csrfSecret)
           
           // Set session ID in httpOnly cookie (not the secret itself)
-          res.cookie('csrfSessionId', sessionId, {
+          res.cookie('csrfSessionId', sessionId, withCookieDefaults({
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
             maxAge: 24 * 60 * 60 * 1000 // 24 hours
-          })
+          }))
           
           // Detect client type - API clients should include 'Accept: application/json' header
           // and no 'Accept: text/html' (which browsers send)
@@ -1173,17 +1235,8 @@ app.post('/api/auth/logout', checkAuth, (req, res) => {
     }
     
     // Clear authentication and CSRF cookies
-    res.clearCookie('authToken', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
-    })
-    
-    res.clearCookie('csrfSessionId', {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
-    })
+    clearCookieAllPaths(res, 'authToken')
+    clearCookieAllPaths(res, 'csrfSessionId')
     
     // Send success response only once
     return res.json({ success: true, message: 'Logged out successfully' })

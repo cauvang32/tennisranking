@@ -180,12 +180,32 @@ class TennisDatabasePostgreSQL {
 
   // Seasons CRUD operations
   async getSeasons() {
-    const result = await this.query('SELECT * FROM seasons ORDER BY start_date DESC')
+    const result = await this.query(`
+      SELECT id, name, 
+        TO_CHAR(start_date, 'YYYY-MM-DD') as start_date,
+        CASE 
+          WHEN end_date IS NOT NULL THEN TO_CHAR(end_date, 'YYYY-MM-DD')
+          ELSE NULL 
+        END as end_date,
+        is_active, created_at
+      FROM seasons 
+      ORDER BY start_date DESC
+    `)
     return result.rows
   }
 
   async getActiveSeason() {
-    const result = await this.query('SELECT * FROM seasons WHERE is_active = true')
+    const result = await this.query(`
+      SELECT id, name, 
+        TO_CHAR(start_date, 'YYYY-MM-DD') as start_date,
+        CASE 
+          WHEN end_date IS NOT NULL THEN TO_CHAR(end_date, 'YYYY-MM-DD')
+          ELSE NULL 
+        END as end_date,
+        is_active, created_at
+      FROM seasons 
+      WHERE is_active = true
+    `)
     return result.rows[0] || null
   }
 
@@ -230,7 +250,17 @@ class TennisDatabasePostgreSQL {
   }
 
   async getSeasonById(seasonId) {
-    const result = await this.query('SELECT * FROM seasons WHERE id = $1', [seasonId])
+    const result = await this.query(`
+      SELECT id, name, 
+        TO_CHAR(start_date, 'YYYY-MM-DD') as start_date,
+        CASE 
+          WHEN end_date IS NOT NULL THEN TO_CHAR(end_date, 'YYYY-MM-DD')
+          ELSE NULL 
+        END as end_date,
+        is_active, created_at
+      FROM seasons 
+      WHERE id = $1
+    `, [seasonId])
     return result.rows[0] || null
   }
 
@@ -265,7 +295,10 @@ class TennisDatabasePostgreSQL {
 
   async getMatches(limit = null) {
     let query = `
-      SELECT m.*, s.name as season_name,
+      SELECT m.id, m.season_id, TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date,
+        m.player1_id, m.player2_id, m.player3_id, m.player4_id,
+        m.team1_score, m.team2_score, m.winning_team, m.created_at,
+        s.name as season_name,
         p1.name as player1_name, p2.name as player2_name, 
         p3.name as player3_name, p4.name as player4_name
       FROM matches m
@@ -289,7 +322,10 @@ class TennisDatabasePostgreSQL {
 
   async getMatchesByPlayDate(playDate) {
     const result = await this.query(`
-      SELECT m.*, s.name as season_name,
+      SELECT m.id, m.season_id, TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date,
+        m.player1_id, m.player2_id, m.player3_id, m.player4_id,
+        m.team1_score, m.team2_score, m.winning_team, m.created_at,
+        s.name as season_name,
         p1.name as player1_name, p2.name as player2_name, 
         p3.name as player3_name, p4.name as player4_name
       FROM matches m
@@ -306,7 +342,10 @@ class TennisDatabasePostgreSQL {
 
   async getMatchesBySeason(seasonId) {
     const result = await this.query(`
-      SELECT m.*, s.name as season_name,
+      SELECT m.id, m.season_id, TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date,
+        m.player1_id, m.player2_id, m.player3_id, m.player4_id,
+        m.team1_score, m.team2_score, m.winning_team, m.created_at,
+        s.name as season_name,
         p1.name as player1_name, p2.name as player2_name, 
         p3.name as player3_name, p4.name as player4_name
       FROM matches m
@@ -519,7 +558,7 @@ class TennisDatabasePostgreSQL {
           (m.winning_team = 2 AND (m.player3_id = $1 OR m.player4_id = $1))
           THEN 'win' ELSE 'loss' 
         END as result,
-        m.play_date
+        TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date
       FROM matches m
       WHERE m.player1_id = $1 OR m.player2_id = $1 OR m.player3_id = $1 OR m.player4_id = $1
       ORDER BY m.play_date DESC, m.created_at DESC
@@ -536,7 +575,7 @@ class TennisDatabasePostgreSQL {
           (m.winning_team = 2 AND (m.player3_id = $1 OR m.player4_id = $1))
           THEN 'win' ELSE 'loss' 
         END as result,
-        m.play_date
+        TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date
       FROM matches m
       WHERE (m.player1_id = $1 OR m.player2_id = $1 OR m.player3_id = $1 OR m.player4_id = $1)
         AND m.season_id = $2
@@ -554,7 +593,7 @@ class TennisDatabasePostgreSQL {
           (m.winning_team = 2 AND (m.player3_id = $1 OR m.player4_id = $1))
           THEN 'win' ELSE 'loss' 
         END as result,
-        m.play_date
+        TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date
       FROM matches m
       WHERE (m.player1_id = $1 OR m.player2_id = $1 OR m.player3_id = $1 OR m.player4_id = $1)
         AND DATE(m.play_date) <= $2
@@ -590,7 +629,7 @@ class TennisDatabasePostgreSQL {
           (m.winning_team = 2 AND (m.player3_id = $1 OR m.player4_id = $1))
           THEN 'win' ELSE 'loss' 
         END as result,
-        m.play_date
+        TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date
       FROM matches m
       WHERE (m.player1_id = $1 OR m.player2_id = $1 OR m.player3_id = $1 OR m.player4_id = $1)
         AND DATE(m.play_date) = $2

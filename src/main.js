@@ -1584,9 +1584,29 @@ class TennisRankingSystem {
     }
   }
 
-  formatDate(dateString) {
-    if (!dateString) return ''
-    const date = new Date(dateString)
+  formatDate(dateValue) {
+    if (!dateValue) return ''
+    
+    let date
+    if (dateValue instanceof Date) {
+      // If it's already a Date object, use local date components to avoid timezone issues
+      date = new Date(dateValue.getFullYear(), dateValue.getMonth(), dateValue.getDate())
+    } else if (typeof dateValue === 'string') {
+      // If it's a string, parse it as local date to avoid UTC timezone conversion
+      if (dateValue.includes('T') || dateValue.includes('Z')) {
+        // ISO string format - extract date part only
+        const datePart = dateValue.split('T')[0]
+        const [year, month, day] = datePart.split('-').map(Number)
+        date = new Date(year, month - 1, day) // month is 0-based
+      } else {
+        // Date-only string format like "2025-09-30"
+        const [year, month, day] = dateValue.split('-').map(Number)
+        date = new Date(year, month - 1, day) // month is 0-based
+      }
+    } else {
+      return ''
+    }
+    
     return date.toLocaleDateString('vi-VN', {
       year: 'numeric',
       month: '2-digit',

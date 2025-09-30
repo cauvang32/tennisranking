@@ -9,6 +9,7 @@ import jwt from 'jsonwebtoken'
 import bcrypt from 'bcryptjs'
 import cookieParser from 'cookie-parser'
 import dotenv from 'dotenv'
+import compression from 'compression'
 import TennisDatabase from './database-postgresql.js'
 import ExcelJS from 'exceljs'
 import csrf from 'csrf'
@@ -693,6 +694,17 @@ app.use(cors(corsOptions))
 // Cookie parser middleware for JWT in httpOnly cookies
 app.use(cookieParser())
 
+// Enable gzip compression for responses larger than 1KB
+app.use(compression({
+  threshold: 1024,
+  filter: (req, res) => {
+    if (req.headers['x-no-compression']) {
+      return false
+    }
+    return compression.filter(req, res)
+  }
+}))
+
 // CSRF middleware generator (deprecated - using global protection now)
 const generateCSRFMiddleware = () => {
   return (req, res, next) => {
@@ -750,6 +762,18 @@ if (isDevelopment) {
       res.setHeader('X-Content-Type-Options', 'nosniff')
       res.setHeader('X-Frame-Options', 'DENY')
       res.setHeader('X-XSS-Protection', '1; mode=block')
+
+      const lowerPath = path.toLowerCase()
+      const isHTML = lowerPath.endsWith('.html')
+      const isImmutableAsset = /\.(?:js|css|mjs|cjs|svg|png|jpg|jpeg|gif|ico|webp|avif|woff|woff2|ttf)$/i.test(lowerPath)
+
+      if (isHTML) {
+        res.setHeader('Cache-Control', 'no-store, max-age=0')
+      } else if (isImmutableAsset) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+      } else {
+        res.setHeader('Cache-Control', 'public, max-age=86400')
+      }
     }
   }))
   console.log(`📁 Static files served from: ${SUBPATH}`)
@@ -770,6 +794,21 @@ if (SUBPATH !== '/' && !isDevelopment) {
   })
   
   console.log(`🔀 API routes configured for both ${SUBPATH}/api and /api`)
+}
+
+// Prevent caching of API responses (dynamic data)
+const apiCachePaths = [
+  '/api',
+  SUBPATH !== '/' && !isDevelopment ? `${SUBPATH}/api` : null
+].filter(Boolean)
+
+if (apiCachePaths.length) {
+  app.use(apiCachePaths, (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, max-age=0')
+    res.setHeader('Pragma', 'no-cache')
+    res.setHeader('Expires', '0')
+    next()
+  })
 }
 
 // Global CSRF protection middleware (after body parsing)

@@ -1358,7 +1358,19 @@ app.get('/api/seasons', checkAuth, async (req, res) => {
   }
 })
 
+// Get all active seasons (supports multiple concurrent seasons)
 app.get('/api/seasons/active', checkAuth, async (req, res) => {
+  try {
+    const seasons = await db.getActiveSeasons()
+    res.json(seasons)
+  } catch (error) {
+    console.error('Error getting active seasons:', error)
+    res.status(500).json({ error: 'Failed to get active seasons' })
+  }
+})
+
+// Get first active season (backward compatibility)
+app.get('/api/seasons/active-one', checkAuth, async (req, res) => {
   try {
     const activeSeason = await db.getActiveSeason()
     res.json(activeSeason)
@@ -1375,28 +1387,34 @@ app.post('/api/seasons',
   [
     body('name').isLength({ min: 1, max: 100 }).withMessage('Season name is required'),
     body('startDate').isISO8601().withMessage('Valid start date is required'),
-    body('autoEndPrevious').optional().isBoolean().withMessage('autoEndPrevious must be boolean')
+    body('endDate').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('Valid end date is required'),
+    body('autoEnd').optional().isBoolean().withMessage('autoEnd must be boolean'),
+    body('description').optional({ nullable: true, checkFalsy: true }).isString().withMessage('Description must be string')
   ],
   handleValidationErrors,
   async (req, res) => {
     try {
-      const { name, startDate, autoEndPrevious } = req.body
+      let { name, startDate, endDate, autoEnd = false, description = '' } = req.body
       
-      // If autoEndPrevious is true, end the current active season
-      if (autoEndPrevious) {
-        const activeSeason = await db.getActiveSeason()
-        if (activeSeason) {
-          // Calculate end date as one day before new season starts
-          const newSeasonDate = new Date(startDate)
-          const endDate = new Date(newSeasonDate)
-          endDate.setDate(endDate.getDate() - 1)
-          const endDateString = endDate.toISOString().split('T')[0]
-          
-          await db.endSeason(activeSeason.id, endDateString)
-        }
+      // Sanitize empty strings to null
+      endDate = endDate || null
+      description = description || ''
+      
+      // Validate: autoEnd requires endDate
+      if (autoEnd && !endDate) {
+        return res.status(400).json({ 
+          success: false,
+          error: 'Auto-end requires an end date to be set' 
+        })
       }
       
-      const seasonId = await db.createSeason(name, startDate)
+      // Check and end expired seasons automatically
+      const expiredSeasons = await db.checkAndEndExpiredSeasons()
+      if (expiredSeasons.length > 0) {
+        console.log(`🏁 Auto-ended ${expiredSeasons.length} expired season(s)`)
+      }
+      
+      const seasonId = await db.createSeason(name, startDate, endDate, autoEnd, description)
       
       // Invalidate all cache when seasons change
       rankingsCache.clear()
@@ -1404,7 +1422,7 @@ app.post('/api/seasons',
       // Preload common data for better hit rates
       setTimeout(() => rankingsCache.preloadCommonData(db), 100)
       
-      res.json({ success: true, id: seasonId, name, startDate })
+      res.json({ success: true, id: seasonId, name, startDate, endDate, autoEnd, description })
     } catch (error) {
       console.error('Error creating season:', error)
       res.status(500).json({ error: 'Failed to create season' })
@@ -1419,14 +1437,29 @@ app.put('/api/seasons/:id',
     param('id').isInt().withMessage('Invalid season ID'),
     body('name').isLength({ min: 1, max: 100 }).withMessage('Season name is required'),
     body('startDate').isISO8601().withMessage('Valid start date is required'),
-    body('endDate').optional().isISO8601().withMessage('Valid end date is required')
+    body('endDate').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('Valid end date is required'),
+    body('autoEnd').optional().isBoolean().withMessage('autoEnd must be boolean'),
+    body('description').optional({ nullable: true, checkFalsy: true }).isString().withMessage('Description must be string')
   ],
   handleValidationErrors,
   async (req, res) => {
     try {
       const seasonId = parseInt(req.params.id)
-      const { name, startDate, endDate } = req.body
-      await db.updateSeason(seasonId, name, startDate, endDate)
+      let { name, startDate, endDate, autoEnd = false, description = '' } = req.body
+      
+      // Sanitize empty strings to null
+      endDate = endDate || null
+      description = description || ''
+      
+      // Validate: autoEnd requires endDate
+      if (autoEnd && !endDate) {
+        return res.status(400).json({ 
+          success: false,
+          error: 'Auto-end requires an end date to be set' 
+        })
+      }
+      
+      await db.updateSeason(seasonId, name, startDate, endDate, autoEnd, description)
       
       // Invalidate all cache when seasons are updated
       rankingsCache.clear()
@@ -1444,17 +1477,19 @@ app.put('/api/seasons/:id',
 
 app.post('/api/seasons/:id/end', 
   authenticateToken,
-  requireAdmin,
+  requireEditor,
   [
     param('id').isInt().withMessage('Invalid season ID'),
-    body('endDate').isISO8601().withMessage('Valid end date is required')
+    body('endDate').optional().isISO8601().withMessage('Valid end date is required')
   ],
   handleValidationErrors,
   async (req, res) => {
     try {
       const seasonId = parseInt(req.params.id)
-      const { endDate } = req.body
-      await db.endSeason(seasonId, endDate)
+      const endDate = req.body.endDate || new Date().toISOString().split('T')[0]
+      const endedBy = req.user.username
+      
+      await db.endSeason(seasonId, endDate, endedBy)
       
       // Invalidate all cache when seasons are ended
       rankingsCache.clear()
@@ -1466,6 +1501,60 @@ app.post('/api/seasons/:id/end',
     } catch (error) {
       console.error('Error ending season:', error)
       res.status(500).json({ error: 'Failed to end season' })
+    }
+  }
+)
+
+// Reactivate a season (admin/editor only)
+app.post('/api/seasons/:id/reactivate',
+  authenticateToken,
+  requireEditor,
+  [
+    param('id').isInt().withMessage('Invalid season ID')
+  ],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const seasonId = parseInt(req.params.id)
+      const username = req.user?.username || 'unknown'
+      
+      // Get current season
+      const season = await db.getSeasonById(seasonId)
+      
+      if (!season) {
+        return res.status(404).json({
+          success: false,
+          error: 'Season not found'
+        })
+      }
+      
+      if (season.is_active) {
+        return res.status(400).json({
+          success: false,
+          error: 'Season is already active'
+        })
+      }
+      
+      // Reactivate the season
+      await db.reactivateSeason(seasonId)
+      
+      // Invalidate cache
+      rankingsCache.clear()
+      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      
+      console.log(`✅ Season ${seasonId} reactivated by ${username}`)
+      
+      res.json({
+        success: true,
+        message: 'Season reactivated successfully'
+      })
+      
+    } catch (error) {
+      console.error('Error reactivating season:', error)
+      res.status(500).json({
+        success: false,
+        error: 'Failed to reactivate season'
+      })
     }
   }
 )
@@ -1504,6 +1593,32 @@ app.delete('/api/seasons/:id',
     } catch (error) {
       console.error('Error deleting season:', error)
       res.status(500).json({ error: 'Failed to delete season' })
+    }
+  }
+)
+
+// Check and auto-end expired seasons
+app.post('/api/seasons/check-expired',
+  authenticateToken,
+  requireEditor,
+  async (req, res) => {
+    try {
+      const expiredSeasons = await db.checkAndEndExpiredSeasons()
+      
+      if (expiredSeasons.length > 0) {
+        // Invalidate cache
+        rankingsCache.clear()
+        setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      }
+      
+      res.json({
+        success: true,
+        ended: expiredSeasons.length,
+        seasons: expiredSeasons
+      })
+    } catch (error) {
+      console.error('Error checking expired seasons:', error)
+      res.status(500).json({ error: 'Failed to check expired seasons' })
     }
   }
 )

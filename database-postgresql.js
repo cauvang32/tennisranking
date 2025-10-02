@@ -74,7 +74,7 @@ class TennisDatabasePostgreSQL {
         )
       `)
 
-      // Seasons table
+      // Seasons table - supports multiple concurrent active seasons
       await client.query(`
         CREATE TABLE IF NOT EXISTS seasons (
           id SERIAL PRIMARY KEY,
@@ -82,7 +82,11 @@ class TennisDatabasePostgreSQL {
           start_date DATE NOT NULL,
           end_date DATE,
           is_active BOOLEAN DEFAULT true,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          auto_end BOOLEAN DEFAULT true,
+          description TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          ended_at TIMESTAMP,
+          ended_by VARCHAR(255)
         )
       `)
 
@@ -187,14 +191,15 @@ class TennisDatabasePostgreSQL {
           WHEN end_date IS NOT NULL THEN TO_CHAR(end_date, 'YYYY-MM-DD')
           ELSE NULL 
         END as end_date,
-        is_active, created_at
+        is_active, auto_end, description, 
+        created_at, ended_at, ended_by
       FROM seasons 
-      ORDER BY start_date DESC
+      ORDER BY is_active DESC, start_date DESC
     `)
     return result.rows
   }
 
-  async getActiveSeason() {
+  async getActiveSeasons() {
     const result = await this.query(`
       SELECT id, name, 
         TO_CHAR(start_date, 'YYYY-MM-DD') as start_date,
@@ -202,51 +207,78 @@ class TennisDatabasePostgreSQL {
           WHEN end_date IS NOT NULL THEN TO_CHAR(end_date, 'YYYY-MM-DD')
           ELSE NULL 
         END as end_date,
-        is_active, created_at
+        is_active, auto_end, description,
+        created_at, ended_at, ended_by
       FROM seasons 
       WHERE is_active = true
+      ORDER BY start_date DESC
+    `)
+    return result.rows
+  }
+
+  async getActiveSeason() {
+    // Get the first active season (for backward compatibility)
+    const result = await this.query(`
+      SELECT id, name, 
+        TO_CHAR(start_date, 'YYYY-MM-DD') as start_date,
+        CASE 
+          WHEN end_date IS NOT NULL THEN TO_CHAR(end_date, 'YYYY-MM-DD')
+          ELSE NULL 
+        END as end_date,
+        is_active, auto_end, description,
+        created_at, ended_at, ended_by
+      FROM seasons 
+      WHERE is_active = true
+      ORDER BY start_date DESC
+      LIMIT 1
     `)
     return result.rows[0] || null
   }
 
-  async createSeason(name, startDate) {
-    const client = await this.pool.connect()
-    try {
-      await client.query('BEGIN')
-      
-      // Deactivate current active season
-      await client.query('UPDATE seasons SET is_active = false WHERE is_active = true')
-      
-      // Create new season
-      const result = await client.query(`
-        INSERT INTO seasons (name, start_date, is_active) 
-        VALUES ($1, $2, true) RETURNING id
-      `, [name, startDate])
-      
-      await client.query('COMMIT')
-      return result.rows[0].id
-    } catch (error) {
-      await client.query('ROLLBACK')
-      throw error
-    } finally {
-      client.release()
-    }
+  async createSeason(name, startDate, endDate = null, autoEnd = true, description = '') {
+    const result = await this.query(`
+      INSERT INTO seasons (name, start_date, end_date, is_active, auto_end, description) 
+      VALUES ($1, $2, $3, true, $4, $5) RETURNING id
+    `, [name, startDate, endDate, autoEnd, description])
+    return result.rows[0].id
   }
 
-  async updateSeason(seasonId, name, startDate, endDate) {
+  async updateSeason(seasonId, name, startDate, endDate, autoEnd, description) {
     await this.query(`
       UPDATE seasons 
-      SET name = $1, start_date = $2, end_date = $3 
-      WHERE id = $4
-    `, [name, startDate, endDate, seasonId])
+      SET name = $1, start_date = $2, end_date = $3, auto_end = $4, description = $5
+      WHERE id = $6
+    `, [name, startDate, endDate, autoEnd, description, seasonId])
   }
 
-  async endSeason(seasonId, endDate) {
+  async endSeason(seasonId, endDate, endedBy) {
     await this.query(`
       UPDATE seasons 
-      SET end_date = $1, is_active = false 
-      WHERE id = $2
-    `, [endDate, seasonId])
+      SET end_date = $1, is_active = false, ended_at = CURRENT_TIMESTAMP, ended_by = $2
+      WHERE id = $3
+    `, [endDate, endedBy, seasonId])
+  }
+
+  async reactivateSeason(seasonId) {
+    await this.query(`
+      UPDATE seasons 
+      SET is_active = true, ended_at = NULL, ended_by = NULL
+      WHERE id = $1
+    `, [seasonId])
+  }
+
+  async checkAndEndExpiredSeasons() {
+    // Automatically end seasons that have passed their end date and have auto_end enabled
+    const result = await this.query(`
+      UPDATE seasons 
+      SET is_active = false, ended_at = CURRENT_TIMESTAMP, ended_by = 'system'
+      WHERE is_active = true 
+        AND auto_end = true 
+        AND end_date IS NOT NULL 
+        AND end_date < CURRENT_DATE
+      RETURNING id, name
+    `)
+    return result.rows
   }
 
   async getSeasonById(seasonId) {
@@ -257,7 +289,8 @@ class TennisDatabasePostgreSQL {
           WHEN end_date IS NOT NULL THEN TO_CHAR(end_date, 'YYYY-MM-DD')
           ELSE NULL 
         END as end_date,
-        is_active, created_at
+        is_active, auto_end, description,
+        created_at, ended_at, ended_by
       FROM seasons 
       WHERE id = $1
     `, [seasonId])

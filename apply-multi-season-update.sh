@@ -16,6 +16,26 @@ echo -e "${BLUE}║   🎾 Tennis Ranking - Multi-Season Feature Update        �
 echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 
+# Load environment variables from .env file
+if [ -f .env ]; then
+    echo -e "${YELLOW}📋 Loading configuration from .env file...${NC}"
+    export $(grep -v '^#' .env | grep -v '^$' | xargs)
+    echo -e "${GREEN}✅ Configuration loaded${NC}"
+else
+    echo -e "${RED}❌ .env file not found${NC}"
+    echo -e "${YELLOW}💡 Using default values${NC}"
+fi
+
+# Set database credentials from .env or use defaults
+DB_USER=${DB_USER:-tennis_user}
+DB_NAME=${DB_NAME:-tennis_ranking}
+DB_PASSWORD=${DB_PASSWORD:-tennis_password}
+
+echo -e "${BLUE}📊 Database Configuration:${NC}"
+echo -e "   User: ${DB_USER}"
+echo -e "   Database: ${DB_NAME}"
+echo ""
+
 # Step 1: Check if Docker container is running
 echo -e "${YELLOW}📋 Step 1: Checking Docker container...${NC}"
 if ! docker ps | grep -q tennis-postgres; then
@@ -34,7 +54,7 @@ echo ""
 
 # Step 2: Test database connection
 echo -e "${YELLOW}📋 Step 2: Testing database connection...${NC}"
-if docker exec -i tennis-postgres psql -U tennis_user -d tennis_ranking -c "SELECT 1" > /dev/null 2>&1; then
+if docker exec -i tennis-postgres psql -U ${DB_USER} -d ${DB_NAME} -c "SELECT 1" > /dev/null 2>&1; then
     echo -e "${GREEN}✅ Database connection successful${NC}"
 else
     echo -e "${RED}❌ Cannot connect to database${NC}"
@@ -45,13 +65,13 @@ echo ""
 # Step 3: Backup current database
 echo -e "${YELLOW}📋 Step 3: Creating database backup...${NC}"
 BACKUP_FILE="backup-seasons-$(date +%Y%m%d-%H%M%S).sql"
-docker exec tennis-postgres pg_dump -U tennis_user -d tennis_ranking -t seasons > "$BACKUP_FILE"
+docker exec tennis-postgres pg_dump -U ${DB_USER} -d ${DB_NAME} -t seasons > "$BACKUP_FILE"
 echo -e "${GREEN}✅ Backup created: ${BACKUP_FILE}${NC}"
 echo ""
 
 # Step 4: Apply migration
 echo -e "${YELLOW}📋 Step 4: Applying database migration...${NC}"
-if docker exec -i tennis-postgres psql -U tennis_user -d tennis_ranking < verify-and-update-migration.sql; then
+if docker exec -i tennis-postgres psql -U ${DB_USER} -d ${DB_NAME} < verify-and-update-migration.sql; then
     echo -e "${GREEN}✅ Migration applied successfully${NC}"
 else
     echo -e "${RED}❌ Migration failed${NC}"
@@ -62,7 +82,7 @@ echo ""
 
 # Step 5: Verify migration
 echo -e "${YELLOW}📋 Step 5: Verifying migration...${NC}"
-COLUMNS=$(docker exec -i tennis-postgres psql -U tennis_user -d tennis_ranking -t -c "
+COLUMNS=$(docker exec -i tennis-postgres psql -U ${DB_USER} -d ${DB_NAME} -t -c "
     SELECT column_name 
     FROM information_schema.columns 
     WHERE table_name = 'seasons' 
@@ -81,7 +101,7 @@ echo ""
 
 # Step 6: Check end_date is nullable
 echo -e "${YELLOW}📋 Step 6: Verifying end_date is optional...${NC}"
-END_DATE_NULLABLE=$(docker exec -i tennis-postgres psql -U tennis_user -d tennis_ranking -t -c "
+END_DATE_NULLABLE=$(docker exec -i tennis-postgres psql -U ${DB_USER} -d ${DB_NAME} -t -c "
     SELECT is_nullable 
     FROM information_schema.columns 
     WHERE table_name = 'seasons' 
@@ -98,7 +118,7 @@ echo ""
 
 # Step 7: Display final schema
 echo -e "${YELLOW}📋 Step 7: Final database schema:${NC}"
-docker exec -i tennis-postgres psql -U tennis_user -d tennis_ranking -c "
+docker exec -i tennis-postgres psql -U ${DB_USER} -d ${DB_NAME} -c "
     SELECT 
         column_name, 
         data_type, 
@@ -112,7 +132,7 @@ echo ""
 
 # Step 8: Test season creation
 echo -e "${YELLOW}📋 Step 8: Testing season creation without end_date...${NC}"
-TEST_RESULT=$(docker exec -i tennis-postgres psql -U tennis_user -d tennis_ranking -t -c "
+TEST_RESULT=$(docker exec -i tennis-postgres psql -U ${DB_USER} -d ${DB_NAME} -t -c "
     INSERT INTO seasons (name, start_date, is_active, auto_end) 
     VALUES ('Test Season', '2025-01-01', false, false) 
     RETURNING id;
@@ -123,7 +143,7 @@ if [[ "$TEST_RESULT" =~ [0-9]+ ]]; then
     echo -e "${GREEN}✅ Season created successfully without end_date (ID: ${TEST_ID})${NC}"
     
     # Clean up test data
-    docker exec -i tennis-postgres psql -U tennis_user -d tennis_ranking -c "DELETE FROM seasons WHERE id = ${TEST_ID};" > /dev/null 2>&1
+    docker exec -i tennis-postgres psql -U ${DB_USER} -d ${DB_NAME} -c "DELETE FROM seasons WHERE id = ${TEST_ID};" > /dev/null 2>&1
     echo -e "${GREEN}✅ Test data cleaned up${NC}"
 else
     echo -e "${RED}❌ Failed to create season without end_date${NC}"

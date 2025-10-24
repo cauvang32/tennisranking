@@ -5,7 +5,17 @@
 
 version: 2
 updates:
-  - package-ecosystem: "" # See documentation for possible values
+  - package-ecosystem: "npm" # Track npm dependencies
     directory: "/" # Location of package manifests
     schedule:
       interval: "weekly"
+    # Enable security updates
+    open-pull-requests-limit: 10
+    # Group minor and patch updates together
+    groups:
+      dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

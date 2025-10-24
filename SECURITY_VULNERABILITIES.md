@@ -55,13 +55,29 @@ This vulnerability specifically affects the `isURL()` function in validator.js. 
 - Weekly Dependabot scans enabled
 - npm audit checks in CI/CD pipeline recommended
 
-## Dependabot Configuration
+## Automated Security Scanning
 
+### Dependabot Configuration
 Dependabot is now properly configured in `.github/dependabot.yml` to:
 - Track npm dependencies weekly
 - Automatically create pull requests for security updates
 - Group minor and patch updates together
 - Limit to 10 open pull requests at a time
+
+### GitHub Actions Workflows
+Two security workflows have been added:
+
+1. **CodeQL Security Analysis** (`.github/workflows/codeql.yml`)
+   - Runs on push/PR to main branches
+   - Weekly scheduled scan (Mondays at 2:00 AM)
+   - Uses security-extended queries for thorough analysis
+   - Automatically detects security vulnerabilities in JavaScript code
+
+2. **Security Audit** (`.github/workflows/security-audit.yml`)
+   - Runs npm audit on push/PR to main branches
+   - Daily scheduled audit (3:00 AM)
+   - Checks both all and production dependencies
+   - Generates and uploads audit reports as artifacts
 
 ## Recommendations
 

@@ -9,10 +9,12 @@ import jwt from 'jsonwebtoken'
 import bcrypt from 'bcryptjs'
 import cookieParser from 'cookie-parser'
 import dotenv from 'dotenv'
+import compression from 'compression'
 import TennisDatabase from './database-postgresql.js'
 import ExcelJS from 'exceljs'
 import csrf from 'csrf'
 import crypto from 'crypto'
+import { getRealClientIP, logAccess, logError, getLogStats } from './access-logger.js'
 
 // Load environment variables
 dotenv.config()
@@ -25,6 +27,40 @@ const PORT = process.env.PORT || 3001
 
 // Initialize CSRF protection
 const tokens = new csrf()
+
+// Cookie security configuration (allow overrides for local HTTPS testing)
+const determineSecureCookies = () => {
+  const raw = process.env.COOKIE_SECURE
+  if (raw !== undefined) {
+    const normalized = raw.toString().toLowerCase()
+    if (normalized === 'true') return true
+    if (normalized === 'false') return false
+  }
+  return process.env.NODE_ENV === 'production'
+}
+
+const secureCookiesEnabled = determineSecureCookies()
+const sameSitePolicy = process.env.COOKIE_SAMESITE || (secureCookiesEnabled ? 'strict' : 'lax')
+const cookieDomain = process.env.COOKIE_DOMAIN || undefined
+
+const sharedCookieDefaults = {
+  secure: secureCookiesEnabled,
+  sameSite: sameSitePolicy
+}
+
+const withCookieDefaults = (options = {}) => {
+  const base = {
+    ...sharedCookieDefaults,
+    path: '/',
+    ...options
+  }
+
+  if (cookieDomain) {
+    base.domain = cookieDomain
+  }
+
+  return base
+}
 
 // Enhanced in-memory cache for rankings with better hit rates and TTL
 class RankingsCache {
@@ -321,6 +357,9 @@ function decryptJWT(encryptedToken) {
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || 'admin@tennis.local'
+const EDITOR_USERNAME = process.env.EDITOR_USERNAME
+const EDITOR_PASSWORD = process.env.EDITOR_PASSWORD
+const EDITOR_EMAIL = process.env.EDITOR_EMAIL || 'editor@tennis.local'
 const JWT_SECRET = process.env.JWT_SECRET
 const CSRF_SECRET = process.env.CSRF_SECRET
 
@@ -335,6 +374,16 @@ if (!ADMIN_PASSWORD) {
   process.exit(1)
 }
 
+if (!EDITOR_USERNAME) {
+  console.error('❌ EDITOR_USERNAME environment variable is required')
+  process.exit(1)
+}
+
+if (!EDITOR_PASSWORD) {
+  console.error('❌ EDITOR_PASSWORD environment variable is required')
+  process.exit(1)
+}
+
 if (!JWT_SECRET) {
   console.error('❌ JWT_SECRET environment variable is required')
   process.exit(1)
@@ -345,8 +394,9 @@ if (!CSRF_SECRET) {
   process.exit(1)
 }
 
-// Hash the admin password on startup
+// Hash the passwords on startup
 const hashedAdminPassword = await bcrypt.hash(ADMIN_PASSWORD, 10)
+const hashedEditorPassword = await bcrypt.hash(EDITOR_PASSWORD, 10)
 
 // Initialize database
 const db = new TennisDatabase()
@@ -373,11 +423,12 @@ setInterval(() => {
 
 // Trust proxy (required for Cloudflare and other reverse proxies)
 // Proxy configuration for Nginx Proxy Manager
-if (process.env.TRUST_PROXY === 'true' || process.env.BEHIND_PROXY === 'true') {
-  app.set('trust proxy', true)
-  console.log('🔗 Trust proxy enabled for reverse proxy setup')
+if (process.env.TRUST_PROXY === 'true' || process.env.BEHIND_PROXY === 'true' || process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1) // Trust first proxy (NPM)
+  console.log('🔗 Trust proxy enabled - real client IPs will be detected from X-Forwarded-For headers')
 } else {
   app.set('trust proxy', false)
+  console.log('🔧 Trust proxy disabled - development mode')
 }
 
 // Middleware
@@ -448,76 +499,154 @@ app.use(helmet({
   xssFilter: true
 }))
 
-// Rate limiting
-const generalLimiter = rateLimit({
-  windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000, // 15 minutes
-  max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 1000, // Limit each IP to 1000 requests per windowMs
-  message: 'Too many requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-})
+// Enhanced rate limiting with comprehensive IP detection
+const createProxyAwareRateLimiter = (options) => {
+  // Check if rate limiting is disabled
+  if (process.env.DISABLE_RATE_LIMITING === 'true') {
+    console.log('🚫 Rate limiting is disabled via environment variable');
+    return (req, res, next) => next();
+  }
 
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: parseInt(process.env.RATE_LIMIT_API_MAX) || 100, // Limit each IP to 100 API requests per windowMs
-  message: 'Too many API requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-})
+  return rateLimit({
+    ...options,
+    standardHeaders: 'draft-8', // Use the latest IETF draft standard
+    legacyHeaders: false,
+    // Enhanced key generator using our comprehensive IP detection
+    keyGenerator: (req) => {
+      const clientIP = getRealClientIP(req);
+      
+      // Log for debugging (remove in production if too verbose)
+      if (process.env.NODE_ENV === 'development') {
+        const originalIP = req.connection.remoteAddress;
+        const forwardedFor = req.get('X-Forwarded-For');
+        const cfIP = req.get('CF-Connecting-IP');
+        console.log(`🔍 Rate limit IP detection: ${clientIP} (Original: ${originalIP}, X-FF: ${forwardedFor}, CF: ${cfIP})`);
+      }
+      
+      return clientIP;
+    },
+    // Skip internal health checks and static assets
+    skip: (req) => {
+      return req.path === '/api/health' || 
+             req.path === '/health' ||
+             req.path.match(/\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf)$/);
+    },
+    // Custom handler for rate limit exceeded with enhanced logging
+    handler: (req, res, next, options) => {
+      const clientIP = getRealClientIP(req);
+      const userInfo = req.user ? `${req.user.username}(${req.user.role})` : 'anonymous';
+      
+      console.warn(`⚠️ Rate limit exceeded: ${clientIP} | ${userInfo} | ${req.method} ${req.path}`);
+      
+      // Log the rate limit violation
+      logError(new Error(`Rate limit exceeded: ${req.method} ${req.path}`), req, req.user);
+      
+      // Send the default rate limit response in English
+      res.status(options.statusCode || 429).json(
+        options.message || { error: 'Too many requests from this IP, please try again later.' }
+      );
+    }
+  });
+};
 
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // Limit each IP to 5 login attempts per windowMs
-  message: 'Too many login attempts from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-})
+// Rate limiting configurations with environment variable debugging
+const rateLimitWindowMs = parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000;
+const rateLimitMaxRequests = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 1000;
+const rateLimitApiMax = parseInt(process.env.RATE_LIMIT_API_MAX) || 100;
+
+console.log(`🔧 Rate Limiting Configuration:`);
+console.log(`   Window: ${rateLimitWindowMs}ms (${rateLimitWindowMs / 60000} minutes)`);
+console.log(`   General Limit: ${rateLimitMaxRequests} requests`);
+console.log(`   API Limit: ${rateLimitApiMax} requests`);
+console.log(`   Disabled: ${process.env.DISABLE_RATE_LIMITING === 'true'}`);
+
+const generalLimiter = createProxyAwareRateLimiter({
+  windowMs: rateLimitWindowMs,
+  limit: rateLimitMaxRequests,
+  message: { error: 'Too many requests from this IP, please try again later.' }
+});
+
+const apiLimiter = createProxyAwareRateLimiter({
+  windowMs: rateLimitWindowMs, // Use same window as general limiter
+  limit: rateLimitApiMax,
+  message: { error: 'Too many API requests from this IP, please try again later.' }
+});
+
+const authLimiter = createProxyAwareRateLimiter({
+  windowMs: rateLimitWindowMs, // Use same window as general limiter
+  limit: 5, // Keep strict limit for auth attempts
+  message: { error: 'Too many login attempts from this IP, please try again later.' }
+});
 
 // Additional specialized rate limiters for enhanced security
-const deleteLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // Limit each IP to 5 delete operations per windowMs
-  message: 'Too many delete requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-})
+const deleteLimiter = createProxyAwareRateLimiter({
+  windowMs: rateLimitWindowMs, // Use same window as general limiter
+  limit: 50, // More lenient for delete operations
+  message: { error: 'Too many delete requests from this IP, please try again later.' }
+});
 
-const createLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20, // Limit each IP to 20 create operations per windowMs
-  message: 'Too many create requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-})
+const createLimiter = createProxyAwareRateLimiter({
+  windowMs: rateLimitWindowMs, // Use same window as general limiter
+  limit: 200, // More lenient for create operations
+  message: { error: 'Too many create requests from this IP, please try again later.' }
+});
 
-const exportLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 15, // Limit each IP to 15 export operations per windowMs
-  message: 'Too many export requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-})
+const exportLimiter = createProxyAwareRateLimiter({
+  windowMs: rateLimitWindowMs, // Use same window as general limiter
+  limit: 150, // More lenient for export operations
+  message: { error: 'Too many export requests from this IP, please try again later.' }
+});
 
-const criticalLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 1, // Limit each IP to 1 critical operation per hour
-  message: 'Critical operation limit exceeded. Please wait 1 hour before trying again.',
-  standardHeaders: true,
-  legacyHeaders: false,
-})
+const criticalLimiter = createProxyAwareRateLimiter({
+  windowMs: 60 * 60 * 1000, // 1 hour for critical operations
+  limit: 10, // More lenient for critical operations
+  message: { error: 'Critical operation limit exceeded. Please wait 1 hour before trying again.' }
+});
 
-const restoreLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000, // 1 hour
-  max: 5, // Limit each IP to 5 restore operations per hour
-  message: 'Too many restore requests from this IP, please try again later.',
-  standardHeaders: true,
-  legacyHeaders: false,
-})
+const restoreLimiter = createProxyAwareRateLimiter({
+  windowMs: 60 * 60 * 1000, // 1 hour for restore operations
+  limit: 50, // More lenient for restore operations
+  message: { error: 'Too many restore requests from this IP, please try again later.' }
+});
+
+// User-aware rate limiting (different limits for authenticated users)
+const createUserAwareRateLimiter = (anonymousLimit, authenticatedLimit, windowMs = 15 * 60 * 1000) => {
+  return createProxyAwareRateLimiter({
+    windowMs: windowMs,
+    limit: (req) => {
+      // Check if user is authenticated and return different limits
+      if (req.user && req.user.role === 'admin') {
+        return authenticatedLimit * 2; // Admins get double the limit
+      } else if (req.user) {
+        return authenticatedLimit; // Authenticated users get higher limit
+      } else {
+        return anonymousLimit; // Anonymous users get base limit
+      }
+    },
+    keyGenerator: (req) => {
+      const baseIP = getRealClientIP(req);
+      // Add user context to the key for authenticated users
+      if (req.user) {
+        return `${baseIP}:${req.user.username}`;
+      }
+      return baseIP;
+    },
+    message: (req) => {
+      const isAuth = !!req.user;
+      return { 
+        error: `Too many requests from this ${isAuth ? 'account' : 'IP'}. ${isAuth ? 'Authenticated users' : 'Anonymous users'} are limited. Please try again later.`
+      };
+    }
+  });
+};
+
+// Apply user-aware rate limiting to API endpoints
+const smartApiLimiter = createUserAwareRateLimiter(50, 200); // Anonymous: 50/15min, Auth: 200/15min
 
 // Apply rate limiting conditionally based on environment
 if (process.env.NODE_ENV !== 'development') {
   app.use(generalLimiter)
-  app.use('/api', apiLimiter)
+  app.use('/api', smartApiLimiter) // Use smart user-aware API rate limiting
 } else {
   console.log('🚧 Development mode: Rate limiting disabled')
 }
@@ -599,6 +728,17 @@ app.use(cors(corsOptions))
 // Cookie parser middleware for JWT in httpOnly cookies
 app.use(cookieParser())
 
+// Enable gzip compression for responses larger than 1KB
+app.use(compression({
+  threshold: 1024,
+  filter: (req, res) => {
+    if (req.headers['x-no-compression']) {
+      return false
+    }
+    return compression.filter(req, res)
+  }
+}))
+
 // CSRF middleware generator (deprecated - using global protection now)
 const generateCSRFMiddleware = () => {
   return (req, res, next) => {
@@ -627,6 +767,9 @@ const validateCSRF = (req, res, next) => {
 app.use(express.json({ 
   limit: '10mb',
   verify: (req, res, buf) => {
+    if (!buf || buf.length === 0) {
+      return
+    }
     try {
       JSON.parse(buf)
     } catch (e) {
@@ -636,9 +779,40 @@ app.use(express.json({
   }
 }))
 
-// Subpath configuration
-const SUBPATH = process.env.SUBPATH || '/tennis'
+// Subpath configuration - support both SUBPATH and BASE_PATH env vars
+// Use root path for development, tennis subpath for production by default
+const SUBPATH = process.env.SUBPATH || process.env.BASE_PATH || (process.env.NODE_ENV === 'production' ? '/tennis' : '/')
 const isDevelopment = process.env.NODE_ENV === 'development'
+
+console.log('🎯 Server subpath configuration:', SUBPATH)
+console.log('🔧 Environment:', process.env.NODE_ENV)
+
+const getCookiePathsToClear = () => {
+  const paths = new Set(['/'])
+  const normalizedSubpath = SUBPATH && SUBPATH !== '/' ? SUBPATH : null
+  if (normalizedSubpath) {
+    const cleanSubpath = normalizedSubpath.endsWith('/') ? normalizedSubpath.slice(0, -1) : normalizedSubpath
+    paths.add(cleanSubpath)
+    paths.add(`${cleanSubpath}/`)
+    paths.add(`${cleanSubpath}/api`)
+    paths.add(`${cleanSubpath}/api/`)
+  }
+  paths.add('/api')
+  paths.add('/api/')
+  return Array.from(paths)
+}
+
+const clearCookieAllPaths = (res, name, extraOptions = {}) => {
+  const paths = getCookiePathsToClear()
+  paths.forEach((path) => {
+    res.clearCookie(name, {
+      ...sharedCookieDefaults,
+      httpOnly: true,
+      path,
+      ...extraOptions
+    })
+  })
+}
 
 // Serve static files with subpath support
 if (isDevelopment) {
@@ -652,11 +826,76 @@ if (isDevelopment) {
       res.setHeader('X-Content-Type-Options', 'nosniff')
       res.setHeader('X-Frame-Options', 'DENY')
       res.setHeader('X-XSS-Protection', '1; mode=block')
+
+      const lowerPath = path.toLowerCase()
+      const isHTML = lowerPath.endsWith('.html')
+      const isImmutableAsset = /\.(?:js|css|mjs|cjs|svg|png|jpg|jpeg|gif|ico|webp|avif|woff|woff2|ttf)$/i.test(lowerPath)
+
+      if (isHTML) {
+        res.setHeader('Cache-Control', 'no-store, max-age=0')
+      } else if (isImmutableAsset) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+      } else {
+        res.setHeader('Cache-Control', 'public, max-age=86400')
+      }
     }
   }))
+  console.log(`📁 Static files served from: ${SUBPATH}`)
+}
+
+// Add API routing for both subpath and direct access compatibility
+if (SUBPATH !== '/' && !isDevelopment) {
+  // Log subpath API requests
+  app.use(`${SUBPATH}/api`, (req, res, next) => {
+    console.log(`🔗 Subpath API: ${req.method} ${SUBPATH}/api${req.path}`)
+    next()
+  })
+  
+  // Log direct API requests (for backward compatibility)
+  app.use('/api', (req, res, next) => {
+    console.log(`🔗 Direct API: ${req.method} /api${req.path}`)
+    next()
+  })
+  
+  console.log(`🔀 API routes configured for both ${SUBPATH}/api and /api`)
+}
+
+// Normalize API requests when served from a subpath so `/tennis/api/...` hits `/api/...`
+if (SUBPATH !== '/' && !isDevelopment) {
+  app.use((req, res, next) => {
+    if (req.originalUrl?.startsWith(`${SUBPATH}/api`)) {
+      const normalized = req.originalUrl.slice(SUBPATH.length)
+      req.url = normalized.startsWith('/') ? normalized : `/${normalized}`
+    }
+    next()
+  })
+}
+
+// Prevent caching of API responses (dynamic data)
+const apiCachePaths = [
+  '/api',
+  SUBPATH !== '/' && !isDevelopment ? `${SUBPATH}/api` : null
+].filter(Boolean)
+
+if (apiCachePaths.length) {
+  app.use(apiCachePaths, (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, max-age=0')
+    res.setHeader('Pragma', 'no-cache')
+    res.setHeader('Expires', '0')
+    next()
+  })
 }
 
 // Global CSRF protection middleware (after body parsing)
+const matchesApiRoute = (req, route) => {
+  if (!route) return false
+  const { path, originalUrl } = req
+  if (path === route) return true
+  const normalized = originalUrl?.split('?')[0]
+  if (normalized === route) return true
+  return normalized?.endsWith(route)
+}
+
 const globalCSRFProtection = (req, res, next) => {
   // Skip CSRF for GET requests (read-only operations)
   if (req.method === 'GET') {
@@ -664,17 +903,17 @@ const globalCSRFProtection = (req, res, next) => {
   }
   
   // Skip CSRF for login endpoint (needs to issue CSRF token)
-  if (req.path === '/api/auth/login') {
+  if (matchesApiRoute(req, '/api/auth/login')) {
     return next()
   }
   
   // Skip CSRF for public CSRF token endpoint
-  if (req.path === '/api/csrf-token') {
+  if (matchesApiRoute(req, '/api/csrf-token')) {
     return next()
   }
   
   // Skip CSRF for non-authenticated users on logout
-  if (req.path === '/api/auth/logout' && !req.cookies.authToken) {
+  if (matchesApiRoute(req, '/api/auth/logout') && !req.cookies.authToken) {
     return next()
   }
   
@@ -685,12 +924,10 @@ const globalCSRFProtection = (req, res, next) => {
   let sessionId = req.cookies.csrfSessionId
   if (!sessionId) {
     sessionId = generateSessionId()
-    res.cookie('csrfSessionId', sessionId, {
+    res.cookie('csrfSessionId', sessionId, withCookieDefaults({
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
       maxAge: 24 * 60 * 60 * 1000 // 24 hours
-    })
+    }))
   }
   
   const secret = deriveCSRFSecret(sessionId)
@@ -704,6 +941,25 @@ const globalCSRFProtection = (req, res, next) => {
   
   next()
 }
+
+// Comprehensive access logging middleware (runs early to capture all requests)
+app.use((req, res, next) => {
+  const startTime = Date.now();
+  
+  // Capture original res.end to log when response is complete
+  const originalEnd = res.end;
+  res.end = function(...args) {
+    const responseTime = Date.now() - startTime;
+    
+    // Log the access (with user info if available from auth middleware)
+    logAccess(req, res, responseTime, req.user || null);
+    
+    // Call original end method
+    originalEnd.apply(res, args);
+  };
+  
+  next();
+});
 
 // Apply global CSRF protection
 app.use(globalCSRFProtection)
@@ -733,12 +989,8 @@ const authenticateToken = (req, res, next) => {
   if (req.cookies.authToken && token === req.cookies.authToken) {
     token = decryptJWT(token)
     if (!token) {
-      // Clear invalid encrypted cookie
-      res.clearCookie('authToken', {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
-      })
+      // Clear invalid encrypted cookie across paths
+      clearCookieAllPaths(res, 'authToken')
       return res.status(401).json({ error: 'Invalid encrypted token' })
     }
   }
@@ -747,11 +999,7 @@ const authenticateToken = (req, res, next) => {
     if (err) {
       // Clear invalid cookie
       if (req.cookies.authToken) {
-        res.clearCookie('authToken', {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
-        })
+        clearCookieAllPaths(res, 'authToken')
       }
       return res.status(403).json({ error: 'Invalid or expired token' })
     }
@@ -771,12 +1019,12 @@ const checkAuth = (req, res, next) => {
     if (req.cookies.authToken && token === req.cookies.authToken) {
       token = decryptJWT(token)
       if (!token) {
-        // Clear invalid encrypted cookie
-        res.clearCookie('authToken', {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
-        })
+        // Clear invalid encrypted cookie only if headers not sent
+        if (!res.headersSent) {
+          res.clearCookie('authToken', withCookieDefaults({
+            httpOnly: true
+          }))
+        }
         req.isAuthenticated = false
         req.csrfSecret = deriveCSRFSecret(generateSessionId())
         return next()
@@ -787,13 +1035,9 @@ const checkAuth = (req, res, next) => {
       if (!err) {
         req.user = user
         req.isAuthenticated = true
-      } else if (req.cookies.authToken) {
-        // Clear invalid cookie
-        res.clearCookie('authToken', {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
-        })
+      } else if (req.cookies.authToken && !res.headersSent) {
+        // Clear invalid cookie only if headers not sent
+        clearCookieAllPaths(res, 'authToken')
       }
     })
   }
@@ -803,18 +1047,45 @@ const checkAuth = (req, res, next) => {
   let sessionId = req.cookies.csrfSessionId
   if (!sessionId) {
     sessionId = generateSessionId()
-    res.cookie('csrfSessionId', sessionId, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
-      maxAge: 24 * 60 * 60 * 1000 // 24 hours
-    })
+    // Only set cookie if headers haven't been sent
+    if (!res.headersSent) {
+      res.cookie('csrfSessionId', sessionId, withCookieDefaults({
+        httpOnly: true,
+        maxAge: 24 * 60 * 60 * 1000 // 24 hours
+      }))
+    }
   }
   
   // Derive CSRF secret from session ID (no cleartext storage)
   req.csrfSecret = deriveCSRFSecret(sessionId)
   next()
 }
+
+// Permission middleware
+const requireRole = (allowedRoles) => {
+  return (req, res, next) => {
+    if (!req.isAuthenticated || !req.user) {
+      return res.status(401).json({ error: 'Authentication required' })
+    }
+    
+    const userRole = req.user.role
+    const roles = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles]
+    
+    if (!roles.includes(userRole)) {
+      return res.status(403).json({ 
+        error: 'Insufficient permissions',
+        required: roles,
+        current: userRole
+      })
+    }
+    
+    next()
+  }
+}
+
+// Specific permission shortcuts
+const requireAdmin = requireRole('admin')
+const requireEditor = requireRole(['admin', 'editor'])
 
 // Generate JWT token
 const generateToken = (user) => {
@@ -861,26 +1132,38 @@ app.post('/api/auth/login',
       const { username, password } = req.body
 
       // Check if credentials match admin account
+      let user = null
       if (username === ADMIN_USERNAME) {
         const isValidPassword = await bcrypt.compare(password, hashedAdminPassword)
         
         if (isValidPassword) {
-          const user = {
+          user = {
             username: ADMIN_USERNAME,
             email: ADMIN_EMAIL,
             role: 'admin'
           }
-          
+        }
+      } else if (username === EDITOR_USERNAME) {
+        const isValidPassword = await bcrypt.compare(password, hashedEditorPassword)
+        
+        if (isValidPassword) {
+          user = {
+            username: EDITOR_USERNAME,
+            email: EDITOR_EMAIL,
+            role: 'editor'
+          }
+        }
+      }
+      
+      if (user) {
           const token = generateToken(user)
           
           // Encrypt JWT token before storing in httpOnly cookie (addresses CodeQL alert)
           const encryptedToken = encryptJWT(token)
-          res.cookie('authToken', encryptedToken, {
+          res.cookie('authToken', encryptedToken, withCookieDefaults({
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
             maxAge: 24 * 60 * 60 * 1000 // 24 hours
-          })
+          }))
           
           // Generate new session ID for CSRF protection
           const sessionId = generateSessionId()
@@ -888,12 +1171,10 @@ app.post('/api/auth/login',
           const csrfToken = tokens.create(csrfSecret)
           
           // Set session ID in httpOnly cookie (not the secret itself)
-          res.cookie('csrfSessionId', sessionId, {
+          res.cookie('csrfSessionId', sessionId, withCookieDefaults({
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax',
             maxAge: 24 * 60 * 60 * 1000 // 24 hours
-          })
+          }))
           
           // Detect client type - API clients should include 'Accept: application/json' header
           // and no 'Accept: text/html' (which browsers send)
@@ -920,9 +1201,6 @@ app.post('/api/auth/login',
           }
           
           res.json(response)
-        } else {
-          res.status(401).json({ error: 'Invalid credentials' })
-        }
       } else {
         res.status(401).json({ error: 'Invalid credentials' })
       }
@@ -935,34 +1213,45 @@ app.post('/api/auth/login',
 
 // Logout endpoint (requires CSRF protection for authenticated users)
 app.post('/api/auth/logout', checkAuth, (req, res) => {
-  // Check if user is authenticated before applying CSRF
-  if (req.isAuthenticated) {
-    // Apply CSRF validation for authenticated logout
-    const token = req.get('X-CSRF-Token') || req.body._csrf
-    const secret = req.csrfSecret
+  try {
+    // Check if headers have already been sent
+    if (res.headersSent) {
+      console.warn('⚠️ Headers already sent in logout endpoint')
+      return
+    }
+
+    // Check if user is authenticated before applying CSRF
+    if (req.isAuthenticated) {
+      // Apply CSRF validation for authenticated logout
+      const token = req.get('X-CSRF-Token') || req.body._csrf
+      const secret = req.csrfSecret
+      
+      if (!token || !tokens.verify(secret, token)) {
+        return res.status(403).json({ 
+          error: 'Invalid CSRF token',
+          csrfRequired: true 
+        })
+      }
+    }
     
-    if (!token || !tokens.verify(secret, token)) {
-      return res.status(403).json({ 
-        error: 'Invalid CSRF token',
-        csrfRequired: true 
+    // Clear authentication and CSRF cookies
+    clearCookieAllPaths(res, 'authToken')
+    clearCookieAllPaths(res, 'csrfSessionId')
+    
+    // Send success response only once
+    return res.json({ success: true, message: 'Logged out successfully' })
+    
+  } catch (error) {
+    console.error('Logout error:', error)
+    
+    // Only send error response if headers haven't been sent
+    if (!res.headersSent) {
+      return res.status(500).json({ 
+        success: false,
+        error: 'Logout failed' 
       })
     }
   }
-  
-  // Clear authentication and CSRF cookies
-  res.clearCookie('authToken', {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
-  })
-  
-  res.clearCookie('csrfSessionId', {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'strict' : 'lax'
-  })
-  
-  res.json({ success: true, message: 'Logged out successfully' })
 })
 
 // Check authentication status
@@ -999,6 +1288,8 @@ app.get('/api/players', checkAuth, async (req, res) => {
 
 app.post('/api/players', 
   authenticateToken,
+  requireAdmin,
+  requireAdmin,
   conditionalRateLimit(createLimiter),
   [
     body('name')
@@ -1031,6 +1322,7 @@ app.post('/api/players',
 
 app.delete('/api/players/:id', 
   authenticateToken,
+  requireAdmin,
   conditionalRateLimit(deleteLimiter),
   [
     param('id').isInt().withMessage('Invalid player ID')
@@ -1066,7 +1358,19 @@ app.get('/api/seasons', checkAuth, async (req, res) => {
   }
 })
 
+// Get all active seasons (supports multiple concurrent seasons)
 app.get('/api/seasons/active', checkAuth, async (req, res) => {
+  try {
+    const seasons = await db.getActiveSeasons()
+    res.json(seasons)
+  } catch (error) {
+    console.error('Error getting active seasons:', error)
+    res.status(500).json({ error: 'Failed to get active seasons' })
+  }
+})
+
+// Get first active season (backward compatibility)
+app.get('/api/seasons/active-one', checkAuth, async (req, res) => {
   try {
     const activeSeason = await db.getActiveSeason()
     res.json(activeSeason)
@@ -1078,32 +1382,39 @@ app.get('/api/seasons/active', checkAuth, async (req, res) => {
 
 app.post('/api/seasons', 
   authenticateToken,
+  requireAdmin,
   conditionalRateLimit(createLimiter),
   [
     body('name').isLength({ min: 1, max: 100 }).withMessage('Season name is required'),
     body('startDate').isISO8601().withMessage('Valid start date is required'),
-    body('autoEndPrevious').optional().isBoolean().withMessage('autoEndPrevious must be boolean')
+    body('endDate').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('Valid end date is required'),
+    body('autoEnd').optional().isBoolean().withMessage('autoEnd must be boolean'),
+    body('description').optional({ nullable: true, checkFalsy: true }).isString().withMessage('Description must be string')
   ],
   handleValidationErrors,
   async (req, res) => {
     try {
-      const { name, startDate, autoEndPrevious } = req.body
+      let { name, startDate, endDate, autoEnd = false, description = '' } = req.body
       
-      // If autoEndPrevious is true, end the current active season
-      if (autoEndPrevious) {
-        const activeSeason = await db.getActiveSeason()
-        if (activeSeason) {
-          // Calculate end date as one day before new season starts
-          const newSeasonDate = new Date(startDate)
-          const endDate = new Date(newSeasonDate)
-          endDate.setDate(endDate.getDate() - 1)
-          const endDateString = endDate.toISOString().split('T')[0]
-          
-          await db.endSeason(activeSeason.id, endDateString)
-        }
+      // Sanitize empty strings to null
+      endDate = endDate || null
+      description = description || ''
+      
+      // Validate: autoEnd requires endDate
+      if (autoEnd && !endDate) {
+        return res.status(400).json({ 
+          success: false,
+          error: 'Auto-end requires an end date to be set' 
+        })
       }
       
-      const seasonId = await db.createSeason(name, startDate)
+      // Check and end expired seasons automatically
+      const expiredSeasons = await db.checkAndEndExpiredSeasons()
+      if (expiredSeasons.length > 0) {
+        console.log(`🏁 Auto-ended ${expiredSeasons.length} expired season(s)`)
+      }
+      
+      const seasonId = await db.createSeason(name, startDate, endDate, autoEnd, description)
       
       // Invalidate all cache when seasons change
       rankingsCache.clear()
@@ -1111,7 +1422,7 @@ app.post('/api/seasons',
       // Preload common data for better hit rates
       setTimeout(() => rankingsCache.preloadCommonData(db), 100)
       
-      res.json({ success: true, id: seasonId, name, startDate })
+      res.json({ success: true, id: seasonId, name, startDate, endDate, autoEnd, description })
     } catch (error) {
       console.error('Error creating season:', error)
       res.status(500).json({ error: 'Failed to create season' })
@@ -1121,18 +1432,34 @@ app.post('/api/seasons',
 
 app.put('/api/seasons/:id', 
   authenticateToken,
+  requireAdmin,
   [
     param('id').isInt().withMessage('Invalid season ID'),
     body('name').isLength({ min: 1, max: 100 }).withMessage('Season name is required'),
     body('startDate').isISO8601().withMessage('Valid start date is required'),
-    body('endDate').optional().isISO8601().withMessage('Valid end date is required')
+    body('endDate').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('Valid end date is required'),
+    body('autoEnd').optional().isBoolean().withMessage('autoEnd must be boolean'),
+    body('description').optional({ nullable: true, checkFalsy: true }).isString().withMessage('Description must be string')
   ],
   handleValidationErrors,
   async (req, res) => {
     try {
       const seasonId = parseInt(req.params.id)
-      const { name, startDate, endDate } = req.body
-      await db.updateSeason(seasonId, name, startDate, endDate)
+      let { name, startDate, endDate, autoEnd = false, description = '' } = req.body
+      
+      // Sanitize empty strings to null
+      endDate = endDate || null
+      description = description || ''
+      
+      // Validate: autoEnd requires endDate
+      if (autoEnd && !endDate) {
+        return res.status(400).json({ 
+          success: false,
+          error: 'Auto-end requires an end date to be set' 
+        })
+      }
+      
+      await db.updateSeason(seasonId, name, startDate, endDate, autoEnd, description)
       
       // Invalidate all cache when seasons are updated
       rankingsCache.clear()
@@ -1150,16 +1477,19 @@ app.put('/api/seasons/:id',
 
 app.post('/api/seasons/:id/end', 
   authenticateToken,
+  requireEditor,
   [
     param('id').isInt().withMessage('Invalid season ID'),
-    body('endDate').isISO8601().withMessage('Valid end date is required')
+    body('endDate').optional().isISO8601().withMessage('Valid end date is required')
   ],
   handleValidationErrors,
   async (req, res) => {
     try {
       const seasonId = parseInt(req.params.id)
-      const { endDate } = req.body
-      await db.endSeason(seasonId, endDate)
+      const endDate = req.body.endDate || new Date().toISOString().split('T')[0]
+      const endedBy = req.user.username
+      
+      await db.endSeason(seasonId, endDate, endedBy)
       
       // Invalidate all cache when seasons are ended
       rankingsCache.clear()
@@ -1175,8 +1505,63 @@ app.post('/api/seasons/:id/end',
   }
 )
 
+// Reactivate a season (admin/editor only)
+app.post('/api/seasons/:id/reactivate',
+  authenticateToken,
+  requireEditor,
+  [
+    param('id').isInt().withMessage('Invalid season ID')
+  ],
+  handleValidationErrors,
+  async (req, res) => {
+    try {
+      const seasonId = parseInt(req.params.id)
+      const username = req.user?.username || 'unknown'
+      
+      // Get current season
+      const season = await db.getSeasonById(seasonId)
+      
+      if (!season) {
+        return res.status(404).json({
+          success: false,
+          error: 'Season not found'
+        })
+      }
+      
+      if (season.is_active) {
+        return res.status(400).json({
+          success: false,
+          error: 'Season is already active'
+        })
+      }
+      
+      // Reactivate the season
+      await db.reactivateSeason(seasonId)
+      
+      // Invalidate cache
+      rankingsCache.clear()
+      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      
+      console.log(`✅ Season ${seasonId} reactivated by ${username}`)
+      
+      res.json({
+        success: true,
+        message: 'Season reactivated successfully'
+      })
+      
+    } catch (error) {
+      console.error('Error reactivating season:', error)
+      res.status(500).json({
+        success: false,
+        error: 'Failed to reactivate season'
+      })
+    }
+  }
+)
+
 app.delete('/api/seasons/:id', 
   authenticateToken,
+  requireAdmin,
   conditionalRateLimit(deleteLimiter),
   [
     param('id').isInt().withMessage('Invalid season ID')
@@ -1208,6 +1593,32 @@ app.delete('/api/seasons/:id',
     } catch (error) {
       console.error('Error deleting season:', error)
       res.status(500).json({ error: 'Failed to delete season' })
+    }
+  }
+)
+
+// Check and auto-end expired seasons
+app.post('/api/seasons/check-expired',
+  authenticateToken,
+  requireEditor,
+  async (req, res) => {
+    try {
+      const expiredSeasons = await db.checkAndEndExpiredSeasons()
+      
+      if (expiredSeasons.length > 0) {
+        // Invalidate cache
+        rankingsCache.clear()
+        setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      }
+      
+      res.json({
+        success: true,
+        ended: expiredSeasons.length,
+        seasons: expiredSeasons
+      })
+    } catch (error) {
+      console.error('Error checking expired seasons:', error)
+      res.status(500).json({ error: 'Failed to check expired seasons' })
     }
   }
 )
@@ -1248,6 +1659,7 @@ app.get('/api/matches/by-season/:seasonId', checkAuth, async (req, res) => {
 
 app.post('/api/matches', 
   authenticateToken,
+  requireEditor,
   conditionalRateLimit(createLimiter),
   [
     body('seasonId').isInt().withMessage('Valid season ID is required'),
@@ -1315,6 +1727,7 @@ app.get('/api/matches/:id',
 // Update a match (admin only)
 app.put('/api/matches/:id', 
   authenticateToken,
+  requireEditor,
   [
     param('id').isInt().withMessage('Invalid match ID'),
     body('seasonId').isInt().withMessage('Valid season ID is required'),
@@ -1362,9 +1775,10 @@ app.put('/api/matches/:id',
   }
 )
 
-// Delete a match (admin only)
+// Delete a match (admin or editor)
 app.delete('/api/matches/:id', 
   authenticateToken,
+  requireEditor,
   conditionalRateLimit(deleteLimiter),
   [
     param('id').isInt().withMessage('Invalid match ID')
@@ -1793,6 +2207,7 @@ app.get('/api/export-excel/lifetime', checkAuth, conditionalRateLimit(exportLimi
 // Clear All Data Route (DANGEROUS!)
 app.delete('/api/clear-all-data', 
   authenticateToken,
+  requireAdmin,
   conditionalRateLimit(criticalLimiter),
   async (req, res) => {
     try {
@@ -1865,6 +2280,7 @@ app.get('/api/backup-data',
 // Restore Data Route (imports data from JSON backup)
 app.post('/api/restore-data', 
   authenticateToken,
+  requireAdmin,
   conditionalRateLimit(restoreLimiter),
   [
     body('backupData')
@@ -2115,6 +2531,271 @@ app.get('/api/performance', authenticateToken, async (req, res) => {
   })
 })
 
+// Access Logs and Analytics Routes (Admin only)
+
+// Get access log statistics
+app.get('/api/admin/access-stats', 
+  authenticateToken,
+  requireAdmin,
+  smartApiLimiter,
+  async (req, res) => {
+    try {
+      const hours = parseInt(req.query.hours) || 24;
+      const stats = await getLogStats(hours);
+      
+      res.json({
+        success: true,
+        timeframe: `${hours} hours`,
+        stats,
+        timestamp: formatSecureTimestamp()
+      });
+    } catch (error) {
+      console.error('Error getting access stats:', error);
+      res.status(500).json({ error: 'Failed to get access statistics' });
+    }
+  }
+)
+
+// Get recent access logs (last N entries)
+app.get('/api/admin/access-logs', 
+  authenticateToken,
+  requireAdmin,
+  smartApiLimiter,
+  async (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit) || 100;
+      const offset = parseInt(req.query.offset) || 0;
+      const filterIP = req.query.ip;
+      const filterUser = req.query.user;
+      const filterPath = req.query.path;
+      
+      // For now, return a message about log file location
+      res.json({
+        success: true,
+        message: 'Access logs are stored in rotating files. Use the log files in /logs directory for detailed analysis.',
+        logLocation: '/logs/access.log',
+        parameters: {
+          limit,
+          offset,
+          filters: {
+            ip: filterIP,
+            user: filterUser,
+            path: filterPath
+          }
+        },
+        note: 'Real-time log querying from database will be implemented in future version.',
+        currentLogFile: 'logs/access.log',
+        errorLogFile: 'logs/error.log'
+      });
+    } catch (error) {
+      console.error('Error getting access logs:', error);
+      res.status(500).json({ error: 'Failed to get access logs' });
+    }
+  }
+)
+
+// Get IP analysis and potential security threats
+app.get('/api/admin/ip-analysis', 
+  authenticateToken,
+  requireAdmin,
+  smartApiLimiter,
+  async (req, res) => {
+    try {
+      const clientIP = getRealClientIP(req);
+      const targetIP = req.query.ip || clientIP;
+      
+      // Basic IP analysis (can be enhanced with threat intelligence APIs)
+      const analysis = {
+        ip: targetIP,
+        isLocal: isLocalIP(targetIP),
+        timestamp: formatSecureTimestamp(),
+        analysis: {
+          type: isLocalIP(targetIP) ? 'local/private' : 'public',
+          suspicious: false, // Would be determined by threat intelligence
+          reputation: 'unknown', // Would come from threat intelligence APIs
+          geolocation: 'Available in log files',
+          rateLimitStatus: 'Active',
+          recentActivity: 'Check log files for detailed activity'
+        },
+        recommendations: [
+          'Monitor access patterns in log files',
+          'Check for unusual request patterns',
+          'Review geographic location consistency',
+          'Verify user agent consistency'
+        ]
+      };
+      
+      res.json({
+        success: true,
+        ipAnalysis: analysis
+      });
+    } catch (error) {
+      console.error('Error analyzing IP:', error);
+      res.status(500).json({ error: 'Failed to analyze IP' });
+    }
+  }
+)
+
+// Get current active sessions and IPs
+app.get('/api/admin/active-sessions', 
+  authenticateToken,
+  requireAdmin,
+  smartApiLimiter,
+  async (req, res) => {
+    try {
+      // This would typically track active sessions in a session store
+      // For now, provide information about current request
+      const currentIP = getRealClientIP(req);
+      
+      res.json({
+        success: true,
+        activeSessions: {
+          current: {
+            ip: currentIP,
+            user: req.user,
+            timestamp: formatSecureTimestamp(),
+            userAgent: req.get('User-Agent')
+          },
+          note: 'Full session tracking would require session store implementation'
+        },
+        recommendations: [
+          'Implement Redis session store for production',
+          'Track session duration and activity',
+          'Monitor concurrent sessions per user',
+          'Implement session invalidation on suspicious activity'
+        ]
+      });
+    } catch (error) {
+      console.error('Error getting active sessions:', error);
+      res.status(500).json({ error: 'Failed to get active sessions' });
+    }
+  }
+)
+
+// Security monitoring dashboard data
+app.get('/api/admin/security-dashboard', 
+  authenticateToken,
+  requireAdmin,
+  smartApiLimiter,
+  async (req, res) => {
+    try {
+      const currentIP = getRealClientIP(req);
+      const uptime = process.uptime();
+      
+      res.json({
+        success: true,
+        dashboard: {
+          system: {
+            uptime: `${Math.floor(uptime / 3600)}h ${Math.floor((uptime % 3600) / 60)}m`,
+            nodeEnv: process.env.NODE_ENV,
+            trustProxy: app.get('trust proxy') !== false,
+            currentTime: formatSecureTimestamp()
+          },
+          security: {
+            rateLimiting: 'Active',
+            corsProtection: 'Active',
+            csrfProtection: 'Active',
+            helmetSecurity: 'Active',
+            httpsRedirection: process.env.NODE_ENV === 'production' ? 'Active' : 'Disabled (dev)',
+            ipDetection: 'Enhanced (multiple sources)'
+          },
+          monitoring: {
+            accessLogging: 'Active (file-based with rotation)',
+            errorLogging: 'Active',
+            geoLocation: 'Active',
+            botDetection: 'Active',
+            suspiciousActivityDetection: 'Basic'
+          },
+          currentRequest: {
+            yourIP: currentIP,
+            authenticated: true,
+            role: req.user.role,
+            timestamp: formatSecureTimestamp()
+          }
+        },
+        logFiles: {
+          accessLog: 'logs/access.log (rotated daily)',
+          errorLog: 'logs/error.log (rotated daily)',
+          retention: '30 days',
+          compression: 'gzip for old files'
+        }
+      });
+    } catch (error) {
+      console.error('Error getting security dashboard:', error);
+      res.status(500).json({ error: 'Failed to get security dashboard' });
+    }
+  }
+)
+
+// API Configuration Diagnostic Endpoint (helps debug subpath issues)
+app.get('/api/debug/config', checkAuth, (req, res) => {
+  const currentIP = getRealClientIP(req)
+  
+  res.json({
+    success: true,
+    serverConfig: {
+      subpath: SUBPATH,
+      isDevelopment: isDevelopment,
+      nodeEnv: process.env.NODE_ENV,
+      publicDomain: process.env.PUBLIC_DOMAIN,
+      trustProxy: app.get('trust proxy') !== false,
+      behindProxy: process.env.BEHIND_PROXY === 'true'
+    },
+    requestInfo: {
+      method: req.method,
+      url: req.url,
+      originalUrl: req.originalUrl,
+      path: req.path,
+      baseUrl: req.baseUrl,
+      protocol: req.protocol,
+      secure: req.secure,
+      clientIP: currentIP,
+      userAgent: req.get('User-Agent')
+    },
+    proxyHeaders: {
+      host: req.get('Host'),
+      xForwardedHost: req.get('X-Forwarded-Host'),
+      xForwardedProto: req.get('X-Forwarded-Proto'),
+      xForwardedFor: req.get('X-Forwarded-For'),
+      xRealIP: req.get('X-Real-IP'),
+      cfConnectingIP: req.get('CF-Connecting-IP')
+    },
+    apiRouting: {
+      subpathAPI: `${SUBPATH}/api`,
+      directAPI: '/api',
+      recommendedFrontendAPIBase: req.get('Host') ? 
+        `${req.protocol}://${req.get('Host')}${SUBPATH}/api` : 
+        `${req.protocol}://${req.get('X-Forwarded-Host') || 'localhost'}${SUBPATH}/api`
+    },
+    user: req.user || null,
+    timestamp: formatSecureTimestamp()
+  })
+})
+
+// Add the debug endpoint to subpath as well for compatibility
+if (SUBPATH !== '/' && !isDevelopment) {
+  app.get(`${SUBPATH}/api/debug/config`, checkAuth, (req, res) => {
+    // Redirect to the main debug endpoint to avoid duplication
+    res.redirect('/api/debug/config')
+  })
+}
+
+// Helper function to check if IP is local/private (moved here for access by admin endpoints)
+function isLocalIP(ip) {
+  if (!ip || ip === 'unknown') return false;
+  
+  const localPatterns = [
+    /^127\./,           // 127.x.x.x (localhost)
+    /^192\.168\./,      // 192.168.x.x (private)
+    /^10\./,            // 10.x.x.x (private)
+    /^172\.(1[6-9]|2\d|3[01])\./,  // 172.16.x.x - 172.31.x.x (private)
+    /^::1$/,            // IPv6 localhost
+    /^::ffff:127\./     // IPv4-mapped IPv6 localhost
+  ];
+  
+  return localPatterns.some(pattern => pattern.test(ip));
+}
+
 // Serve the application with subpath support
 if (isDevelopment) {
   // In development, just serve a redirect or simple message
@@ -2146,7 +2827,7 @@ app.get('/', (req, res) => {
   res.redirect(SUBPATH)
 })
 
-// Health check endpoint for monitoring
+// Health check endpoint for monitoring (unauthenticated for load balancers)
 app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'healthy',
@@ -2157,6 +2838,35 @@ app.get('/health', (req, res) => {
     basePath: process.env.BASE_PATH || '/',
     uptime: process.uptime()
   })
+})
+
+// API Health endpoint with proxy information (for testing)
+app.get('/api/health', (req, res) => {
+  const proxyInfo = {
+    status: 'healthy',
+    timestamp: new Date().toISOString(),
+    proxyTrust: app.get('trust proxy') !== false,
+    clientIP: req.ip,
+    forwardedFor: req.get('X-Forwarded-For'),
+    realIP: req.get('X-Real-IP'),
+    forwardedProto: req.get('X-Forwarded-Proto'),
+    forwardedHost: req.get('X-Forwarded-Host'),
+    environment: process.env.NODE_ENV || 'development',
+    behindProxy: process.env.BEHIND_PROXY === 'true',
+    uptime: process.uptime()
+  }
+  
+  // Log proxy information for debugging
+  if (process.env.NODE_ENV === 'development') {
+    console.log('🔍 Health check - Proxy Info:', {
+      clientIP: proxyInfo.clientIP,
+      forwardedFor: proxyInfo.forwardedFor,
+      realIP: proxyInfo.realIP,
+      trustProxy: proxyInfo.proxyTrust
+    })
+  }
+  
+  res.status(200).json(proxyInfo)
 })
 
 // Fallback for any other routes (in production)

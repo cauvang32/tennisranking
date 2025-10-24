@@ -13,13 +13,69 @@ class TennisRankingSystem {
     this.selectedSeason = null
     this.autoSaveEnabled = true
     this.serverMode = true
-    this.apiBase = window.location.origin + '/api'
+    this.apiBase = this.getApiBaseUrl()
     this.isAuthenticated = false
     this.user = null
     this.csrfToken = null // CSRF token for secure requests
     this.currentWinningTeam = null
     this.isManualWinnerMode = false
     this.init()
+  }
+
+  // Auto-detect API base URL for subpath deployments
+  getApiBaseUrl() {
+    const currentPath = window.location.pathname
+    const currentOrigin = window.location.origin
+    const currentHost = window.location.host
+    
+    console.log('🔍 Detecting API base URL...')
+    console.log('📍 Current path:', currentPath)
+    console.log('🌐 Current origin:', currentOrigin)
+    console.log('🏠 Current host:', currentHost)
+    
+    // Special case: if we're on hungsanity.com or similar production domains
+    // and the path starts with /tennis, use tennis subpath
+    if (currentPath.startsWith('/tennis')) {
+      const apiBase = `${currentOrigin}/tennis/api`
+      console.log('✅ Tennis subpath deployment detected')
+      console.log('🔗 API Base URL:', apiBase)
+      return apiBase
+    }
+    
+    // Check if we're on a production domain (not localhost)
+    const isProduction = !currentHost.includes('localhost') && !currentHost.includes('127.0.0.1')
+    
+    if (isProduction) {
+      // For production domains, check if we need to use a subpath
+      const pathSegments = currentPath.split('/').filter(segment => segment && segment !== 'index.html')
+      
+      if (pathSegments.length > 0) {
+        const potentialSubpath = pathSegments[0]
+        const commonSubpaths = ['tennis', 'app', 'ranking', 'admin', 'dashboard']
+        
+        if (commonSubpaths.includes(potentialSubpath)) {
+          const apiBase = `${currentOrigin}/${potentialSubpath}/api`
+          console.log('✅ Production subpath detected:', potentialSubpath)
+          console.log('🔗 API Base URL:', apiBase)
+          return apiBase
+        }
+      }
+      
+      // Production domain but no clear subpath - try tennis as default
+      // This handles cases where the app is served from /tennis/ but accessed directly
+      const testApiBase = `${currentOrigin}/tennis/api`
+      console.log('✅ Production domain - trying tennis subpath as default')
+      console.log('🔗 API Base URL (will test):', testApiBase)
+      
+      // We'll test this URL and fall back to root if it doesn't work
+      return testApiBase
+    }
+    
+    // Development or localhost - use root API
+    const apiBase = `${currentOrigin}/api`
+    console.log('✅ Development/localhost detected - using root API')
+    console.log('🔗 API Base URL:', apiBase)
+    return apiBase
   }
 
   async init() {
@@ -66,10 +122,59 @@ class TennisRankingSystem {
 
   async detectServerMode() {
     try {
-      const response = await fetch(`${this.apiBase}/players`)
-      this.serverMode = response.ok
+      const response = await fetch(`${this.apiBase}/players`, {
+        credentials: 'include',
+        headers: {
+          'Accept': 'application/json'
+        }
+      })
+      
+      if (response.ok) {
+        this.serverMode = true
+        console.log('✅ Server mode detected - using server database')
+        console.log('✅ API base URL confirmed:', this.apiBase)
+        return
+      } else {
+        throw new Error(`Server responded with ${response.status}`)
+      }
     } catch (error) {
+      console.log('⚠️ Primary API URL failed:', this.apiBase)
+      console.log('🔄 Trying fallback API URL...')
+      
+      // Try fallback URL - if we tried subpath, try root, and vice versa
+      let fallbackApiBase
+      const currentOrigin = window.location.origin
+      
+      if (this.apiBase.includes('/tennis/api')) {
+        // We tried tennis subpath, try root
+        fallbackApiBase = `${currentOrigin}/api`
+      } else {
+        // We tried root, try tennis subpath
+        fallbackApiBase = `${currentOrigin}/tennis/api`
+      }
+      
+      try {
+        console.log('🔄 Testing fallback:', fallbackApiBase)
+        const fallbackResponse = await fetch(`${fallbackApiBase}/players`, {
+          credentials: 'include',
+          headers: {
+            'Accept': 'application/json'
+          }
+        })
+        
+        if (fallbackResponse.ok) {
+          this.apiBase = fallbackApiBase
+          this.serverMode = true
+          console.log('✅ Fallback API URL works - updated API base:', this.apiBase)
+          return
+        }
+      } catch (fallbackError) {
+        console.log('❌ Fallback API URL also failed')
+      }
+      
+      console.log('⚠️ No server available, falling back to local storage mode')
       this.serverMode = false
+      this.apiBase = null
     }
   }
 
@@ -151,9 +256,32 @@ class TennisRankingSystem {
   updateUIForAuthStatus() {
     this.updateAuthHeader()
     
+    const userRole = this.user?.role || null
+    
+    // Handle general edit elements (for any authenticated user)
     const editElements = document.querySelectorAll('.edit-only')
     editElements.forEach(element => {
       if (this.isAuthenticated) {
+        element.classList.remove('hidden')
+      } else {
+        element.classList.add('hidden')
+      }
+    })
+    
+    // Handle admin-only elements
+    const adminElements = document.querySelectorAll('.admin-only')
+    adminElements.forEach(element => {
+      if (userRole === 'admin') {
+        element.classList.remove('hidden')
+      } else {
+        element.classList.add('hidden')
+      }
+    })
+    
+    // Handle editor elements (admin or editor)
+    const editorElements = document.querySelectorAll('.editor-only')
+    editorElements.forEach(element => {
+      if (userRole === 'admin' || userRole === 'editor') {
         element.classList.remove('hidden')
       } else {
         element.classList.add('hidden')
@@ -169,21 +297,38 @@ class TennisRankingSystem {
       }
     }
     
-    // Hide/show auth-required tabs
-    const authTabs = document.querySelectorAll('[data-tab="players"], [data-tab="matches"], [data-tab="seasons"]')
-    authTabs.forEach(tab => {
-      if (this.isAuthenticated) {
-        tab.classList.remove('hidden')
-      } else {
-        tab.classList.add('hidden')
-        if (tab.classList.contains('active')) {
-          this.switchTab('rankings')
+    // Show/hide tabs based on role
+    const playerTab = document.querySelector('[data-tab="players"]')
+    const matchTab = document.querySelector('[data-tab="matches"]')
+    const seasonTab = document.querySelector('[data-tab="seasons"]')
+    
+    // Admin gets access to all tabs
+    if (userRole === 'admin') {
+      [playerTab, matchTab, seasonTab].forEach(tab => {
+        if (tab) tab.classList.remove('hidden')
+      })
+    }
+    // Editor gets limited access - only matches for editing
+    else if (userRole === 'editor') {
+      if (playerTab) playerTab.classList.add('hidden')
+      if (matchTab) matchTab.classList.remove('hidden')
+      if (seasonTab) seasonTab.classList.add('hidden')
+    }
+    // Guests see no editing tabs
+    else {
+      [playerTab, matchTab, seasonTab].forEach(tab => {
+        if (tab) {
+          tab.classList.add('hidden')
+          if (tab.classList.contains('active')) {
+            this.switchTab('rankings')
+          }
         }
-      }
-    })
+      })
+    }
     
     this.renderPlayers()
     this.renderSeasons()
+    this.renderMatchHistory()
   }
 
   // Helper method to get CSRF token
@@ -244,9 +389,13 @@ class TennisRankingSystem {
     }
     
     if (this.isAuthenticated) {
+      const roleLabel = this.user.role === 'admin' ? '👑 Quản trị viên' : '✏️ Biên tập viên'
+      const roleClass = this.user.role === 'admin' ? 'admin-role' : 'editor-role'
+      
       authDiv.innerHTML = `
         <div class="user-info">
-          <span>👤 ${this.user.username}</span>
+          <span class="user-name">👤 ${this.user.username}</span>
+          <span class="user-role ${roleClass}">${roleLabel}</span>
           <button id="logoutBtn" class="logout-btn">Đăng xuất</button>
         </div>
       `
@@ -359,6 +508,7 @@ class TennisRankingSystem {
       const response = await fetch(`${this.apiBase}/seasons`)
       if (response.ok) {
         this.seasons = await response.json()
+        this.updateSeasonSelect()
       }
     } catch (error) {
       console.error('Error loading seasons:', error)
@@ -771,15 +921,8 @@ class TennisRankingSystem {
       return
     }
 
-    // Check if we have an active season
-    const activeSeason = this.seasons.find(s => s.is_active)
-    if (!activeSeason) {
-      this.updateFileStatus('❌ Cần tạo mùa giải trước khi ghi nhận trận đấu', 'error')
-      this.switchTab('seasons')
-      return
-    }
-
     const playDate = document.getElementById('matchDate').value
+    const seasonId = parseInt(document.getElementById('matchSeason').value)
     const player1Id = parseInt(document.getElementById('player1').value)
     const player2Id = parseInt(document.getElementById('player2').value)
     const player3Id = parseInt(document.getElementById('player3').value)
@@ -791,6 +934,11 @@ class TennisRankingSystem {
     // Validation
     if (!playDate) {
       this.updateFileStatus('❌ Vui lòng chọn ngày đánh', 'error')
+      return
+    }
+
+    if (isNaN(seasonId)) {
+      this.updateFileStatus('❌ Vui lòng chọn mùa giải', 'error')
       return
     }
 
@@ -826,7 +974,7 @@ class TennisRankingSystem {
       const response = await this.makeAuthenticatedRequest(`${this.apiBase}/matches`, {
         method: 'POST',
         body: JSON.stringify({
-          seasonId: activeSeason.id,
+          seasonId,
           playDate,
           player1Id,
           player2Id,
@@ -877,11 +1025,13 @@ class TennisRankingSystem {
         return
       }
 
+      const userRole = this.user?.role
+      
       container.innerHTML = this.players.map(player => `
         <div class="player-card">
           <span class="player-name">${player.name}</span>
-          ${this.isAuthenticated ? `
-            <button class="delete-btn edit-only" data-player-id="${player.id}">❌</button>
+          ${userRole === 'admin' ? `
+            <button class="delete-btn" data-player-id="${player.id}">❌</button>
           ` : ''}
         </div>
       `).join('')
@@ -898,27 +1048,101 @@ class TennisRankingSystem {
         return
       }
 
-      container.innerHTML = this.seasons.map(season => `
-        <div class="season-card ${season.is_active ? 'active' : ''}">
-          <div class="season-info">
-            <h3>${season.name} ${season.is_active ? '(Đang hoạt động)' : ''}</h3>
-            <p>📅 Từ: ${this.formatDate(season.start_date)}</p>
-            ${season.end_date ? `<p>📅 Đến: ${this.formatDate(season.end_date)}</p>` : ''}
-          </div>
-          ${this.isAuthenticated ? `
-            <div class="season-actions edit-only">
-              ${season.is_active ? `
-                <button data-action="end-season" data-id="${season.id}" class="end-season-btn">Kết thúc</button>
+      const userRole = this.user?.role
+      const activeSeasons = this.seasons.filter(s => s.is_active)
+      const endedSeasons = this.seasons.filter(s => !s.is_active)
+      
+      let html = ''
+      
+      // Active seasons section
+      if (activeSeasons.length > 0) {
+        html += `<div class="seasons-section">
+          <h3 style="color: #27ae60; margin-bottom: 16px;">✅ Mùa giải đang hoạt động (${activeSeasons.length})</h3>
+          ${activeSeasons.length > 1 ? `<div class="info-message" style="margin-bottom: 16px;">ℹ️ Hiện có ${activeSeasons.length} mùa giải đang hoạt động cùng lúc</div>` : ''}
+          <div class="seasons-grid">`
+        
+        activeSeasons.forEach(season => {
+          const hasEndDate = season.end_date && season.end_date !== 'null' && season.end_date !== ''
+          const endDateDisplay = hasEndDate 
+            ? this.formatDate(season.end_date)
+            : '<span style="color: #95a5a6;">Không có ngày kết thúc</span>'
+          const autoEndInfo = season.auto_end && hasEndDate ? ` <span style="color: #3498db;">(Tự động kết thúc)</span>` : ''
+          const descriptionInfo = season.description ? `<p class="season-description">📝 ${season.description}</p>` : ''
+          
+          html += `
+            <div class="season-card active-season">
+              <div class="season-header">
+                <h4>${season.name}</h4>
+                <span class="season-status active">Đang hoạt động</span>
+              </div>
+              <div class="season-info">
+                <p>📅 Từ: ${this.formatDate(season.start_date)}</p>
+                <p>🏁 Đến: ${endDateDisplay}${autoEndInfo}</p>
+                ${descriptionInfo}
+                ${!hasEndDate ? `<p class="info-warning">⚠️ Cần kết thúc thủ công</p>` : ''}
+              </div>
+              ${userRole === 'admin' || userRole === 'editor' ? `
+                <div class="season-actions">
+                  <button data-action="end-season" data-id="${season.id}" class="end-btn">🏁 Kết thúc</button>
+                  <button data-action="edit-season" data-id="${season.id}" class="edit-btn">✏️ Sửa</button>
+                  <button data-action="delete-season" data-id="${season.id}" class="delete-btn">🗑️ Xóa</button>
+                </div>
               ` : ''}
-              <button data-action="edit-season" data-id="${season.id}" class="edit-btn">Sửa</button>
-              <button data-action="delete-season" data-id="${season.id}" class="delete-btn">Xóa</button>
-            </div>
-          ` : ''}
-        </div>
-      `).join('')
+            </div>`
+        })
+        
+        html += `</div></div>`
+      }
+      
+      // Ended seasons section
+      if (endedSeasons.length > 0) {
+        html += `<div class="seasons-section" style="margin-top: 32px;">
+          <h3 style="color: #e74c3c; margin-bottom: 16px;">⏸️ Mùa giải đã kết thúc (${endedSeasons.length})</h3>
+          <div class="seasons-grid">`
+        
+        endedSeasons.forEach(season => {
+          const hasEndDate = season.end_date && season.end_date !== 'null' && season.end_date !== ''
+          const endDateDisplay = hasEndDate 
+            ? this.formatDate(season.end_date)
+            : '<span style="color: #95a5a6;">Không có ngày kết thúc</span>'
+          const descriptionInfo = season.description ? `<p class="season-description">📝 ${season.description}</p>` : ''
+          const endedAtInfo = season.ended_at ? `<p>⏰ Kết thúc lúc: ${new Date(season.ended_at).toLocaleString('vi-VN')}</p>` : ''
+          const endedByInfo = season.ended_by ? `<p>👤 Kết thúc bởi: ${season.ended_by}</p>` : ''
+          
+          html += `
+            <div class="season-card ended-season">
+              <div class="season-header">
+                <h4>${season.name}</h4>
+                <span class="season-status ended">Đã kết thúc</span>
+              </div>
+              <div class="season-info">
+                <p>📅 Từ: ${this.formatDate(season.start_date)}</p>
+                <p>🏁 Đến: ${endDateDisplay}</p>
+                ${endedAtInfo}
+                ${endedByInfo}
+                ${descriptionInfo}
+              </div>
+              ${userRole === 'admin' || userRole === 'editor' ? `
+                <div class="season-actions">
+                  <button data-action="reactivate-season" data-id="${season.id}" class="activate-btn">✅ Kích hoạt lại</button>
+                  <button data-action="delete-season" data-id="${season.id}" class="delete-btn">🗑️ Xóa</button>
+                </div>
+              ` : ''}
+            </div>`
+        })
+        
+        html += `</div></div>`
+      }
+      
+      // Empty state
+      if (this.seasons.length === 0) {
+        html = `<div class="empty-state"><p>📋 Chưa có mùa giải nào. Tạo mùa giải đầu tiên để bắt đầu!</p></div>`
+      }
+      
+      container.innerHTML = html
 
       // Add event listeners for season actions
-      if (this.isAuthenticated) {
+      if (userRole === 'admin' || userRole === 'editor') {
         container.querySelectorAll('[data-action]').forEach(button => {
           button.addEventListener('click', (e) => {
             const action = e.target.dataset.action
@@ -926,6 +1150,8 @@ class TennisRankingSystem {
             
             if (action === 'end-season') {
               this.endSeason(seasonId)
+            } else if (action === 'reactivate-season') {
+              this.reactivateSeason(seasonId)
             } else if (action === 'edit-season') {
               this.editSeason(seasonId)
             } else if (action === 'delete-season') {
@@ -1014,12 +1240,17 @@ class TennisRankingSystem {
       const team2Players = `${match.player3_name} & ${match.player4_name}`
       const winnerClass = match.winning_team === 1 ? 'team1-win' : 'team2-win'
       
-      const editDeleteButtons = this.isAuthenticated ? `
-        <div class="match-actions edit-only">
-          <button data-action="edit-match" data-id="${match.id}" class="edit-btn" title="Sửa trận đấu">✏️</button>
-          <button data-action="delete-match" data-id="${match.id}" class="delete-btn" title="Xóa trận đấu">🗑️</button>
-        </div>
-      ` : ''
+      const userRole = this.user?.role
+      let editDeleteButtons = ''
+      
+      if (userRole === 'admin' || userRole === 'editor') {
+        editDeleteButtons = `
+          <div class="match-actions">
+            <button data-action="edit-match" data-id="${match.id}" class="edit-btn" title="Sửa trận đấu">✏️</button>
+            <button data-action="delete-match" data-id="${match.id}" class="delete-btn" title="Xóa trận đấu">🗑️</button>
+          </div>
+        `
+      }
       
       return `
         <div class="match-card ${winnerClass}">
@@ -1075,6 +1306,30 @@ class TennisRankingSystem {
       })
     } catch (error) {
       console.error('Error updating player selects:', error)
+    }
+  }
+
+  updateSeasonSelect() {
+    try {
+      const matchSeasonSelect = document.getElementById('matchSeason')
+      if (!matchSeasonSelect) return
+
+      // Get only active seasons
+      const activeSeasons = this.seasons.filter(s => s.is_active)
+      
+      const seasonOptions = activeSeasons.map(season => {
+        const endDateStr = season.end_date ? ` (Kết thúc: ${this.formatDate(season.end_date)})` : ''
+        return `<option value="${season.id}">${season.name}${endDateStr}</option>`
+      }).join('')
+
+      matchSeasonSelect.innerHTML = `<option value="">Chọn mùa giải</option>${seasonOptions}`
+      
+      // Auto-select if only one active season
+      if (activeSeasons.length === 1) {
+        matchSeasonSelect.value = activeSeasons[0].id
+      }
+    } catch (error) {
+      console.error('Error updating season select:', error)
     }
   }
 
@@ -1152,15 +1407,25 @@ class TennisRankingSystem {
             <input type="text" id="seasonName" value="${season ? season.name : ''}" required>
           </div>
           <div class="form-group">
+            <label for="seasonDescription">Mô tả (tuỳ chọn):</label>
+            <textarea id="seasonDescription" rows="2" placeholder="Mô tả về mùa giải...">${season ? season.description || '' : ''}</textarea>
+          </div>
+          <div class="form-group">
             <label for="seasonStartDate">Ngày bắt đầu:</label>
             <input type="date" id="seasonStartDate" value="${season ? season.start_date : ''}" required>
           </div>
-          ${isEdit ? `
-            <div class="form-group">
-              <label for="seasonEndDate">Ngày kết thúc:</label>
-              <input type="date" id="seasonEndDate" value="${season ? season.end_date || '' : ''}">
-            </div>
-          ` : ''}
+          <div class="form-group">
+            <label for="seasonEndDate">Ngày kết thúc (tuỳ chọn):</label>
+            <input type="date" id="seasonEndDate" value="${season ? season.end_date || '' : ''}">
+            <small>Nếu để trống, mùa giải sẽ không tự động kết thúc</small>
+          </div>
+          <div class="form-group">
+            <label>
+              <input type="checkbox" id="seasonAutoEnd" ${season && season.auto_end ? 'checked' : ''}>
+              Tự động kết thúc vào ngày kết thúc
+            </label>
+            <small>Nếu bật, mùa giải sẽ tự động kết thúc khi đến ngày kết thúc</small>
+          </div>
           <div class="form-actions">
             <button type="submit">${isEdit ? 'Cập nhật' : 'Tạo mùa giải'}</button>
             <button type="button" id="cancelSeason">Hủy</button>
@@ -1175,8 +1440,10 @@ class TennisRankingSystem {
     document.getElementById('seasonForm').addEventListener('submit', async (e) => {
       e.preventDefault()
       const name = document.getElementById('seasonName').value.trim()
+      const description = document.getElementById('seasonDescription').value.trim()
       const startDate = document.getElementById('seasonStartDate').value
-      const endDate = isEdit ? document.getElementById('seasonEndDate').value : null
+      const endDate = document.getElementById('seasonEndDate').value || null
+      const autoEnd = document.getElementById('seasonAutoEnd').checked
       const errorDiv = document.getElementById('seasonError')
       
       if (!name || !startDate) {
@@ -1184,9 +1451,21 @@ class TennisRankingSystem {
         return
       }
       
+      // Validate end date is after start date
+      if (endDate && endDate <= startDate) {
+        errorDiv.textContent = 'Ngày kết thúc phải sau ngày bắt đầu'
+        return
+      }
+      
+      // Auto-end requires end date
+      if (autoEnd && !endDate) {
+        errorDiv.textContent = 'Cần chọn ngày kết thúc để bật tự động kết thúc'
+        return
+      }
+      
       const result = isEdit ? 
-        await this.updateSeason(seasonId, name, startDate, endDate) :
-        await this.createSeason(name, startDate)
+        await this.updateSeason(seasonId, name, description, startDate, endDate, autoEnd) :
+        await this.createSeason(name, description, startDate, endDate, autoEnd)
       
       if (result.success) {
         document.body.removeChild(modal)
@@ -1207,36 +1486,16 @@ class TennisRankingSystem {
     })
   }
 
-  async createSeason(name, startDate) {
+  async createSeason(name, description, startDate, endDate, autoEnd) {
     try {
-      // Check if there's an active season that needs to be ended
-      const activeSeason = this.seasons.find(s => s.is_active)
-      
-      if (activeSeason) {
-        // Calculate the end date as one day before the new season starts
-        const newSeasonDate = new Date(startDate)
-        const endDate = new Date(newSeasonDate)
-        endDate.setDate(endDate.getDate() - 1)
-        const endDateString = endDate.toISOString().split('T')[0]
-        
-        // Ask user for confirmation
-        const confirmEnd = confirm(
-          `Hiện tại đang có mùa giải "${activeSeason.name}" đang hoạt động.\n` +
-          `Bạn có muốn tự động kết thúc mùa giải này vào ngày ${this.formatDate(endDateString)} ` +
-          `để bắt đầu mùa giải mới "${name}" vào ngày ${this.formatDate(startDate)}?`
-        )
-        
-        if (!confirmEnd) {
-          return { success: false, message: 'Đã hủy tạo mùa giải mới' }
-        }
-      }
-
       const response = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons`, {
         method: 'POST',
         body: JSON.stringify({ 
           name, 
+          description,
           startDate,
-          autoEndPrevious: !!activeSeason
+          endDate,
+          autoEnd
         })
       })
 
@@ -1246,12 +1505,7 @@ class TennisRankingSystem {
         await this.loadSeasons()
         this.renderSeasons()
         this.updateSeasonSelector()
-        
-        const message = activeSeason ? 
-          `Đã tạo mùa giải mới "${name}" và kết thúc mùa giải trước đó` :
-          'Đã tạo mùa giải mới thành công'
-          
-        return { success: true, message }
+        return { success: true, message: 'Đã tạo mùa giải mới thành công' }
       } else {
         return { success: false, message: data.error }
       }
@@ -1261,11 +1515,11 @@ class TennisRankingSystem {
     }
   }
 
-  async updateSeason(seasonId, name, startDate, endDate) {
+  async updateSeason(seasonId, name, description, startDate, endDate, autoEnd) {
     try {
       const response = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons/${seasonId}`, {
         method: 'PUT',
-        body: JSON.stringify({ name, startDate, endDate })
+        body: JSON.stringify({ name, description, startDate, endDate, autoEnd })
       })
 
       const data = await response.json()
@@ -1285,6 +1539,26 @@ class TennisRankingSystem {
   }
 
   async endSeason(seasonId) {
+    if (!this.isAuthenticated) {
+      this.updateFileStatus('❌ Cần đăng nhập để kết thúc mùa giải', 'error')
+      return
+    }
+
+    const season = this.seasons.find(s => s.id === seasonId)
+    if (!season) {
+      this.updateFileStatus('❌ Không tìm thấy mùa giải', 'error')
+      return
+    }
+
+    const hasEndDate = season.end_date && season.end_date !== 'null' && season.end_date !== ''
+    const confirmMessage = hasEndDate
+      ? `Bạn có chắc chắn muốn kết thúc mùa giải "${season.name}"?\n\nNgày kết thúc: ${this.formatDate(season.end_date)}`
+      : `Mùa giải "${season.name}" không có ngày kết thúc được đặt trước.\n\nBạn có chắc chắn muốn kết thúc mùa giải này ngay bây giờ?`
+
+    if (!confirm(confirmMessage)) {
+      return
+    }
+
     const endDate = new Date().toISOString().split('T')[0]
     
     try {
@@ -1298,13 +1572,51 @@ class TennisRankingSystem {
       if (response.ok) {
         await this.loadSeasons()
         this.renderSeasons()
-        this.updateFileStatus('Đã kết thúc mùa giải', 'success')
+        this.updateSeasonSelector()
+        this.updateFileStatus('✅ Đã kết thúc mùa giải', 'success')
       } else {
         this.updateFileStatus(`❌ ${data.error}`, 'error')
       }
     } catch (error) {
       console.error('Error ending season:', error)
       this.updateFileStatus('❌ Lỗi khi kết thúc mùa giải', 'error')
+    }
+  }
+
+  async reactivateSeason(seasonId) {
+    if (!this.isAuthenticated) {
+      this.updateFileStatus('❌ Cần đăng nhập để kích hoạt lại mùa giải', 'error')
+      return
+    }
+
+    const season = this.seasons.find(s => s.id === seasonId)
+    if (!season) {
+      this.updateFileStatus('❌ Không tìm thấy mùa giải', 'error')
+      return
+    }
+
+    if (!confirm(`Bạn có chắc chắn muốn kích hoạt lại mùa giải "${season.name}"?`)) {
+      return
+    }
+
+    try {
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons/${seasonId}/reactivate`, {
+        method: 'POST'
+      })
+
+      const data = await response.json()
+      
+      if (response.ok) {
+        await this.loadSeasons()
+        this.renderSeasons()
+        this.updateSeasonSelector()
+        this.updateFileStatus('✅ Đã kích hoạt lại mùa giải', 'success')
+      } else {
+        this.updateFileStatus(`❌ ${data.error}`, 'error')
+      }
+    } catch (error) {
+      console.error('Error reactivating season:', error)
+      this.updateFileStatus('❌ Lỗi khi kích hoạt lại mùa giải', 'error')
     }
   }
 
@@ -1426,9 +1738,29 @@ class TennisRankingSystem {
     }
   }
 
-  formatDate(dateString) {
-    if (!dateString) return ''
-    const date = new Date(dateString)
+  formatDate(dateValue) {
+    if (!dateValue) return ''
+    
+    let date
+    if (dateValue instanceof Date) {
+      // If it's already a Date object, use local date components to avoid timezone issues
+      date = new Date(dateValue.getFullYear(), dateValue.getMonth(), dateValue.getDate())
+    } else if (typeof dateValue === 'string') {
+      // If it's a string, parse it as local date to avoid UTC timezone conversion
+      if (dateValue.includes('T') || dateValue.includes('Z')) {
+        // ISO string format - extract date part only
+        const datePart = dateValue.split('T')[0]
+        const [year, month, day] = datePart.split('-').map(Number)
+        date = new Date(year, month - 1, day) // month is 0-based
+      } else {
+        // Date-only string format like "2025-09-30"
+        const [year, month, day] = dateValue.split('-').map(Number)
+        date = new Date(year, month - 1, day) // month is 0-based
+      }
+    } else {
+      return ''
+    }
+    
     return date.toLocaleDateString('vi-VN', {
       year: 'numeric',
       month: '2-digit',

@@ -11,7 +11,7 @@
       <header>
         <h1>🎾 Tennis Siêu lành mạnh </h1>
         <p>Hệ thống xếp hạng tennis đôi</p>
-        <div class="admin-controls edit-only">
+        <div class="admin-controls admin-only">
           <button id="backupData" class="backup-btn">💾 Sao lưu dữ liệu</button>
           <button id="restoreData" class="restore-btn">📥 Khôi phục dữ liệu</button>
           <button id="clearAllData" class="danger-btn">🗑️ Xóa tất cả dữ liệu</button>
@@ -20,15 +20,15 @@
 
       <main>
         <div class="tabs">
-          <button class="tab-button edit-only" data-tab="players">Quản lý người chơi</button>
-          <button class="tab-button edit-only" data-tab="matches">Trận đấu</button>
-          <button class="tab-button edit-only" data-tab="seasons">Mùa giải</button>
+          <button class="tab-button admin-only" data-tab="players">Quản lý người chơi</button>
+          <button class="tab-button editor-only" data-tab="matches">Trận đấu</button>
+          <button class="tab-button admin-only" data-tab="seasons">Mùa giải</button>
           <button class="tab-button active" data-tab="rankings">Xếp hạng</button>
         </div>
 
         <!-- Players Tab -->
         <div class="tab-content" id="players-tab">
-          <div class="section edit-only">
+          <div class="section admin-only">
             <h2>Thêm người chơi mới</h2>
             <div class="form-group">
               <input type="text" id="playerName" placeholder="Tên người chơi" />
@@ -46,16 +46,22 @@
 
         <!-- Matches Tab -->
         <div class="tab-content" id="matches-tab">
-          <div class="section edit-only">
+          <div class="section">
             <div class="section-header">
               <h2>Ghi nhận kết quả trận đấu</h2>
-              <button id="addMatchModal" class="add-btn">➕ Thêm trận đấu</button>
+              <button id="addMatchModal" class="add-btn admin-only">➕ Thêm trận đấu</button>
             </div>
             <div class="match-form">
               <div class="form-row">
                 <div class="form-group">
                   <label for="matchDate">Ngày đánh:</label>
                   <input type="date" id="matchDate" required>
+                </div>
+                <div class="form-group">
+                  <label for="matchSeason">Mùa giải:</label>
+                  <select id="matchSeason" required>
+                    <option value="">Chọn mùa giải</option>
+                  </select>
                 </div>
               </div>
               
@@ -118,7 +124,7 @@
 
         <!-- Seasons Tab -->
         <div class="tab-content" id="seasons-tab">
-          <div class="section edit-only">
+          <div class="section admin-only">
             <div class="section-header">
               <h2>Quản lý mùa giải</h2>
               <button id="addSeason" class="add-btn">➕ Tạo mùa giải mới</button>

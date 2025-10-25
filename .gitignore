@@ -11,7 +11,10 @@ node_modules
 dist
 dist-ssr
 *.local
-.github
+# Ignore .github directory except dependabot.yml and workflows
+.github/*
+!.github/dependabot.yml
+!.github/workflows/
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

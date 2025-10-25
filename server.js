@@ -808,7 +808,7 @@ const clearCookieAllPaths = (res, name, extraOptions = {}) => {
   paths.forEach((path) => {
     res.clearCookie(name, {
       ...sharedCookieDefaults,
-      httpOnly: true, // Explicit httpOnly for security
+      httpOnly: true, // Explicit for CodeQL static analysis (prevents js/client-exposed-cookie alert)
       path,
       ...extraOptions
     })
@@ -926,7 +926,7 @@ const globalCSRFProtection = (req, res, next) => {
   if (!sessionId) {
     sessionId = generateSessionId()
     res.cookie('csrfSessionId', sessionId, withCookieDefaults({
-      httpOnly: true, // Explicit httpOnly for security
+      httpOnly: true, // Explicit for CodeQL static analysis (prevents js/client-exposed-cookie alert)
       maxAge: 24 * 60 * 60 * 1000 // 24 hours
     }))
   }
@@ -1023,7 +1023,7 @@ const checkAuth = (req, res, next) => {
         // Clear invalid encrypted cookie only if headers not sent
         if (!res.headersSent) {
           res.clearCookie('authToken', withCookieDefaults({
-            httpOnly: true // Explicit httpOnly for security
+            httpOnly: true // Explicit for CodeQL static analysis (prevents js/client-exposed-cookie alert)
           }))
         }
         req.isAuthenticated = false
@@ -1051,7 +1051,7 @@ const checkAuth = (req, res, next) => {
     // Only set cookie if headers haven't been sent
     if (!res.headersSent) {
       res.cookie('csrfSessionId', sessionId, withCookieDefaults({
-        httpOnly: true, // Explicit httpOnly for security
+        httpOnly: true, // Explicit for CodeQL static analysis (prevents js/client-exposed-cookie alert)
         maxAge: 24 * 60 * 60 * 1000 // 24 hours
       }))
     }
@@ -1162,7 +1162,7 @@ app.post('/api/auth/login',
           // Encrypt JWT token before storing in httpOnly cookie (addresses CodeQL alert)
           const encryptedToken = encryptJWT(token)
           res.cookie('authToken', encryptedToken, withCookieDefaults({
-            httpOnly: true, // Explicit httpOnly for security
+            httpOnly: true, // Explicit for CodeQL static analysis (prevents js/client-exposed-cookie alert)
             maxAge: 24 * 60 * 60 * 1000 // 24 hours
           }))
           
@@ -1173,7 +1173,7 @@ app.post('/api/auth/login',
           
           // Set session ID in httpOnly cookie (not the secret itself)
           res.cookie('csrfSessionId', sessionId, withCookieDefaults({
-            httpOnly: true, // Explicit httpOnly for security
+            httpOnly: true, // Explicit for CodeQL static analysis (prevents js/client-exposed-cookie alert)
             maxAge: 24 * 60 * 60 * 1000 // 24 hours
           }))
           

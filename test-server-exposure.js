@@ -18,6 +18,9 @@ const TEST_CONFIG = {
   testUrl: 'http://localhost:3001'
 }
 
+// Technology identifiers that should not be exposed in headers
+const EXPOSED_TECH_IDENTIFIERS = ['express', 'node', 'nginx', 'apache', 'iis']
+
 class ServerExposureTester {
   constructor() {
     this.results = {
@@ -92,8 +95,7 @@ class ServerExposureTester {
       }
       
       // Check if server header reveals technology
-      const exposedTech = ['express', 'node', 'nginx', 'apache', 'iis']
-      const isExposed = exposedTech.some(tech => 
+      const isExposed = EXPOSED_TECH_IDENTIFIERS.some(tech => 
         serverHeader.toLowerCase().includes(tech)
       )
       
@@ -264,7 +266,12 @@ class ServerExposureTester {
 }
 
 // CLI interface
-if (import.meta.url === `file://${process.argv[1]}`) {
+// Check if this module is being run directly
+const isMainModule = import.meta.url.startsWith('file:') && 
+                     process.argv[1] && 
+                     import.meta.url.endsWith(process.argv[1])
+
+if (isMainModule) {
   const tester = new ServerExposureTester()
   
   tester.runAllTests().then(success => {

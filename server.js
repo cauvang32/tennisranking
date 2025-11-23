@@ -15,6 +15,11 @@ import ExcelJS from 'exceljs'
 import csrf from 'csrf'
 import crypto from 'crypto'
 import { getRealClientIP, logAccess, logError, getLogStats } from './access-logger.js'
+import { createPlayerRouter } from './routes/players.js'
+import { createSeasonRouter } from './routes/seasons.js'
+import { createMatchRouter } from './routes/matches.js'
+import { createRankingRouter } from './routes/rankings.js'
+import { createExportRouter } from './routes/export.js'
 
 // Load environment variables
 dotenv.config()
@@ -1276,77 +1281,60 @@ app.get('/api/auth/status', checkAuth, (req, res) => {
 
 // Database API Routes
 
+app.use('/api/players', createPlayerRouter({
+  db,
+  checkAuth,
+  authenticateToken,
+  requireAdmin,
+  conditionalRateLimit,
+  createLimiter,
+  deleteLimiter,
+  handleValidationErrors,
+  rankingsCache,
+  sanitizeResponse
+}))
+
+app.use('/api/seasons', createSeasonRouter({
+  db,
+  checkAuth,
+  authenticateToken,
+  requireAdmin,
+  requireEditor,
+  conditionalRateLimit,
+  createLimiter,
+  deleteLimiter,
+  handleValidationErrors,
+  rankingsCache
+}))
+
+app.use('/api/matches', createMatchRouter({
+  db,
+  checkAuth,
+  authenticateToken,
+  requireEditor,
+  conditionalRateLimit,
+  createLimiter,
+  deleteLimiter,
+  handleValidationErrors,
+  rankingsCache
+}))
+
+app.use('/api/rankings', createRankingRouter({
+  db,
+  checkAuth,
+  rankingsCache
+}))
+
+app.use('/api/export-excel', createExportRouter({
+  db,
+  checkAuth,
+  authenticateToken,
+  conditionalRateLimit,
+  exportLimiter
+}))
+
 // Players Routes
-app.get('/api/players', checkAuth, async (req, res) => {
-  try {
-    const players = await db.getPlayers()
-    res.json(sanitizeResponse(players))
-  } catch (error) {
-    console.error('Error getting players:', error)
-    res.status(500).json({ error: 'Failed to get players' })
-  }
-})
-
-app.post('/api/players', 
-  authenticateToken,
-  requireAdmin,
-  requireAdmin,
-  conditionalRateLimit(createLimiter),
-  [
-    body('name')
-      .isLength({ min: 1, max: 100 })
-      .withMessage('Player name is required')
-  ],
-  handleValidationErrors,
-  async (req, res) => {
-    try {
-      const { name } = req.body
-      const playerId = await db.addPlayer(name)
-      
-      // Invalidate all cache when players change
-      rankingsCache.clear()
-      
-      // Preload common data for better hit rates
-      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
-      
-      res.json({ success: true, id: playerId, name })
-    } catch (error) {
-      if (error.message.includes('UNIQUE constraint failed')) {
-        res.status(400).json({ error: 'Player name already exists' })
-      } else {
-        console.error('Error adding player:', error)
-        res.status(500).json({ error: 'Failed to add player' })
-      }
-    }
-  }
-)
-
-app.delete('/api/players/:id', 
-  authenticateToken,
-  requireAdmin,
-  conditionalRateLimit(deleteLimiter),
-  [
-    param('id').isInt().withMessage('Invalid player ID')
-  ],
-  handleValidationErrors,
-  async (req, res) => {
-    try {
-      const playerId = parseInt(req.params.id)
-      await db.removePlayer(playerId)
-      
-      // Invalidate all cache when players are removed
-      rankingsCache.clear()
-      
-      // Preload common data for better hit rates
-      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
-      
-      res.json({ success: true, message: 'Player removed successfully' })
-    } catch (error) {
-      console.error('Error removing player:', error)
-      res.status(500).json({ error: 'Failed to remove player' })
-    }
-  }
-)
+// Legacy player routes migrated to modular router
 
 // Seasons Routes
 app.get('/api/seasons', checkAuth, async (req, res) => {

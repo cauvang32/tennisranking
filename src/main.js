@@ -1057,16 +1057,16 @@ class TennisRankingSystem {
       // Active seasons section
       if (activeSeasons.length > 0) {
         html += `<div class="seasons-section">
-          <h3 style="color: #27ae60; margin-bottom: 16px;">✅ Mùa giải đang hoạt động (${activeSeasons.length})</h3>
-          ${activeSeasons.length > 1 ? `<div class="info-message" style="margin-bottom: 16px;">ℹ️ Hiện có ${activeSeasons.length} mùa giải đang hoạt động cùng lúc</div>` : ''}
+          <h3 class="season-heading-active">✅ Mùa giải đang hoạt động (${activeSeasons.length})</h3>
+          ${activeSeasons.length > 1 ? `<div class="info-message info-message-compact">ℹ️ Hiện có ${activeSeasons.length} mùa giải đang hoạt động cùng lúc</div>` : ''}
           <div class="seasons-grid">`
         
         activeSeasons.forEach(season => {
           const hasEndDate = season.end_date && season.end_date !== 'null' && season.end_date !== ''
           const endDateDisplay = hasEndDate 
             ? this.formatDate(season.end_date)
-            : '<span style="color: #95a5a6;">Không có ngày kết thúc</span>'
-          const autoEndInfo = season.auto_end && hasEndDate ? ` <span style="color: #3498db;">(Tự động kết thúc)</span>` : ''
+            : '<span class="season-text-muted">Không có ngày kết thúc</span>'
+          const autoEndInfo = season.auto_end && hasEndDate ? ` <span class="season-auto-end">(Tự động kết thúc)</span>` : ''
           const descriptionInfo = season.description ? `<p class="season-description">📝 ${season.description}</p>` : ''
           
           html += `
@@ -1096,15 +1096,15 @@ class TennisRankingSystem {
       
       // Ended seasons section
       if (endedSeasons.length > 0) {
-        html += `<div class="seasons-section" style="margin-top: 32px;">
-          <h3 style="color: #e74c3c; margin-bottom: 16px;">⏸️ Mùa giải đã kết thúc (${endedSeasons.length})</h3>
+        html += `<div class="seasons-section seasons-section--spaced">
+          <h3 class="season-heading-ended">⏸️ Mùa giải đã kết thúc (${endedSeasons.length})</h3>
           <div class="seasons-grid">`
         
         endedSeasons.forEach(season => {
           const hasEndDate = season.end_date && season.end_date !== 'null' && season.end_date !== ''
           const endDateDisplay = hasEndDate 
             ? this.formatDate(season.end_date)
-            : '<span style="color: #95a5a6;">Không có ngày kết thúc</span>'
+            : '<span class="season-text-muted">Không có ngày kết thúc</span>'
           const descriptionInfo = season.description ? `<p class="season-description">📝 ${season.description}</p>` : ''
           const endedAtInfo = season.ended_at ? `<p>⏰ Kết thúc lúc: ${new Date(season.ended_at).toLocaleString('vi-VN')}</p>` : ''
           const endedByInfo = season.ended_by ? `<p>👤 Kết thúc bởi: ${season.ended_by}</p>` : ''
@@ -2015,7 +2015,7 @@ class TennisRankingSystem {
             <input type="checkbox" id="clearExisting" />
             Xóa tất cả dữ liệu hiện tại trước khi khôi phục
           </label>
-          <small style="color: #666; display: block; margin-top: 0.5rem;">
+          <small class="inline-warning-note">
             ⚠️ Nếu không chọn, dữ liệu mới sẽ được thêm vào dữ liệu hiện tại (có thể bị trùng lặp)
           </small>
         </div>

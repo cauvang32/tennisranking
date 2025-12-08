@@ -21,7 +21,7 @@
   },
   "devDependencies": {
     "axios": "^1.12.2",
-    "concurrently": "^8.2.2",
+    "concurrently": "^9.2.1",
     "vite": "^6.3.6"
   },
   "dependencies": {

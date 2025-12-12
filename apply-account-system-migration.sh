@@ -39,15 +39,15 @@ echo "  User:      ${DB_USER}"
 echo ""
 
 # Check if container is running
-if ! docker ps --format '{{.Names}}' | grep -q "^${DB_CONTAINER}$"; then
+if ! sudo docker ps --format '{{.Names}}' | grep -q "^${DB_CONTAINER}$"; then
     echo -e "${RED}❌ Error: Docker container '${DB_CONTAINER}' is not running${NC}"
-    echo "Please start the container first with: docker compose up -d"
+    echo "Please start the container first with: sudo docker compose up -d"
     exit 1
 fi
 
 echo -e "${CYAN}Step 1/4: Applying season players migration (if not done)...${NC}"
 
-docker exec -i ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} << 'EOSQL'
+sudo docker exec -i ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} << 'EOSQL'
 -- Ensure season_players and match_type exist (idempotent)
 DO $$
 BEGIN
@@ -82,7 +82,7 @@ echo ""
 
 echo -e "${CYAN}Step 2/4: Fixing solo match constraint (player2_id nullable)...${NC}"
 
-docker exec -i ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} << 'EOSQL'
+sudo docker exec -i ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} << 'EOSQL'
 -- Fix: Make player2_id nullable for solo matches
 DO $$
 BEGIN
@@ -123,7 +123,7 @@ echo ""
 
 echo -e "${CYAN}Step 3/4: Creating users table for account management...${NC}"
 
-docker exec -i ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} << 'EOSQL'
+sudo docker exec -i ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} << 'EOSQL'
 -- Create users table for account management
 CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
@@ -171,7 +171,7 @@ echo ""
 
 echo -e "${CYAN}Step 4/4: Verifying migration...${NC}"
 
-docker exec -i ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} << 'EOSQL'
+sudo docker exec -i ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} << 'EOSQL'
 -- Verification queries
 SELECT '=== Migration Verification ===' as info;
 

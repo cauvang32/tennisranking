@@ -37,9 +37,9 @@ echo "  User:      ${DB_USER}"
 echo ""
 
 # Check if container is running
-if ! docker ps --format '{{.Names}}' | grep -q "^${DB_CONTAINER}$"; then
+if ! sudo docker ps --format '{{.Names}}' | grep -q "^${DB_CONTAINER}$"; then
     echo -e "${RED}❌ Error: Docker container '${DB_CONTAINER}' is not running${NC}"
-    echo "Please start the container first with: docker-compose up -d"
+    echo "Please start the container first with: sudo docker compose up -d"
     exit 1
 fi
 
@@ -47,7 +47,7 @@ echo -e "${YELLOW}Applying migration...${NC}"
 echo ""
 
 # Run the migration SQL
-docker exec -i ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} << 'EOSQL'
+sudo docker exec -i ${DB_CONTAINER} psql -U ${DB_USER} -d ${DB_NAME} << 'EOSQL'
 -- Migration: Season Players, Lose Money Configuration, and Match Type Support
 -- Version: 2.0.0
 

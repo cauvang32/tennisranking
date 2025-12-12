@@ -19,6 +19,8 @@ class TennisRankingSystem {
     this.csrfToken = null // CSRF token for secure requests
     this.currentWinningTeam = null
     this.isManualWinnerMode = false
+    this.currentMatchType = 'duo' // 'duo' (đánh đôi) or 'solo' (đánh đơn)
+    this.currentSeasonPlayers = [] // Players eligible for current selected season
     this.init()
   }
 
@@ -254,14 +256,29 @@ class TennisRankingSystem {
   }
 
   updateUIForAuthStatus() {
-    this.updateAuthHeader()
-    
     const userRole = this.user?.role || null
     
-    // Handle general edit elements (for any authenticated user)
+    // Update body class for CSS targeting
+    if (this.isAuthenticated) {
+      document.body.classList.add('authenticated')
+    } else {
+      document.body.classList.remove('authenticated')
+    }
+    
+    // Update user info display
+    const userName = document.querySelector('.user-name')
+    const userRoleBadge = document.querySelector('.user-role.badge')
+    if (userName && this.user) {
+      userName.textContent = this.user.displayName || this.user.username
+    }
+    if (userRoleBadge && this.user) {
+      userRoleBadge.textContent = this.user.role === 'admin' ? 'Admin' : (this.user.role === 'editor' ? 'Editor' : 'Viewer')
+    }
+    
+    // Handle general edit elements (for any authenticated user with edit rights)
     const editElements = document.querySelectorAll('.edit-only')
     editElements.forEach(element => {
-      if (this.isAuthenticated) {
+      if (this.isAuthenticated && (userRole === 'admin' || userRole === 'editor')) {
         element.classList.remove('hidden')
       } else {
         element.classList.add('hidden')
@@ -288,43 +305,23 @@ class TennisRankingSystem {
       }
     })
     
-    const guestInfo = document.querySelector('.guest-info')
-    if (guestInfo) {
-      if (this.isAuthenticated) {
-        guestInfo.classList.add('hidden')
+    // Handle guest info elements
+    const guestInfoElements = document.querySelectorAll('.guest-info')
+    guestInfoElements.forEach(element => {
+      if (this.isAuthenticated && (userRole === 'admin' || userRole === 'editor')) {
+        element.classList.add('hidden')
       } else {
-        guestInfo.classList.remove('hidden')
+        element.classList.remove('hidden')
       }
-    }
+    })
     
-    // Show/hide tabs based on role
-    const playerTab = document.querySelector('[data-tab="players"]')
-    const matchTab = document.querySelector('[data-tab="matches"]')
-    const seasonTab = document.querySelector('[data-tab="seasons"]')
-    
-    // Admin gets access to all tabs
-    if (userRole === 'admin') {
-      [playerTab, matchTab, seasonTab].forEach(tab => {
-        if (tab) tab.classList.remove('hidden')
-      })
-    }
-    // Editor gets limited access - only matches for editing
-    else if (userRole === 'editor') {
-      if (playerTab) playerTab.classList.add('hidden')
-      if (matchTab) matchTab.classList.remove('hidden')
-      if (seasonTab) seasonTab.classList.add('hidden')
-    }
-    // Guests see no editing tabs
-    else {
-      [playerTab, matchTab, seasonTab].forEach(tab => {
-        if (tab) {
-          tab.classList.add('hidden')
-          if (tab.classList.contains('active')) {
-            this.switchTab('rankings')
-          }
-        }
-      })
-    }
+    // Handle logged-in/logged-out visibility
+    document.querySelectorAll('.logged-in-only').forEach(el => {
+      el.style.display = this.isAuthenticated ? '' : 'none'
+    })
+    document.querySelectorAll('.logged-out-only').forEach(el => {
+      el.style.display = this.isAuthenticated ? 'none' : ''
+    })
     
     this.renderPlayers()
     this.renderSeasons()
@@ -573,12 +570,198 @@ class TennisRankingSystem {
 
   setupEventListeners() {
     try {
-      // Tab switching
-      document.querySelectorAll('.tab-button').forEach(button => {
+      // Tab switching (new nav-btn class)
+      document.querySelectorAll('.nav-btn').forEach(button => {
         button.addEventListener('click', (e) => {
-          this.switchTab(e.target.dataset.tab)
+          const tab = e.currentTarget.dataset.tab
+          if (tab) this.switchTab(tab)
         })
       })
+      
+      // View mode switching (new view-btn class)
+      document.querySelectorAll('.view-btn').forEach(button => {
+        button.addEventListener('click', (e) => {
+          const view = e.currentTarget.dataset.view
+          if (view) this.switchViewMode(view)
+        })
+      })
+      
+      // Match type toggle (new type-btn class)
+      document.querySelectorAll('.type-btn').forEach(button => {
+        button.addEventListener('click', (e) => {
+          const type = e.currentTarget.dataset.type
+          if (type) this.switchMatchType(type)
+        })
+      })
+      
+      // Match form submission
+      const matchForm = document.getElementById('matchForm')
+      if (matchForm) {
+        matchForm.addEventListener('submit', async (e) => {
+          e.preventDefault()
+          await this.recordMatch()
+        })
+      }
+      
+      // Reset match form
+      const resetFormBtn = document.getElementById('resetFormBtn')
+      if (resetFormBtn) {
+        resetFormBtn.addEventListener('click', () => this.resetMatchForm())
+      }
+      
+      // Login button
+      const loginBtn = document.getElementById('loginBtn')
+      if (loginBtn) {
+        loginBtn.addEventListener('click', () => this.showLoginModal())
+      }
+      
+      // Logout button
+      const logoutBtn = document.getElementById('logoutBtn')
+      if (logoutBtn) {
+        logoutBtn.addEventListener('click', () => this.logout())
+      }
+      
+      // Create season button
+      const createSeasonBtn = document.getElementById('createSeasonBtn')
+      if (createSeasonBtn) {
+        createSeasonBtn.addEventListener('click', () => this.showSeasonModal())
+      }
+      
+      // Create account button
+      const createAccountBtn = document.getElementById('createAccountBtn')
+      if (createAccountBtn) {
+        createAccountBtn.addEventListener('click', () => this.showAccountModal())
+      }
+      
+      // Today button
+      const todayBtn = document.getElementById('todayBtn')
+      if (todayBtn) {
+        todayBtn.addEventListener('click', () => {
+          const today = new Date().toISOString().split('T')[0]
+          const dateSelect = document.getElementById('rankingDateSelect')
+          if (dateSelect) {
+            // Check if today is in the list
+            const hasToday = Array.from(dateSelect.options).some(opt => opt.value === today)
+            if (hasToday) {
+              dateSelect.value = today
+            } else {
+              // If today is not in the list, add it as a temporary option
+              const tempOption = document.createElement('option')
+              tempOption.value = today
+              tempOption.textContent = this.formatDate(today)
+              dateSelect.insertBefore(tempOption, dateSelect.options[1])
+              dateSelect.value = today
+            }
+          }
+          this.selectedDate = today
+          this.renderRankings()
+          this.renderMatchHistory()
+        })
+      }
+      
+      // Export Excel button
+      const exportExcelBtn = document.getElementById('exportExcelBtn')
+      if (exportExcelBtn) {
+        exportExcelBtn.addEventListener('click', () => this.exportToExcel())
+      }
+      
+      // Ranking date picker (dropdown)
+      const rankingDateSelect = document.getElementById('rankingDateSelect')
+      if (rankingDateSelect) {
+        rankingDateSelect.addEventListener('change', (e) => {
+          this.selectedDate = e.target.value
+          if (this.currentViewMode === 'daily') {
+            this.renderRankings()
+            this.renderMatchHistory()
+          }
+        })
+      }
+      
+      // Season select
+      const seasonSelect = document.getElementById('seasonSelect')
+      if (seasonSelect) {
+        seasonSelect.addEventListener('change', (e) => {
+          this.selectedSeason = parseInt(e.target.value)
+          if (this.currentViewMode === 'season') {
+            this.renderRankings()
+            this.renderMatchHistory()
+          }
+        })
+      }
+      
+      // Match history date filter
+      const matchHistoryDate = document.getElementById('matchHistoryDate')
+      if (matchHistoryDate) {
+        matchHistoryDate.addEventListener('change', () => this.renderMatchHistory())
+      }
+      
+      // Modal close buttons
+      document.querySelectorAll('[data-dismiss="modal"]').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+          const modal = e.target.closest('.modal')
+          if (modal) this.hideModal(modal.id)
+        })
+      })
+      
+      // Modal backdrop click to close
+      document.querySelectorAll('.modal-backdrop').forEach(backdrop => {
+        backdrop.addEventListener('click', (e) => {
+          const modal = e.target.closest('.modal')
+          if (modal) this.hideModal(modal.id)
+        })
+      })
+      
+      // Login form submission
+      const loginForm = document.getElementById('loginForm')
+      if (loginForm) {
+        loginForm.addEventListener('submit', async (e) => {
+          e.preventDefault()
+          const username = document.getElementById('loginUsername').value
+          const password = document.getElementById('loginPassword').value
+          const result = await this.login(username, password)
+          if (result.success) {
+            this.hideModal('loginModal')
+            this.showToast('Đăng nhập thành công!', 'success')
+          } else {
+            this.showToast(result.message, 'error')
+          }
+        })
+      }
+      
+      // Season form submission
+      const seasonForm = document.getElementById('seasonForm')
+      if (seasonForm) {
+        seasonForm.addEventListener('submit', async (e) => {
+          e.preventDefault()
+          await this.saveSeason()
+        })
+      }
+      
+      // Account form submission
+      const accountForm = document.getElementById('accountForm')
+      if (accountForm) {
+        accountForm.addEventListener('submit', async (e) => {
+          e.preventDefault()
+          await this.saveAccount()
+        })
+      }
+      
+      // Auto-winner detection for score inputs
+      const scoreInputs = ['team1Score', 'team2Score']
+      scoreInputs.forEach(id => {
+        const input = document.getElementById(id)
+        if (input) {
+          input.addEventListener('input', () => this.updateAutoWinner())
+        }
+      })
+      
+      // Winner select change
+      const winnerSelect = document.getElementById('winner')
+      if (winnerSelect) {
+        winnerSelect.addEventListener('change', (e) => {
+          this.currentWinningTeam = e.target.value === 'team1' ? 1 : (e.target.value === 'team2' ? 2 : null)
+        })
+      }
 
       // Add player
       const addPlayerBtn = document.getElementById('addPlayer')
@@ -705,6 +888,37 @@ class TennisRankingSystem {
           this.restoreData()
         })
       }
+      
+      // Backup JSON button (full database backup)
+      const backupJsonBtn = document.getElementById('backupJsonBtn')
+      if (backupJsonBtn) {
+        backupJsonBtn.addEventListener('click', () => this.backupToJson())
+      }
+      
+      // Restore JSON button (full database restore)
+      const restoreJsonBtn = document.getElementById('restoreJsonBtn')
+      const restoreJsonInput = document.getElementById('restoreJsonInput')
+      if (restoreJsonBtn && restoreJsonInput) {
+        restoreJsonBtn.addEventListener('click', () => restoreJsonInput.click())
+        restoreJsonInput.addEventListener('change', (e) => this.restoreFromJson(e))
+      }
+      
+      // Backup Excel button (in accounts tab)
+      const backupExcelBtn = document.getElementById('backupExcelBtn')
+      if (backupExcelBtn) {
+        backupExcelBtn.addEventListener('click', () => this.exportToExcel())
+      }
+      
+      // Match season selector
+      const matchSeasonSelect = document.getElementById('matchSeasonSelect')
+      if (matchSeasonSelect) {
+        matchSeasonSelect.addEventListener('change', async (e) => {
+          const seasonId = parseInt(e.target.value)
+          await this.onMatchSeasonChange(seasonId)
+          // Update labels for solo mode
+          this.updateTeamLabelsForMatchType()
+        })
+      }
 
       // Auto-winner detection for score inputs
       const team1ScoreInput = document.getElementById('team1Score')
@@ -722,9 +936,140 @@ class TennisRankingSystem {
         useAutoWinnerBtn.addEventListener('click', () => this.toggleWinnerMode(false))
       }
 
+      // Match type toggle (Đánh đơn / Đánh đôi)
+      const matchTypeDuoBtn = document.getElementById('matchTypeDuo')
+      const matchTypeSoloBtn = document.getElementById('matchTypeSolo')
+      if (matchTypeDuoBtn && matchTypeSoloBtn) {
+        matchTypeDuoBtn.addEventListener('click', () => this.switchMatchType('duo'))
+        matchTypeSoloBtn.addEventListener('click', () => this.switchMatchType('solo'))
+      }
 
     } catch (error) {
       console.error('Error setting up event listeners:', error)
+    }
+  }
+
+  // Match type toggle handler
+  switchMatchType(type) {
+    this.currentMatchType = type
+    
+    // Update hidden input
+    const matchTypeInput = document.getElementById('matchType')
+    if (matchTypeInput) matchTypeInput.value = type
+    
+    // Update button states (new UI)
+    document.querySelectorAll('.type-btn').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.type === type)
+    })
+    
+    // Update team labels based on match type
+    this.updateTeamLabelsForMatchType()
+    
+    // Show/hide elements based on match type
+    if (type === 'solo') {
+      // Hide duo-only elements (player 2 and player 4 selects)
+      document.querySelectorAll('.duo-only').forEach(el => el.style.display = 'none')
+    } else {
+      // Show duo-only elements
+      document.querySelectorAll('.duo-only').forEach(el => el.style.display = '')
+    }
+    
+    // Reset winner selection
+    const winnerSelect = document.getElementById('winner')
+    if (winnerSelect) winnerSelect.value = ''
+    this.currentWinningTeam = null
+  }
+  
+  // Update team labels based on match type (solo = 1v1, duo = 2v2)
+  updateTeamLabelsForMatchType() {
+    const player3Label = document.querySelector('.player3-label')
+    const team2Badge = document.querySelector('.team-2-badge')
+    
+    if (this.currentMatchType === 'solo') {
+      if (player3Label) player3Label.textContent = 'Người chơi 2'
+      if (team2Badge) team2Badge.textContent = 'Đối thủ'
+    } else {
+      if (player3Label) player3Label.textContent = 'Người chơi 3'
+      if (team2Badge) team2Badge.textContent = 'Đội 2'
+    }
+  }
+
+  // Handle season selection change in match form
+  async onMatchSeasonChange(seasonId) {
+    const duoPlayerSelects = ['player1', 'player2', 'player3', 'player4']
+    const soloPlayerSelects = ['soloPlayer1', 'soloPlayer2']
+    const allPlayerSelects = [...duoPlayerSelects, ...soloPlayerSelects]
+    
+    if (!seasonId) {
+      // No season selected - disable player selects
+      allPlayerSelects.forEach(id => {
+        const select = document.getElementById(id)
+        if (select) {
+          select.disabled = true
+          select.innerHTML = '<option value="">Chọn mùa giải trước...</option>'
+        }
+      })
+      // Hide season info
+      const seasonInfoEl = document.getElementById('selectedSeasonInfo')
+      if (seasonInfoEl) seasonInfoEl.style.display = 'none'
+      return
+    }
+    
+    try {
+      // Fetch players eligible for this season
+      const response = await fetch(`${this.apiBase}/seasons/${seasonId}/players`)
+      let seasonPlayers = []
+      
+      if (response.ok) {
+        seasonPlayers = await response.json()
+      }
+      
+      // If no players assigned to season, use all players (backward compatibility)
+      if (seasonPlayers.length === 0) {
+        seasonPlayers = this.players
+      }
+      
+      // Update player selects with filtered players
+      const playerOptions = seasonPlayers.map(player => 
+        `<option value="${player.id}">${player.name}</option>`
+      ).join('')
+      
+      allPlayerSelects.forEach(id => {
+        const select = document.getElementById(id)
+        if (select) {
+          select.disabled = false
+          select.innerHTML = `<option value="">Chọn người chơi...</option>${playerOptions}`
+        }
+      })
+      
+      // Store season players for reference
+      this.currentSeasonPlayers = seasonPlayers
+      this.selectedMatchSeason = seasonId
+      this.seasonPlayers = seasonPlayers
+      
+      // Show season info
+      const selectedSeason = this.seasons.find(s => s.id == seasonId)
+      if (selectedSeason) {
+        const seasonInfoEl = document.getElementById('selectedSeasonInfo')
+        if (seasonInfoEl) {
+          const playerCount = seasonPlayers.length !== this.players.length 
+            ? `${seasonPlayers.length} người chơi được phép` 
+            : 'Tất cả người chơi'
+          const loseMoneyAmount = selectedSeason.lose_money_per_loss || 20000
+          seasonInfoEl.innerHTML = `
+            <div class="season-info-badge">
+              <span class="badge-item">💰 ${this.formatMoney(loseMoneyAmount)}/trận thua</span>
+              <span class="badge-item">👥 ${playerCount}</span>
+            </div>
+          `
+          seasonInfoEl.style.display = 'block'
+        }
+      }
+      
+    } catch (error) {
+      console.error('Error loading season players:', error)
+      // Fallback to all players
+      this.updatePlayerSelects()
     }
   }
 
@@ -732,19 +1077,17 @@ class TennisRankingSystem {
     // First hide all view mode sections
     this.hideAllViewModeSections()
     
-    document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'))
+    // Update nav buttons (new class)
+    document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'))
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'))
 
-    document.querySelector(`[data-tab="${tabName}"]`).classList.add('active')
-    document.getElementById(`${tabName}-tab`).classList.add('active')
+    const tabBtn = document.querySelector(`.nav-btn[data-tab="${tabName}"]`)
+    const tabContent = document.getElementById(`${tabName}-tab`)
+    
+    if (tabBtn) tabBtn.classList.add('active')
+    if (tabContent) tabContent.classList.add('active')
 
     if (tabName === 'rankings') {
-      // Show view mode section only in rankings tab
-      const viewModeSection = document.querySelector('#rankings-tab .view-mode-section')
-      if (viewModeSection) {
-        viewModeSection.classList.remove('hidden')
-      }
-      
       // Setup view mode UI when switching to rankings
       this.updateDateSelector()
       this.updateSeasonSelector()
@@ -760,48 +1103,37 @@ class TennisRankingSystem {
       this.renderPlayers()
     } else if (tabName === 'seasons') {
       this.renderSeasons()
+    } else if (tabName === 'accounts') {
+      this.renderAccounts()
     }
   }
 
   async switchViewMode(mode) {
     this.currentViewMode = mode
     
-    // Update active button
-    document.querySelectorAll('.view-mode-btn').forEach(btn => btn.classList.remove('active'))
-    document.getElementById(`viewMode${mode.charAt(0).toUpperCase() + mode.slice(1)}`).classList.add('active')
+    // Update view buttons (new class)
+    document.querySelectorAll('.view-btn').forEach(btn => btn.classList.remove('active'))
+    const activeBtn = document.querySelector(`.view-btn[data-view="${mode}"]`)
+    if (activeBtn) activeBtn.classList.add('active')
     
-    // Show/hide relevant selectors
-    const dateContainer = document.getElementById('dateSelectContainer')
-    const seasonContainer = document.getElementById('seasonSelectContainer')
-    
-    if (dateContainer) {
-      if (mode === 'daily') {
-        dateContainer.classList.remove('hidden')
-      } else {
-        dateContainer.classList.add('hidden')
-      }
-    }
-    
-    if (seasonContainer) {
-      if (mode === 'season') {
-        seasonContainer.classList.remove('hidden')
-      } else {
-        seasonContainer.classList.add('hidden')
-      }
-    }
+    // Show/hide view sections
+    document.querySelectorAll('.view-section').forEach(section => section.classList.remove('active'))
+    const activeView = document.getElementById(`${mode}-view`)
+    if (activeView) activeView.classList.add('active')
     
     // Set default selections if needed
     if (mode === 'daily' && !this.selectedDate && this.playDates.length > 0) {
-      // Convert to date-only format to avoid timezone issues
       this.selectedDate = this.playDates[0].play_date.split('T')[0]
-      document.getElementById('dateSelector').value = this.selectedDate
+      const rankingDateSelect = document.getElementById('rankingDateSelect')
+      if (rankingDateSelect) rankingDateSelect.value = this.selectedDate
     }
     
     if (mode === 'season' && !this.selectedSeason) {
       const activeSeason = this.seasons.find(s => s.is_active)
       if (activeSeason) {
         this.selectedSeason = activeSeason.id
-        document.getElementById('seasonSelector').value = this.selectedSeason
+        const seasonSelect = document.getElementById('seasonSelect')
+        if (seasonSelect) seasonSelect.value = this.selectedSeason
       }
     }
     
@@ -811,35 +1143,15 @@ class TennisRankingSystem {
 
   setupViewModeUI() {
     try {
-      // Update active view mode button
-      document.querySelectorAll('.view-mode-btn').forEach(btn => btn.classList.remove('active'))
-      const activeBtn = document.getElementById(`viewMode${this.currentViewMode.charAt(0).toUpperCase() + this.currentViewMode.slice(1)}`)
-      if (activeBtn) {
-        activeBtn.classList.add('active')
-      }
+      // Update view buttons
+      document.querySelectorAll('.view-btn').forEach(btn => btn.classList.remove('active'))
+      const activeBtn = document.querySelector(`.view-btn[data-view="${this.currentViewMode}"]`)
+      if (activeBtn) activeBtn.classList.add('active')
       
-      // Show/hide relevant selectors
-      const dateContainer = document.getElementById('dateSelectContainer')
-      const seasonContainer = document.getElementById('seasonSelectContainer')
-      
-      if (dateContainer) {
-        if (this.currentViewMode === 'daily') {
-          dateContainer.classList.remove('hidden')
-        } else {
-          dateContainer.classList.add('hidden')
-        }
-      }
-      
-      if (seasonContainer) {
-        if (this.currentViewMode === 'season') {
-          seasonContainer.classList.remove('hidden')
-        } else {
-          seasonContainer.classList.add('hidden')
-        }
-      }
-      
-      // Update view mode display
-      this.updateViewModeDisplay()
+      // Show/hide view sections
+      document.querySelectorAll('.view-section').forEach(section => section.classList.remove('active'))
+      const activeView = document.getElementById(`${this.currentViewMode}-view`)
+      if (activeView) activeView.classList.add('active')
     } catch (error) {
       console.error('Error setting up view mode UI:', error)
     }
@@ -917,56 +1229,91 @@ class TennisRankingSystem {
 
   async recordMatch() {
     if (!this.isAuthenticated) {
-      this.updateFileStatus('❌ Cần đăng nhập để ghi nhận kết quả', 'error')
+      this.showToast('Cần đăng nhập để ghi nhận kết quả', 'error')
       return
     }
 
-    const playDate = document.getElementById('matchDate').value
-    const seasonId = parseInt(document.getElementById('matchSeason').value)
-    const player1Id = parseInt(document.getElementById('player1').value)
-    const player2Id = parseInt(document.getElementById('player2').value)
-    const player3Id = parseInt(document.getElementById('player3').value)
-    const player4Id = parseInt(document.getElementById('player4').value)
-    const team1Score = parseInt(document.getElementById('team1Score').value)
-    const team2Score = parseInt(document.getElementById('team2Score').value)
-    const winningTeam = parseInt(document.getElementById('winningTeam').value)
+    const playDate = document.getElementById('matchDate')?.value
+    const matchType = this.currentMatchType || 'duo'
+    
+    // Get selected season
+    const seasonId = parseInt(document.getElementById('matchSeasonSelect')?.value)
+    if (!seasonId) {
+      this.showToast('Vui lòng chọn mùa giải', 'error')
+      return
+    }
+    
+    // Get lose money from selected season
+    const selectedSeason = this.seasons.find(s => s.id === seasonId)
+    const loseMoney = selectedSeason?.lose_money_per_loss || 20000
+    const winMoney = loseMoney  // Win = Lose in this system
+    
+    let player1Id, player2Id, player3Id, player4Id, team1Score, team2Score
+    
+    // Get scores - same inputs for both duo and solo modes
+    team1Score = parseInt(document.getElementById('team1Score')?.value) || 0
+    team2Score = parseInt(document.getElementById('team2Score')?.value) || 0
+    
+    if (matchType === 'solo') {
+      // Solo mode - player1 vs player3 (opponents)
+      player1Id = parseInt(document.getElementById('player1')?.value)
+      player2Id = null  // No partner in solo mode
+      player3Id = parseInt(document.getElementById('player3')?.value)
+      player4Id = null  // No partner in solo mode
+    } else {
+      // Duo mode - all 4 players
+      player1Id = parseInt(document.getElementById('player1')?.value)
+      player2Id = parseInt(document.getElementById('player2')?.value)
+      player3Id = parseInt(document.getElementById('player3')?.value)
+      player4Id = parseInt(document.getElementById('player4')?.value)
+    }
+    
+    // Get winner from select
+    const winnerValue = document.getElementById('winner')?.value
+    let winningTeam = winnerValue === 'team1' ? 1 : (winnerValue === 'team2' ? 2 : null)
 
     // Validation
     if (!playDate) {
-      this.updateFileStatus('❌ Vui lòng chọn ngày đánh', 'error')
+      this.showToast('Vui lòng chọn ngày đánh', 'error')
       return
     }
 
-    if (isNaN(seasonId)) {
-      this.updateFileStatus('❌ Vui lòng chọn mùa giải', 'error')
-      return
+    // Validate players based on match type
+    if (matchType === 'solo') {
+      if (isNaN(player1Id) || isNaN(player3Id)) {
+        this.showToast('Vui lòng chọn đủ 2 người chơi', 'error')
+        return
+      }
+      if (player1Id === player3Id) {
+        this.showToast('Cần 2 người chơi khác nhau', 'error')
+        return
+      }
+    } else {
+      const playerIds = [player1Id, player2Id, player3Id, player4Id]
+      if (playerIds.some(id => isNaN(id))) {
+        this.showToast('Vui lòng chọn đủ 4 người chơi', 'error')
+        return
+      }
+
+      const uniquePlayerIds = [...new Set(playerIds)]
+      if (uniquePlayerIds.length !== 4) {
+        this.showToast('Cần 4 người chơi khác nhau', 'error')
+        return
+      }
     }
 
-    const playerIds = [player1Id, player2Id, player3Id, player4Id]
-    if (playerIds.some(id => isNaN(id))) {
-      this.updateFileStatus('❌ Vui lòng chọn đủ 4 người chơi', 'error')
-      return
-    }
-
-    const uniquePlayerIds = [...new Set(playerIds)]
-    if (uniquePlayerIds.length !== 4) {
-      this.updateFileStatus('❌ Cần 4 người chơi khác nhau', 'error')
-      return
-    }
-
-    if (isNaN(team1Score) || isNaN(team2Score) || team1Score < 0 || team2Score < 0) {
-      this.updateFileStatus('❌ Vui lòng nhập tỷ số hợp lệ', 'error')
+    if (team1Score < 0 || team2Score < 0) {
+      this.showToast('Vui lòng nhập tỷ số hợp lệ', 'error')
       return
     }
 
     // Use auto-selected winner if available
-    let finalWinningTeam = winningTeam
-    if (!this.isManualWinnerMode && this.currentWinningTeam) {
-      finalWinningTeam = this.currentWinningTeam
+    if (!winningTeam && this.currentWinningTeam) {
+      winningTeam = this.currentWinningTeam
     }
 
-    if (finalWinningTeam !== 1 && finalWinningTeam !== 2) {
-      this.updateFileStatus('❌ Vui lòng chọn đội thắng', 'error')
+    if (winningTeam !== 1 && winningTeam !== 2) {
+      this.showToast('Vui lòng chọn đội thắng', 'error')
       return
     }
 
@@ -982,7 +1329,10 @@ class TennisRankingSystem {
           player4Id,
           team1Score,
           team2Score,
-          winningTeam: finalWinningTeam
+          winningTeam,
+          matchType,
+          winMoney,
+          loseMoney
         })
       })
 
@@ -993,27 +1343,20 @@ class TennisRankingSystem {
         await this.loadPlayDates()
         
         // Reset form
-        document.getElementById('matchDate').value = ''
-        document.getElementById('team1Score').value = ''
-        document.getElementById('team2Score').value = ''
-        document.getElementById('winningTeam').value = ''
-        
-        // Reset to auto winner mode
-        this.toggleWinnerMode(false)
-        this.setTodaysDate()
+        this.resetMatchForm()
         
         // Update displays
         this.renderRankings()
         this.renderMatchHistory()
         this.updateDateSelector()
         
-        this.updateFileStatus('✅ Đã ghi nhận kết quả trận đấu', 'success')
+        this.showToast('Đã ghi nhận kết quả trận đấu', 'success')
       } else {
-        this.updateFileStatus(`❌ ${data.error}`, 'error')
+        this.showToast(data.error || 'Lỗi khi ghi nhận kết quả', 'error')
       }
     } catch (error) {
       console.error('Error recording match:', error)
-      this.updateFileStatus('❌ Lỗi khi ghi nhận kết quả', 'error')
+      this.showToast('Lỗi khi ghi nhận kết quả', 'error')
     }
   }
 
@@ -1068,6 +1411,7 @@ class TennisRankingSystem {
             : '<span class="season-text-muted">Không có ngày kết thúc</span>'
           const autoEndInfo = season.auto_end && hasEndDate ? ` <span class="season-auto-end">(Tự động kết thúc)</span>` : ''
           const descriptionInfo = season.description ? `<p class="season-description">📝 ${season.description}</p>` : ''
+          const loseMoneyInfo = `<p>💰 Tiền thua: ${this.formatMoney(season.lose_money_per_loss || 20000)}/trận</p>`
           
           html += `
             <div class="season-card active-season">
@@ -1078,14 +1422,15 @@ class TennisRankingSystem {
               <div class="season-info">
                 <p>📅 Từ: ${this.formatDate(season.start_date)}</p>
                 <p>🏁 Đến: ${endDateDisplay}${autoEndInfo}</p>
+                ${loseMoneyInfo}
                 ${descriptionInfo}
                 ${!hasEndDate ? `<p class="info-warning">⚠️ Cần kết thúc thủ công</p>` : ''}
               </div>
               ${userRole === 'admin' || userRole === 'editor' ? `
                 <div class="season-actions">
-                  <button data-action="end-season" data-id="${season.id}" class="end-btn">🏁 Kết thúc</button>
-                  <button data-action="edit-season" data-id="${season.id}" class="edit-btn">✏️ Sửa</button>
-                  <button data-action="delete-season" data-id="${season.id}" class="delete-btn">🗑️ Xóa</button>
+                  <button data-action="end-season" data-id="${season.id}" class="btn btn-sm btn-secondary">🏁 Kết thúc</button>
+                  <button data-action="edit-season" data-id="${season.id}" class="btn btn-sm btn-ghost">✏️ Sửa</button>
+                  <button data-action="delete-season" data-id="${season.id}" class="btn btn-sm btn-danger">🗑️ Xóa</button>
                 </div>
               ` : ''}
             </div>`
@@ -1108,6 +1453,7 @@ class TennisRankingSystem {
           const descriptionInfo = season.description ? `<p class="season-description">📝 ${season.description}</p>` : ''
           const endedAtInfo = season.ended_at ? `<p>⏰ Kết thúc lúc: ${new Date(season.ended_at).toLocaleString('vi-VN')}</p>` : ''
           const endedByInfo = season.ended_by ? `<p>👤 Kết thúc bởi: ${season.ended_by}</p>` : ''
+          const loseMoneyInfo = `<p>💰 Tiền thua: ${this.formatMoney(season.lose_money_per_loss || 20000)}/trận</p>`
           
           html += `
             <div class="season-card ended-season">
@@ -1118,14 +1464,15 @@ class TennisRankingSystem {
               <div class="season-info">
                 <p>📅 Từ: ${this.formatDate(season.start_date)}</p>
                 <p>🏁 Đến: ${endDateDisplay}</p>
+                ${loseMoneyInfo}
                 ${endedAtInfo}
                 ${endedByInfo}
                 ${descriptionInfo}
               </div>
               ${userRole === 'admin' || userRole === 'editor' ? `
                 <div class="season-actions">
-                  <button data-action="reactivate-season" data-id="${season.id}" class="activate-btn">✅ Kích hoạt lại</button>
-                  <button data-action="delete-season" data-id="${season.id}" class="delete-btn">🗑️ Xóa</button>
+                  <button data-action="reactivate-season" data-id="${season.id}" class="btn btn-sm btn-primary">✅ Kích hoạt lại</button>
+                  <button data-action="delete-season" data-id="${season.id}" class="btn btn-sm btn-danger">🗑️ Xóa</button>
                 </div>
               ` : ''}
             </div>`
@@ -1183,26 +1530,43 @@ class TennisRankingSystem {
       console.error('Error loading rankings:', error)
     }
 
-    const container = document.getElementById('rankingsTable')
+    // Determine which table to use based on view mode
+    let tableId = 'dailyRankingTable'
+    if (this.currentViewMode === 'season') tableId = 'seasonRankingTable'
+    else if (this.currentViewMode === 'lifetime') tableId = 'lifetimeRankingTable'
+    
+    const container = document.getElementById(tableId)
     if (!container) return
 
     const tbody = container.querySelector('tbody')
-    tbody.innerHTML = rankings.map((player, index) => `
-      <tr>
-        <td>${index + 1}</td>
-        <td>${player.name}</td>
-        <td>${player.wins}</td>
-        <td>${player.losses}</td>
-        <td>${player.total_matches}</td>
-        <td>${player.points}</td>
-        <td>${player.win_percentage}%</td>
-        <td>${this.formatMoney(player.money_lost)}</td>
-        <td class="form-indicator">${this.renderForm(player.form || [])}</td>
-      </tr>
-    `).join('')
-
-    // Update view mode display
-    this.updateViewModeDisplay()
+    if (!tbody) return
+    
+    tbody.innerHTML = rankings.length === 0 
+      ? '<tr><td colspan="8" style="text-align: center; padding: 2rem; color: var(--text-muted);">Không có dữ liệu</td></tr>'
+      : rankings.map((player, index) => {
+        const balanceClass = player.money_balance > 0 ? 'positive' : (player.money_balance < 0 ? 'negative' : '')
+        const balanceValue = player.money_balance || (player.money_won || 0) - (player.money_lost || 0)
+        const formHtml = this.renderForm(player.form || player.recent_form || [])
+        return `
+          <tr>
+            <td class="col-rank">${this.getRankEmoji(index + 1)}${index + 1}</td>
+            <td class="col-name">${player.name}</td>
+            <td class="col-form"><div class="form-dots">${formHtml || '-'}</div></td>
+            <td>${player.total_matches || 0}</td>
+            <td>${player.wins || 0}</td>
+            <td>${player.losses || 0}</td>
+            <td>${player.win_percentage || 0}%</td>
+            <td class="col-balance ${balanceClass}">${this.formatMoney(balanceValue)}</td>
+          </tr>
+        `
+      }).join('')
+  }
+  
+  getRankEmoji(rank) {
+    if (rank === 1) return '🥇 '
+    if (rank === 2) return '🥈 '
+    if (rank === 3) return '🥉 '
+    return ''
   }
 
   renderForm(form) {
@@ -1218,7 +1582,13 @@ class TennisRankingSystem {
     let matches = []
     
     try {
-      if (this.currentViewMode === 'daily' && this.selectedDate) {
+      // Check for filter date
+      const matchHistoryDate = document.getElementById('matchHistoryDate')?.value
+      
+      if (matchHistoryDate) {
+        const response = await fetch(`${this.apiBase}/matches/by-date/${matchHistoryDate}`)
+        if (response.ok) matches = await response.json()
+      } else if (this.currentViewMode === 'daily' && this.selectedDate) {
         const response = await fetch(`${this.apiBase}/matches/by-date/${this.selectedDate}`)
         if (response.ok) matches = await response.json()
       } else if (this.currentViewMode === 'season' && this.selectedSeason) {
@@ -1232,76 +1602,92 @@ class TennisRankingSystem {
       console.error('Error loading matches:', error)
     }
 
-    const container = document.getElementById('matchHistory')
+    const container = document.querySelector('#matchHistoryTable tbody')
     if (!container) return
 
-    container.innerHTML = matches.map(match => {
-      const team1Players = `${match.player1_name} & ${match.player2_name}`
-      const team2Players = `${match.player3_name} & ${match.player4_name}`
-      const winnerClass = match.winning_team === 1 ? 'team1-win' : 'team2-win'
-      
-      const userRole = this.user?.role
-      let editDeleteButtons = ''
-      
-      if (userRole === 'admin' || userRole === 'editor') {
-        editDeleteButtons = `
-          <div class="match-actions">
-            <button data-action="edit-match" data-id="${match.id}" class="edit-btn" title="Sửa trận đấu">✏️</button>
-            <button data-action="delete-match" data-id="${match.id}" class="delete-btn" title="Xóa trận đấu">🗑️</button>
-          </div>
+    const userRole = this.user?.role
+    const canEdit = userRole === 'admin' || userRole === 'editor'
+    
+    container.innerHTML = matches.length === 0 
+      ? `<tr><td colspan="${canEdit ? 6 : 5}" style="text-align: center; padding: 2rem; color: var(--text-muted);">Không có trận đấu nào</td></tr>`
+      : matches.map(match => {
+        const isSolo = match.match_type === 'solo'
+        
+        let team1Players, team2Players
+        if (isSolo) {
+          team1Players = match.player1_name
+          team2Players = match.player3_name
+        } else {
+          team1Players = `${match.player1_name} & ${match.player2_name}`
+          team2Players = `${match.player3_name} & ${match.player4_name}`
+        }
+        
+        const team1Class = match.winning_team === 1 ? 'winner-cell' : ''
+        const team2Class = match.winning_team === 2 ? 'winner-cell' : ''
+        const matchMoney = match.win_money || match.lose_money || 50000
+        
+        return `
+          <tr>
+            <td>${this.formatDate(match.play_date)}</td>
+            <td class="${team1Class}">${team1Players} ${match.winning_team === 1 ? '🏆' : ''}</td>
+            <td style="text-align: center; font-weight: 600;">${match.team1_score} - ${match.team2_score}</td>
+            <td class="${team2Class}">${team2Players} ${match.winning_team === 2 ? '🏆' : ''}</td>
+            <td>${this.formatMoney(matchMoney)}</td>
+            ${canEdit ? `
+              <td>
+                <div class="action-btns">
+                  <button class="edit-btn" onclick="app.editMatch(${match.id})">✏️</button>
+                  <button class="delete-btn" onclick="app.deleteMatch(${match.id})">🗑️</button>
+                </div>
+              </td>
+            ` : ''}
+          </tr>
         `
-      }
-      
-      return `
-        <div class="match-card ${winnerClass}">
-          <div class="match-info">
-            <div class="match-date">📅 ${this.formatDate(match.play_date)}</div>
-            <div class="match-season">🏆 ${match.season_name}</div>
-            ${editDeleteButtons}
-          </div>
-          <div class="match-details">
-            <div class="team ${match.winning_team === 1 ? 'winner' : ''}">
-              <div class="team-players">${team1Players}</div>
-              <div class="team-score">${match.team1_score}</div>
-            </div>
-            <div class="vs">VS</div>
-            <div class="team ${match.winning_team === 2 ? 'winner' : ''}">
-              <div class="team-players">${team2Players}</div>
-              <div class="team-score">${match.team2_score}</div>
-            </div>
-          </div>
-        </div>
-      `
-    }).join('')
-
-    // Add event listeners for match actions
-    if (this.isAuthenticated) {
-      container.querySelectorAll('[data-action]').forEach(button => {
-        button.addEventListener('click', (e) => {
-          const action = e.target.dataset.action
-          const matchId = parseInt(e.target.dataset.id)
-          
-          if (action === 'edit-match') {
-            this.editMatch(matchId)
-          } else if (action === 'delete-match') {
-            this.deleteMatch(matchId)
-          }
-        })
-      })
-    }
+      }).join('')
   }
 
   updatePlayerSelects() {
     try {
-      const playerOptions = this.players.map(player => 
+      // Filter players by selected season if a season is selected
+      let availablePlayers = this.players
+      
+      if (this.selectedMatchSeason && this.seasonPlayers.length > 0) {
+        // Only show players who are allowed in this season
+        const allowedPlayerIds = this.seasonPlayers.map(p => p.player_id || p.id)
+        availablePlayers = this.players.filter(player => 
+          allowedPlayerIds.includes(player.id)
+        )
+      }
+      
+      const playerOptions = availablePlayers.map(player => 
         `<option value="${player.id}">${player.name}</option>`
       ).join('')
 
-      const selects = ['player1', 'player2', 'player3', 'player4']
-      selects.forEach(selectId => {
+      // For duo mode
+      const duoSelects = ['player1', 'player2', 'player3', 'player4']
+      duoSelects.forEach(selectId => {
         const select = document.getElementById(selectId)
         if (select) {
+          const currentValue = select.value
           select.innerHTML = `<option value="">Chọn người chơi...</option>${playerOptions}`
+          // Restore previous selection if still valid
+          if (currentValue && availablePlayers.some(p => p.id == currentValue)) {
+            select.value = currentValue
+          }
+        }
+      })
+      
+      // For solo mode
+      const soloSelects = ['soloPlayer1', 'soloPlayer2']
+      soloSelects.forEach(selectId => {
+        const select = document.getElementById(selectId)
+        if (select) {
+          const currentValue = select.value
+          select.innerHTML = `<option value="">Chọn người chơi...</option>${playerOptions}`
+          // Restore previous selection if still valid
+          if (currentValue && availablePlayers.some(p => p.id == currentValue)) {
+            select.value = currentValue
+          }
         }
       })
     } catch (error) {
@@ -1311,7 +1697,7 @@ class TennisRankingSystem {
 
   updateSeasonSelect() {
     try {
-      const matchSeasonSelect = document.getElementById('matchSeason')
+      const matchSeasonSelect = document.getElementById('matchSeasonSelect')
       if (!matchSeasonSelect) return
 
       // Get only active seasons
@@ -1319,25 +1705,85 @@ class TennisRankingSystem {
       
       const seasonOptions = activeSeasons.map(season => {
         const endDateStr = season.end_date ? ` (Kết thúc: ${this.formatDate(season.end_date)})` : ''
-        return `<option value="${season.id}">${season.name}${endDateStr}</option>`
+        const loseMoneyStr = season.lose_money_per_loss ? ` - ${this.formatMoney(season.lose_money_per_loss)}/thua` : ''
+        return `<option value="${season.id}">${season.name}${endDateStr}${loseMoneyStr}</option>`
       }).join('')
 
-      matchSeasonSelect.innerHTML = `<option value="">Chọn mùa giải</option>${seasonOptions}`
+      matchSeasonSelect.innerHTML = `<option value="">-- Chọn mùa giải trước --</option>${seasonOptions}`
       
       // Auto-select if only one active season
       if (activeSeasons.length === 1) {
         matchSeasonSelect.value = activeSeasons[0].id
+        // Trigger the season change to load players
+        this.onMatchSeasonChange(activeSeasons[0].id)
       }
     } catch (error) {
       console.error('Error updating season select:', error)
     }
   }
 
+  async handleMatchSeasonChange(seasonId) {
+    this.selectedMatchSeason = seasonId ? parseInt(seasonId) : null
+    
+    const playerSelectionArea = document.getElementById('playerSelectionArea')
+    
+    if (!seasonId) {
+      // No season selected - hide player selection
+      this.seasonPlayers = []
+      if (playerSelectionArea) {
+        playerSelectionArea.style.display = 'none'
+      }
+      return
+    }
+    
+    // Fetch players allowed in this season
+    try {
+      const response = await fetch(`${this.apiBase}/seasons/${seasonId}/players`)
+      if (response.ok) {
+        this.seasonPlayers = await response.json()
+      } else {
+        // If no specific players, allow all players
+        this.seasonPlayers = []
+      }
+    } catch (error) {
+      console.error('Error loading season players:', error)
+      this.seasonPlayers = []
+    }
+    
+    // Show player selection area
+    if (playerSelectionArea) {
+      playerSelectionArea.style.display = 'block'
+    }
+    
+    // Update player dropdowns with filtered list
+    this.updatePlayerSelects()
+    
+    // Also update the season info display
+    const selectedSeason = this.seasons.find(s => s.id == seasonId)
+    if (selectedSeason) {
+      const seasonInfoEl = document.getElementById('selectedSeasonInfo')
+      if (seasonInfoEl) {
+        const playerCount = this.seasonPlayers.length > 0 
+          ? `${this.seasonPlayers.length} người chơi được phép` 
+          : 'Tất cả người chơi'
+        seasonInfoEl.innerHTML = `
+          <div class="season-info-badge">
+            <span>💰 ${this.formatMoney(selectedSeason.lose_money_per_loss || 20000)}/trận thua</span>
+            <span>👥 ${playerCount}</span>
+          </div>
+        `
+        seasonInfoEl.style.display = 'block'
+      }
+    }
+  }
+
   updateDateSelector() {
-    const selector = document.getElementById('dateSelector')
+    const selector = document.getElementById('rankingDateSelect')
     if (!selector) return
 
-    selector.innerHTML = this.playDates.map(dateObj => {
+    // Keep the placeholder option and add dates
+    const placeholder = '<option value="">-- Chọn ngày --</option>'
+    selector.innerHTML = placeholder + this.playDates.map(dateObj => {
       // Convert to date-only format (YYYY-MM-DD) to avoid timezone issues
       const dateOnly = dateObj.play_date.split('T')[0]
       return `<option value="${dateOnly}">${this.formatDate(dateObj.play_date)}</option>`
@@ -1351,11 +1797,11 @@ class TennisRankingSystem {
   }
 
   updateSeasonSelector() {
-    const selector = document.getElementById('seasonSelector')
+    const selector = document.getElementById('seasonSelect')
     if (!selector) return
 
     selector.innerHTML = this.seasons.map(season => 
-      `<option value="${season.id}">${season.name}</option>`
+      `<option value="${season.id}">${season.name}${season.is_active ? ' (Đang hoạt động)' : ''}</option>`
     ).join('')
 
     if (this.selectedSeason) {
@@ -1396,97 +1842,154 @@ class TennisRankingSystem {
     const isEdit = seasonId !== null
     const season = isEdit ? this.seasons.find(s => s.id === seasonId) : null
     
-    const modal = document.createElement('div')
-    modal.className = 'modal'
-    modal.innerHTML = `
-      <div class="modal-content">
-        <h2>${isEdit ? 'Chỉnh sửa mùa giải' : 'Tạo mùa giải mới'}</h2>
-        <form id="seasonForm">
-          <div class="form-group">
-            <label for="seasonName">Tên mùa giải:</label>
-            <input type="text" id="seasonName" value="${season ? season.name : ''}" required>
-          </div>
-          <div class="form-group">
-            <label for="seasonDescription">Mô tả (tuỳ chọn):</label>
-            <textarea id="seasonDescription" rows="2" placeholder="Mô tả về mùa giải...">${season ? season.description || '' : ''}</textarea>
-          </div>
-          <div class="form-group">
-            <label for="seasonStartDate">Ngày bắt đầu:</label>
-            <input type="date" id="seasonStartDate" value="${season ? season.start_date : ''}" required>
-          </div>
-          <div class="form-group">
-            <label for="seasonEndDate">Ngày kết thúc (tuỳ chọn):</label>
-            <input type="date" id="seasonEndDate" value="${season ? season.end_date || '' : ''}">
-            <small>Nếu để trống, mùa giải sẽ không tự động kết thúc</small>
-          </div>
-          <div class="form-group">
-            <label>
-              <input type="checkbox" id="seasonAutoEnd" ${season && season.auto_end ? 'checked' : ''}>
-              Tự động kết thúc vào ngày kết thúc
-            </label>
-            <small>Nếu bật, mùa giải sẽ tự động kết thúc khi đến ngày kết thúc</small>
-          </div>
-          <div class="form-actions">
-            <button type="submit">${isEdit ? 'Cập nhật' : 'Tạo mùa giải'}</button>
-            <button type="button" id="cancelSeason">Hủy</button>
-          </div>
-        </form>
-        <div id="seasonError" class="error-message"></div>
-      </div>
-    `
+    // Update modal title
+    const titleEl = document.getElementById('seasonModalTitle')
+    if (titleEl) {
+      titleEl.textContent = isEdit ? 'Chỉnh Sửa Mùa Giải' : 'Tạo Mùa Giải Mới'
+    }
     
-    document.body.appendChild(modal)
+    // Build player checkboxes
+    const checkboxContainer = document.getElementById('seasonPlayersCheckboxes')
+    if (checkboxContainer) {
+      checkboxContainer.innerHTML = this.players.map(player => `
+        <label class="player-checkbox">
+          <input type="checkbox" name="seasonPlayers" value="${player.id}" data-player-name="${player.name}">
+          <span>${player.name}</span>
+        </label>
+      `).join('')
+    }
     
-    document.getElementById('seasonForm').addEventListener('submit', async (e) => {
-      e.preventDefault()
-      const name = document.getElementById('seasonName').value.trim()
-      const description = document.getElementById('seasonDescription').value.trim()
-      const startDate = document.getElementById('seasonStartDate').value
-      const endDate = document.getElementById('seasonEndDate').value || null
-      const autoEnd = document.getElementById('seasonAutoEnd').checked
-      const errorDiv = document.getElementById('seasonError')
-      
-      if (!name || !startDate) {
-        errorDiv.textContent = 'Vui lòng điền đầy đủ thông tin'
-        return
-      }
-      
-      // Validate end date is after start date
-      if (endDate && endDate <= startDate) {
-        errorDiv.textContent = 'Ngày kết thúc phải sau ngày bắt đầu'
-        return
-      }
-      
-      // Auto-end requires end date
-      if (autoEnd && !endDate) {
-        errorDiv.textContent = 'Cần chọn ngày kết thúc để bật tự động kết thúc'
-        return
-      }
-      
-      const result = isEdit ? 
-        await this.updateSeason(seasonId, name, description, startDate, endDate, autoEnd) :
-        await this.createSeason(name, description, startDate, endDate, autoEnd)
-      
-      if (result.success) {
-        document.body.removeChild(modal)
-        this.updateFileStatus(result.message, 'success')
-      } else {
-        errorDiv.textContent = result.message
-      }
-    })
+    // Set form values
+    document.getElementById('seasonId').value = seasonId || ''
+    document.getElementById('seasonName').value = season ? season.name : ''
+    document.getElementById('seasonLoseMoney').value = season ? (season.lose_money_per_loss || 20000) : 20000
+    document.getElementById('seasonStartDate').value = season ? season.start_date : ''
+    document.getElementById('seasonEndDate').value = season ? (season.end_date || '') : ''
+    document.getElementById('seasonDescription').value = season ? (season.description || '') : ''
+    document.getElementById('seasonAutoEnd').checked = season ? season.auto_end : false
     
-    document.getElementById('cancelSeason').addEventListener('click', () => {
-      document.body.removeChild(modal)
-    })
+    // Clear error
+    const errorDiv = document.getElementById('seasonError')
+    if (errorDiv) errorDiv.textContent = ''
     
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) {
-        document.body.removeChild(modal)
+    // Update submit button text
+    const submitBtn = document.getElementById('seasonSubmitBtn')
+    if (submitBtn) {
+      submitBtn.textContent = isEdit ? 'Cập nhật' : 'Tạo mùa giải'
+    }
+    
+    // If editing, load season players
+    if (isEdit) {
+      this.loadSeasonPlayersForEdit(seasonId)
+    }
+    
+    // Setup select/deselect all buttons
+    const selectAllBtn = document.getElementById('selectAllPlayers')
+    const deselectAllBtn = document.getElementById('deselectAllPlayers')
+    
+    if (selectAllBtn) {
+      selectAllBtn.onclick = () => {
+        document.querySelectorAll('input[name="seasonPlayers"]').forEach(cb => cb.checked = true)
       }
-    })
+    }
+    
+    if (deselectAllBtn) {
+      deselectAllBtn.onclick = () => {
+        document.querySelectorAll('input[name="seasonPlayers"]').forEach(cb => cb.checked = false)
+      }
+    }
+    
+    // Setup form submission
+    const form = document.getElementById('seasonForm')
+    if (form) {
+      // Remove old listener and add new one
+      const newForm = form.cloneNode(true)
+      form.parentNode.replaceChild(newForm, form)
+      
+      // Re-bind checkbox listeners after form clone
+      const newSelectAll = document.getElementById('selectAllPlayers')
+      const newDeselectAll = document.getElementById('deselectAllPlayers')
+      if (newSelectAll) {
+        newSelectAll.onclick = () => {
+          document.querySelectorAll('input[name="seasonPlayers"]').forEach(cb => cb.checked = true)
+        }
+      }
+      if (newDeselectAll) {
+        newDeselectAll.onclick = () => {
+          document.querySelectorAll('input[name="seasonPlayers"]').forEach(cb => cb.checked = false)
+        }
+      }
+      
+      newForm.addEventListener('submit', async (e) => {
+        e.preventDefault()
+        await this.handleSeasonFormSubmit(isEdit, seasonId)
+      })
+    }
+    
+    // Show the modal
+    this.showModal('seasonModal')
+  }
+  
+  async handleSeasonFormSubmit(isEdit, seasonId) {
+    const name = document.getElementById('seasonName').value.trim()
+    const description = document.getElementById('seasonDescription').value.trim()
+    const startDate = document.getElementById('seasonStartDate').value
+    const endDate = document.getElementById('seasonEndDate').value || null
+    const autoEnd = document.getElementById('seasonAutoEnd').checked
+    const loseMoneyPerLoss = parseInt(document.getElementById('seasonLoseMoney').value) || 20000
+    const errorDiv = document.getElementById('seasonError')
+    
+    // Get selected players
+    const selectedPlayers = Array.from(document.querySelectorAll('input[name="seasonPlayers"]:checked'))
+      .map(cb => parseInt(cb.value))
+    
+    if (!name || !startDate) {
+      if (errorDiv) errorDiv.textContent = 'Vui lòng điền đầy đủ thông tin'
+      return
+    }
+    
+    // Validate end date is after start date
+    if (endDate && endDate <= startDate) {
+      if (errorDiv) errorDiv.textContent = 'Ngày kết thúc phải sau ngày bắt đầu'
+      return
+    }
+    
+    // Auto-end requires end date
+    if (autoEnd && !endDate) {
+      if (errorDiv) errorDiv.textContent = 'Cần chọn ngày kết thúc để bật tự động kết thúc'
+      return
+    }
+    
+    const result = isEdit ? 
+      await this.updateSeason(seasonId, name, description, startDate, endDate, autoEnd, loseMoneyPerLoss, selectedPlayers) :
+      await this.createSeason(name, description, startDate, endDate, autoEnd, loseMoneyPerLoss, selectedPlayers)
+    
+    if (result.success) {
+      this.hideModal('seasonModal')
+      this.showToast(result.message, 'success')
+    } else {
+      if (errorDiv) errorDiv.textContent = result.message
+    }
   }
 
-  async createSeason(name, description, startDate, endDate, autoEnd) {
+  async loadSeasonPlayersForEdit(seasonId) {
+    try {
+      const response = await fetch(`${this.apiBase}/seasons/${seasonId}/players`)
+      if (response.ok) {
+        const seasonPlayers = await response.json()
+        const seasonPlayerIds = seasonPlayers.map(p => p.id)
+        
+        // Check the checkboxes for players in this season
+        document.querySelectorAll('input[name="seasonPlayers"]').forEach(cb => {
+          cb.checked = seasonPlayerIds.includes(parseInt(cb.value))
+        })
+      }
+    } catch (error) {
+      console.error('Error loading season players for edit:', error)
+    }
+  }
+
+  async createSeason(name, description, startDate, endDate, autoEnd, loseMoneyPerLoss = 20000, playerIds = []) {
     try {
       const response = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons`, {
         method: 'POST',
@@ -1495,7 +1998,9 @@ class TennisRankingSystem {
           description,
           startDate,
           endDate,
-          autoEnd
+          autoEnd,
+          loseMoneyPerLoss,
+          playerIds
         })
       })
 
@@ -1515,23 +2020,37 @@ class TennisRankingSystem {
     }
   }
 
-  async updateSeason(seasonId, name, description, startDate, endDate, autoEnd) {
+  async updateSeason(seasonId, name, description, startDate, endDate, autoEnd, loseMoneyPerLoss = null, playerIds = null) {
     try {
+      // Update season details
       const response = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons/${seasonId}`, {
         method: 'PUT',
-        body: JSON.stringify({ name, description, startDate, endDate, autoEnd })
+        body: JSON.stringify({ name, description, startDate, endDate, autoEnd, loseMoneyPerLoss })
       })
 
       const data = await response.json()
       
-      if (response.ok) {
-        await this.loadSeasons()
-        this.renderSeasons()
-        this.updateSeasonSelector()
-        return { success: true, message: 'Đã cập nhật mùa giải thành công' }
-      } else {
+      if (!response.ok) {
         return { success: false, message: data.error }
       }
+      
+      // Update season players if provided
+      if (playerIds !== null) {
+        const playersResponse = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons/${seasonId}/players`, {
+          method: 'POST',
+          body: JSON.stringify({ playerIds })
+        })
+        
+        if (!playersResponse.ok) {
+          const playersData = await playersResponse.json()
+          return { success: false, message: playersData.error || 'Lỗi khi cập nhật người chơi' }
+        }
+      }
+      
+      await this.loadSeasons()
+      this.renderSeasons()
+      this.updateSeasonSelector()
+      return { success: true, message: 'Đã cập nhật mùa giải thành công' }
     } catch (error) {
       console.error('Error updating season:', error)
       return { success: false, message: 'Lỗi khi cập nhật mùa giải' }
@@ -1735,6 +2254,131 @@ class TennisRankingSystem {
     } catch (error) {
       console.error('Error exporting to Excel:', error)
       this.updateFileStatus('❌ Lỗi khi xuất dữ liệu ra Excel', 'error')
+    }
+  }
+  
+  // Backup entire database to JSON
+  async backupToJson() {
+    try {
+      this.showToast('Đang tạo bản sao lưu...', 'info')
+      
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/backup`, {
+        method: 'GET'
+      })
+      
+      if (!response.ok) {
+        const data = await response.json()
+        this.showToast(data.error || 'Lỗi khi tạo bản sao lưu', 'error')
+        return
+      }
+      
+      const backupData = await response.json()
+      
+      // Create download
+      const jsonStr = JSON.stringify(backupData, null, 2)
+      const blob = new Blob([jsonStr], { type: 'application/json' })
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `tennis-backup-${new Date().toISOString().split('T')[0]}.json`
+      document.body.appendChild(a)
+      a.click()
+      window.URL.revokeObjectURL(url)
+      document.body.removeChild(a)
+      
+      this.showToast('Đã tạo bản sao lưu thành công!', 'success')
+    } catch (error) {
+      console.error('Error creating backup:', error)
+      this.showToast('Lỗi khi tạo bản sao lưu', 'error')
+    }
+  }
+  
+  // Restore database from JSON backup
+  async restoreFromJson(event) {
+    const file = event.target.files?.[0]
+    if (!file) return
+    
+    // Reset file input
+    event.target.value = ''
+    
+    // Warning confirmation
+    const confirmRestore = confirm(
+      '⚠️ CẢNH BÁO ⚠️\n\n' +
+      'Khôi phục dữ liệu sẽ XÓA TẤT CẢ dữ liệu hiện tại và thay thế bằng dữ liệu từ file backup.\n\n' +
+      'Bao gồm:\n' +
+      '• Tất cả người chơi\n' +
+      '• Tất cả trận đấu\n' +
+      '• Tất cả mùa giải\n' +
+      '• Tài khoản người dùng (nếu có trong backup)\n\n' +
+      'Bạn có chắc chắn muốn tiếp tục?'
+    )
+    
+    if (!confirmRestore) return
+    
+    // Second confirmation
+    const confirmText = prompt(
+      'Để xác nhận khôi phục, vui lòng gõ: RESTORE\n\n' +
+      '(Gõ chính xác "RESTORE" để xác nhận)'
+    )
+    
+    if (confirmText !== 'RESTORE') {
+      this.showToast('Đã hủy khôi phục', 'info')
+      return
+    }
+    
+    try {
+      this.showToast('Đang khôi phục dữ liệu...', 'info')
+      
+      // Read file content
+      const reader = new FileReader()
+      reader.onload = async (e) => {
+        try {
+          const backupData = JSON.parse(e.target.result)
+          
+          // Validate backup structure
+          if (!backupData.players || !backupData.seasons || !backupData.matches) {
+            this.showToast('File backup không hợp lệ', 'error')
+            return
+          }
+          
+          // Send to server
+          const response = await this.makeAuthenticatedRequest(`${this.apiBase}/restore`, {
+            method: 'POST',
+            body: JSON.stringify(backupData)
+          })
+          
+          const result = await response.json()
+          
+          if (response.ok) {
+            this.showToast('Khôi phục dữ liệu thành công! Đang tải lại...', 'success')
+            
+            // Reload all data
+            await this.loadPlayers()
+            await this.loadSeasons()
+            await this.loadMatches()
+            await this.loadPlayDates()
+            
+            // Update UI
+            this.renderRankings()
+            this.renderMatchHistory()
+            this.renderSeasons()
+            this.updatePlayerSelects()
+            this.updateSeasonSelector()
+            this.updateDateSelector()
+            this.updateMatchSeasonSelector()
+          } else {
+            this.showToast(result.error || 'Lỗi khi khôi phục dữ liệu', 'error')
+          }
+        } catch (parseError) {
+          console.error('Error parsing JSON:', parseError)
+          this.showToast('File JSON không hợp lệ', 'error')
+        }
+      }
+      
+      reader.readAsText(file)
+    } catch (error) {
+      console.error('Error restoring backup:', error)
+      this.showToast('Lỗi khi khôi phục dữ liệu', 'error')
     }
   }
 
@@ -2116,36 +2760,46 @@ class TennisRankingSystem {
 
   async editMatch(matchId) {
     if (!this.isAuthenticated) {
-      this.updateFileStatus('❌ Cần đăng nhập để sửa trận đấu', 'error')
+      this.showToast('Cần đăng nhập để sửa trận đấu', 'error')
       return
     }
 
-    const match = this.matches.find(m => m.id === matchId)
-    if (!match) {
-      this.updateFileStatus('❌ Không tìm thấy trận đấu', 'error')
-      return
+    try {
+      // Fetch fresh match data from server
+      const response = await fetch(`${this.apiBase}/matches/${matchId}`, {
+        credentials: 'include'
+      })
+      
+      if (!response.ok) {
+        this.showToast('Không tìm thấy trận đấu', 'error')
+        return
+      }
+      
+      const match = await response.json()
+      this.showMatchEditModal(match)
+    } catch (error) {
+      console.error('Error fetching match:', error)
+      this.showToast('Lỗi khi tải thông tin trận đấu', 'error')
     }
-
-    this.showMatchEditModal(match)
   }
 
   async deleteMatch(matchId) {
     if (!this.isAuthenticated) {
-      this.updateFileStatus('❌ Cần đăng nhập để xóa trận đấu', 'error')
+      this.showToast('Cần đăng nhập để xóa trận đấu', 'error')
       return
     }
 
-    const match = this.matches.find(m => m.id === matchId)
-    if (!match) {
-      this.updateFileStatus('❌ Không tìm thấy trận đấu', 'error')
-      return
-    }
-
+    // Get match info for confirmation
+    let matchInfo = this.matches.find(m => m.id === matchId)
+    
     const confirmDelete = confirm(
       `Bạn có chắc chắn muốn xóa trận đấu này?\n\n` +
-      `📅 ${this.formatDate(match.play_date)}\n` +
-      `👥 ${match.player1_name} & ${match.player2_name} vs ${match.player3_name} & ${match.player4_name}\n` +
-      `📊 ${match.team1_score} - ${match.team2_score}\n\n` +
+      (matchInfo ? 
+        `📅 ${this.formatDate(matchInfo.play_date)}\n` +
+        `👥 ${matchInfo.player1_name}${matchInfo.player2_name ? ' & ' + matchInfo.player2_name : ''} vs ${matchInfo.player3_name}${matchInfo.player4_name ? ' & ' + matchInfo.player4_name : ''}\n` +
+        `📊 ${matchInfo.team1_score} - ${matchInfo.team2_score}\n\n` :
+        ''
+      ) +
       `Hành động này không thể hoàn tác.`
     )
 
@@ -2164,22 +2818,23 @@ class TennisRankingSystem {
         this.renderRankings()
         this.renderMatchHistory()
         this.updateDateSelector()
-        this.updateFileStatus('✅ Đã xóa trận đấu thành công', 'success')
+        this.showToast('Đã xóa trận đấu thành công', 'success')
       } else {
-        this.updateFileStatus(`❌ ${data.error}`, 'error')
+        this.showToast(data.error || 'Lỗi khi xóa trận đấu', 'error')
       }
     } catch (error) {
       console.error('Error deleting match:', error)
-      this.updateFileStatus('❌ Lỗi kết nối khi xóa trận đấu', 'error')
+      this.showToast('Lỗi kết nối khi xóa trận đấu', 'error')
     }
   }
 
   showMatchEditModal(match) {
+    const isSolo = match.match_type === 'solo'
     const modal = document.createElement('div')
     modal.className = 'modal'
     modal.innerHTML = `
       <div class="modal-content">
-        <h2>Sửa trận đấu</h2>
+        <h2>Sửa trận đấu ${isSolo ? '(1v1)' : '(Đôi)'}</h2>
         <form id="editMatchForm">
           <div class="form-group">
             <label for="editMatchDate">Ngày đánh:</label>
@@ -2197,15 +2852,16 @@ class TennisRankingSystem {
 
           <div class="teams">
             <div class="team-section">
-              <h3>Đội 1</h3>
+              <h3>${isSolo ? 'Người chơi 1' : 'Đội 1'}</h3>
               <div class="form-group">
-                <label for="editPlayer1">Người chơi 1:</label>
+                <label for="editPlayer1">${isSolo ? 'Người chơi:' : 'Người chơi 1:'}</label>
                 <select id="editPlayer1" required>
                   ${this.players.map(player => 
                     `<option value="${player.id}" ${player.id === match.player1_id ? 'selected' : ''}>${player.name}</option>`
                   ).join('')}
                 </select>
               </div>
+              ${!isSolo ? `
               <div class="form-group">
                 <label for="editPlayer2">Người chơi 2:</label>
                 <select id="editPlayer2" required>
@@ -2214,22 +2870,24 @@ class TennisRankingSystem {
                   ).join('')}
                 </select>
               </div>
+              ` : ''}
               <div class="form-group">
-                <label for="editTeam1Score">Tỷ số đội 1:</label>
+                <label for="editTeam1Score">Tỷ số:</label>
                 <input type="number" id="editTeam1Score" value="${match.team1_score}" min="0" required>
               </div>
             </div>
 
             <div class="team-section">
-              <h3>Đội 2</h3>
+              <h3>${isSolo ? 'Đối thủ' : 'Đội 2'}</h3>
               <div class="form-group">
-                <label for="editPlayer3">Người chơi 3:</label>
+                <label for="editPlayer3">${isSolo ? 'Người chơi:' : 'Người chơi 3:'}</label>
                 <select id="editPlayer3" required>
                   ${this.players.map(player => 
                     `<option value="${player.id}" ${player.id === match.player3_id ? 'selected' : ''}>${player.name}</option>`
                   ).join('')}
                 </select>
               </div>
+              ${!isSolo ? `
               <div class="form-group">
                 <label for="editPlayer4">Người chơi 4:</label>
                 <select id="editPlayer4" required>
@@ -2238,8 +2896,9 @@ class TennisRankingSystem {
                   ).join('')}
                 </select>
               </div>
+              ` : ''}
               <div class="form-group">
-                <label for="editTeam2Score">Tỷ số đội 2:</label>
+                <label for="editTeam2Score">Tỷ số:</label>
                 <input type="number" id="editTeam2Score" value="${match.team2_score}" min="0" required>
               </div>
             </div>
@@ -2248,8 +2907,8 @@ class TennisRankingSystem {
           <div class="form-group">
             <label for="editWinningTeam">Đội thắng:</label>
             <select id="editWinningTeam" required>
-              <option value="1" ${match.winning_team === 1 ? 'selected' : ''}>Đội 1</option>
-              <option value="2" ${match.winning_team === 2 ? 'selected' : ''}>Đội 2</option>
+              <option value="1" ${match.winning_team === 1 ? 'selected' : ''}>${isSolo ? 'Người chơi 1' : 'Đội 1'}</option>
+              <option value="2" ${match.winning_team === 2 ? 'selected' : ''}>${isSolo ? 'Đối thủ' : 'Đội 2'}</option>
             </select>
           </div>
 
@@ -2264,32 +2923,51 @@ class TennisRankingSystem {
     
     document.body.appendChild(modal)
     
+    // Show the modal with animation
+    requestAnimationFrame(() => {
+      modal.classList.add('show')
+    })
+    
     document.getElementById('editMatchForm').addEventListener('submit', async (e) => {
       e.preventDefault()
       
       const seasonId = parseInt(document.getElementById('editSeasonId').value)
       const playDate = document.getElementById('editMatchDate').value
       const player1Id = parseInt(document.getElementById('editPlayer1').value)
-      const player2Id = parseInt(document.getElementById('editPlayer2').value)
+      const player2Select = document.getElementById('editPlayer2')
+      const player2Id = player2Select ? parseInt(player2Select.value) : null
       const player3Id = parseInt(document.getElementById('editPlayer3').value)
-      const player4Id = parseInt(document.getElementById('editPlayer4').value)
+      const player4Select = document.getElementById('editPlayer4')
+      const player4Id = player4Select ? parseInt(player4Select.value) : null
       const team1Score = parseInt(document.getElementById('editTeam1Score').value)
       const team2Score = parseInt(document.getElementById('editTeam2Score').value)
       const winningTeam = parseInt(document.getElementById('editWinningTeam').value)
       const errorDiv = document.getElementById('editMatchError')
       
       // Validation
-      if (!playDate || !seasonId || !player1Id || !player2Id || !player3Id || !player4Id || 
+      if (!playDate || !seasonId || !player1Id || !player3Id || 
           isNaN(team1Score) || isNaN(team2Score) || !winningTeam) {
         errorDiv.textContent = 'Vui lòng điền đầy đủ thông tin'
         return
       }
 
-      const playerIds = [player1Id, player2Id, player3Id, player4Id]
-      const uniquePlayerIds = [...new Set(playerIds)]
-      if (uniquePlayerIds.length !== 4) {
-        errorDiv.textContent = 'Cần 4 người chơi khác nhau'
-        return
+      // Validate based on match type
+      if (isSolo) {
+        if (player1Id === player3Id) {
+          errorDiv.textContent = 'Cần 2 người chơi khác nhau'
+          return
+        }
+      } else {
+        if (!player2Id || !player4Id) {
+          errorDiv.textContent = 'Vui lòng chọn đủ 4 người chơi'
+          return
+        }
+        const playerIds = [player1Id, player2Id, player3Id, player4Id]
+        const uniquePlayerIds = [...new Set(playerIds)]
+        if (uniquePlayerIds.length !== 4) {
+          errorDiv.textContent = 'Cần 4 người chơi khác nhau'
+          return
+        }
       }
 
       if (team1Score < 0 || team2Score < 0) {
@@ -2309,7 +2987,8 @@ class TennisRankingSystem {
             player4Id,
             team1Score,
             team2Score,
-            winningTeam
+            winningTeam,
+            matchType: isSolo ? 'solo' : 'duo'
           })
         })
 
@@ -2322,7 +3001,7 @@ class TennisRankingSystem {
           this.renderRankings()
           this.renderMatchHistory()
           this.updateDateSelector()
-          this.updateFileStatus('✅ Đã cập nhật trận đấu thành công', 'success')
+          this.showToast('Đã cập nhật trận đấu thành công', 'success')
         } else {
           errorDiv.textContent = data.error
         }
@@ -2343,50 +3022,35 @@ class TennisRankingSystem {
     })
   }
 
-  // Auto-winner detection based on scores
+  // Auto-winner detection based on scores - works for both duo and solo modes
   updateAutoWinner() {
     if (this.isManualWinnerMode) return // Don't auto-update if in manual mode
 
+    // Get score inputs - same inputs used for both duo and solo modes
     const team1ScoreInput = document.getElementById('team1Score')
     const team2ScoreInput = document.getElementById('team2Score')
-    const winnerDisplay = document.getElementById('winnerDisplay')
-    const winningTeamSelect = document.getElementById('winningTeam')
-
-    if (!team1ScoreInput || !team2ScoreInput || !winnerDisplay) return
-
-    const team1Score = parseInt(team1ScoreInput.value) || 0
-    const team2Score = parseInt(team2ScoreInput.value) || 0
+    const team1Score = team1ScoreInput ? parseInt(team1ScoreInput.value) || 0 : 0
+    const team2Score = team2ScoreInput ? parseInt(team2ScoreInput.value) || 0 : 0
+    
+    const winnerSelect = document.getElementById('winner')
+    if (!winnerSelect) return
 
     // Only auto-select winner if scores are different and at least one is > 0
     if (team1Score !== team2Score && (team1Score > 0 || team2Score > 0)) {
       const winningTeam = team1Score > team2Score ? 1 : 2
       
-      // Update the hidden select value for form submission
-      if (winningTeamSelect) {
-        winningTeamSelect.value = winningTeam
-      }
-      
-      // Update the display text
-      winnerDisplay.textContent = `🏆 Đội ${winningTeam} thắng (${team1Score > team2Score ? team1Score + ' - ' + team2Score : team2Score + ' - ' + team1Score})`
-      winnerDisplay.className = 'winner-display-auto'
+      // Update the select value
+      winnerSelect.value = winningTeam === 1 ? 'team1' : 'team2'
       
       // Store the current winning team
       this.currentWinningTeam = winningTeam
     } else if (team1Score === team2Score && team1Score > 0) {
-      // Handle tie case
-      winnerDisplay.textContent = `⚖️ Hòa (${team1Score} - ${team2Score}). Vui lòng chọn thủ công.`
-      winnerDisplay.className = 'winner-display-manual'
-      if (winningTeamSelect) {
-        winningTeamSelect.value = ''
-      }
+      // Handle tie case - need manual selection
+      winnerSelect.value = ''
       this.currentWinningTeam = null
     } else {
       // No scores or both are 0
-      winnerDisplay.textContent = 'Nhập điểm số để tự động xác định đội thắng'
-      winnerDisplay.className = 'winner-display-no-winner'
-      if (winningTeamSelect) {
-        winningTeamSelect.value = ''
-      }
+      winnerSelect.value = ''
       this.currentWinningTeam = null
     }
   }
@@ -2443,7 +3107,308 @@ class TennisRankingSystem {
     }
   }
 
-  // ...existing code...
+  // ========== Modal Helpers ==========
+  showModal(modalId) {
+    const modal = document.getElementById(modalId)
+    if (modal) {
+      modal.classList.add('show')
+      document.body.style.overflow = 'hidden'
+    }
+  }
+
+  hideModal(modalId) {
+    const modal = document.getElementById(modalId)
+    if (modal) {
+      modal.classList.remove('show')
+      document.body.style.overflow = ''
+    }
+  }
+
+  // ========== Toast Notifications ==========
+  showToast(message, type = 'success') {
+    const container = document.getElementById('toastContainer')
+    if (!container) return
+
+    const toast = document.createElement('div')
+    toast.className = `toast ${type}`
+    toast.innerHTML = `
+      <span class="toast-message">${message}</span>
+      <button class="toast-close">&times;</button>
+    `
+    
+    container.appendChild(toast)
+    
+    // Close button
+    toast.querySelector('.toast-close').addEventListener('click', () => {
+      toast.remove()
+    })
+    
+    // Auto-remove after 5 seconds
+    setTimeout(() => {
+      if (toast.parentElement) {
+        toast.style.animation = 'toastOut 0.3s ease forwards'
+        setTimeout(() => toast.remove(), 300)
+      }
+    }, 5000)
+  }
+
+  // ========== Account Management ==========
+  showAccountModal(account = null) {
+    const modal = document.getElementById('accountModal')
+    const title = document.getElementById('accountModalTitle')
+    const form = document.getElementById('accountForm')
+    const passwordHint = document.getElementById('passwordHint')
+    const passwordRequired = document.getElementById('passwordRequired')
+    
+    // Reset form
+    form.reset()
+    document.getElementById('accountId').value = ''
+    document.getElementById('accountActive').checked = true
+    
+    if (account) {
+      // Edit mode
+      title.textContent = 'Chỉnh sửa Tài Khoản'
+      document.getElementById('accountId').value = account.id
+      document.getElementById('accountUsername').value = account.username
+      document.getElementById('accountDisplayName').value = account.display_name || ''
+      document.getElementById('accountEmail').value = account.email || ''
+      document.getElementById('accountRole').value = account.role
+      document.getElementById('accountNotes').value = account.notes || ''
+      document.getElementById('accountActive').checked = account.is_active
+      
+      // Password is optional when editing
+      passwordHint.textContent = 'Để trống nếu không muốn thay đổi mật khẩu'
+      passwordRequired.style.display = 'none'
+      document.getElementById('accountPassword').required = false
+    } else {
+      // Create mode
+      title.textContent = 'Tạo Tài Khoản Mới'
+      passwordHint.textContent = ''
+      passwordRequired.style.display = 'inline'
+      document.getElementById('accountPassword').required = true
+    }
+    
+    this.showModal('accountModal')
+  }
+
+  async saveAccount() {
+    const accountId = document.getElementById('accountId').value
+    const accountData = {
+      username: document.getElementById('accountUsername').value.trim(),
+      displayName: document.getElementById('accountDisplayName').value.trim(),
+      email: document.getElementById('accountEmail').value.trim(),
+      role: document.getElementById('accountRole').value,
+      notes: document.getElementById('accountNotes').value.trim(),
+      isActive: document.getElementById('accountActive').checked
+    }
+    
+    const password = document.getElementById('accountPassword').value
+    
+    // Validate password strength if provided
+    if (password) {
+      const passwordValidation = this.validatePasswordStrength(password)
+      if (!passwordValidation.valid) {
+        this.showToast(passwordValidation.message, 'error')
+        return
+      }
+      accountData.password = password
+    }
+    
+    try {
+      let response
+      if (accountId) {
+        // Update existing account
+        response = await this.makeAuthenticatedRequest(`${this.apiBase}/auth/users/${accountId}`, {
+          method: 'PUT',
+          body: JSON.stringify(accountData)
+        })
+      } else {
+        // Create new account
+        if (!password) {
+          this.showToast('Vui lòng nhập mật khẩu', 'error')
+          return
+        }
+        response = await this.makeAuthenticatedRequest(`${this.apiBase}/auth/users`, {
+          method: 'POST',
+          body: JSON.stringify(accountData)
+        })
+      }
+      
+      const data = await response.json()
+      
+      if (response.ok) {
+        this.hideModal('accountModal')
+        this.showToast(accountId ? 'Đã cập nhật tài khoản' : 'Đã tạo tài khoản mới', 'success')
+        this.renderAccounts()
+      } else {
+        this.showToast(data.error || 'Lỗi khi lưu tài khoản', 'error')
+      }
+    } catch (error) {
+      console.error('Error saving account:', error)
+      this.showToast('Lỗi kết nối server', 'error')
+    }
+  }
+
+  async deleteAccount(accountId) {
+    if (!confirm('Bạn có chắc chắn muốn xóa tài khoản này?')) return
+    
+    try {
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/auth/users/${accountId}`, {
+        method: 'DELETE'
+      })
+      
+      if (response.ok) {
+        this.showToast('Đã xóa tài khoản', 'success')
+        this.renderAccounts()
+      } else {
+        const data = await response.json()
+        this.showToast(data.error || 'Lỗi khi xóa tài khoản', 'error')
+      }
+    } catch (error) {
+      console.error('Error deleting account:', error)
+      this.showToast('Lỗi kết nối server', 'error')
+    }
+  }
+
+  async renderAccounts() {
+    const container = document.querySelector('#accountsTable tbody')
+    if (!container) return
+    
+    try {
+      const response = await fetch(`${this.apiBase}/auth/users`, {
+        credentials: 'include'
+      })
+      
+      if (!response.ok) {
+        container.innerHTML = '<tr><td colspan="8" class="text-center">Không thể tải danh sách tài khoản</td></tr>'
+        return
+      }
+      
+      const accounts = await response.json()
+      
+      if (accounts.length === 0) {
+        container.innerHTML = '<tr><td colspan="8" class="text-center">Chưa có tài khoản nào</td></tr>'
+        return
+      }
+      
+      container.innerHTML = accounts.map(account => {
+        const roleClass = account.role === 'admin' ? 'role-admin' : (account.role === 'editor' ? 'role-editor' : 'role-viewer')
+        const statusClass = account.is_active ? 'status-active' : 'status-inactive'
+        const lastLogin = account.last_login ? new Date(account.last_login).toLocaleString('vi-VN') : 'Chưa đăng nhập'
+        const isSelf = this.user && this.user.username === account.username
+        
+        return `
+          <tr>
+            <td>${account.id}</td>
+            <td><strong>${account.username}</strong>${isSelf ? ' <span class="badge role-viewer">Bạn</span>' : ''}</td>
+            <td>${account.display_name || '-'}</td>
+            <td>${account.email || '-'}</td>
+            <td><span class="badge ${roleClass}">${account.role.toUpperCase()}</span></td>
+            <td><span class="${statusClass}">${account.is_active ? '✅ Hoạt động' : '❌ Vô hiệu'}</span></td>
+            <td>${lastLogin}</td>
+            <td>
+              <div class="action-btns">
+                <button class="edit-btn" data-account-id="${account.id}" title="Chỉnh sửa">✏️</button>
+                <button class="delete-btn" data-account-id="${account.id}" ${isSelf ? 'disabled title="Không thể xóa tài khoản của chính mình"' : 'title="Xóa"'}>🗑️</button>
+              </div>
+            </td>
+          </tr>
+        `
+      }).join('')
+      
+      // Add event listeners for edit/delete buttons
+      container.querySelectorAll('.edit-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const accountId = parseInt(btn.dataset.accountId)
+          const account = accounts.find(a => a.id === accountId)
+          if (account) this.showAccountModal(account)
+        })
+      })
+      
+      container.querySelectorAll('.delete-btn:not([disabled])').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const accountId = parseInt(btn.dataset.accountId)
+          this.deleteAccount(accountId)
+        })
+      })
+    } catch (error) {
+      console.error('Error rendering accounts:', error)
+      container.innerHTML = '<tr><td colspan="8" class="text-center">Lỗi tải danh sách tài khoản</td></tr>'
+    }
+  }
+
+  // ========== Reset Match Form ==========
+  resetMatchForm() {
+    const form = document.getElementById('matchForm')
+    if (form) {
+      form.reset()
+      document.getElementById('matchType').value = 'duo'
+      this.currentMatchType = 'duo'
+      this.currentWinningTeam = null
+      
+      // Reset match type UI
+      document.querySelectorAll('.type-btn').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.type === 'duo')
+      })
+      
+      // Show duo, hide solo
+      document.querySelectorAll('.duo-only').forEach(el => el.style.display = '')
+      document.querySelectorAll('.solo-only').forEach(el => el.style.display = 'none')
+      
+      // Reset match season selector
+      const matchSeasonSelect = document.getElementById('matchSeasonSelect')
+      if (matchSeasonSelect) matchSeasonSelect.value = ''
+      
+      // Disable player selects until season is chosen
+      const playerSelects = ['player1', 'player2', 'player3', 'player4']
+      playerSelects.forEach(id => {
+        const select = document.getElementById(id)
+        if (select) {
+          select.disabled = true
+          select.innerHTML = '<option value="">Chọn mùa giải trước...</option>'
+        }
+      })
+      
+      // Set today's date
+      this.setTodaysDate()
+      
+      // Reset team labels
+      this.updateTeamLabelsForMatchType()
+    }
+  }
+  
+  // ========== Password Validation ==========
+  validatePasswordStrength(password) {
+    if (!password || password.length < 6) {
+      return { valid: false, message: 'Mật khẩu phải có ít nhất 6 ký tự' }
+    }
+    
+    // Check for common weak passwords
+    const weakPasswords = ['123456', 'password', 'abc123', '111111', '123123', 'admin', 'qwerty', '12345678', 'password123']
+    if (weakPasswords.includes(password.toLowerCase())) {
+      return { valid: false, message: 'Mật khẩu quá đơn giản, vui lòng chọn mật khẩu khác' }
+    }
+    
+    // Check for at least one letter and one number
+    const hasLetter = /[a-zA-Z]/.test(password)
+    const hasNumber = /[0-9]/.test(password)
+    
+    if (!hasLetter || !hasNumber) {
+      return { valid: false, message: 'Mật khẩu phải chứa ít nhất 1 chữ cái và 1 số' }
+    }
+    
+    return { valid: true, message: '' }
+  }
+
+  // ========== Update Login Modal ==========
+  showLoginModal() {
+    this.showModal('loginModal')
+  }
+
+  // ========== Update File Status (for backward compatibility) ==========
+  updateFileStatus(message, type) {
+    this.showToast(message.replace(/^[✅❌⚠️]/g, '').trim(), type === 'success' ? 'success' : (type === 'error' ? 'error' : 'warning'))
+  }
 }
 
 // Initialize the application

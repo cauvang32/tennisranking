@@ -20,6 +20,7 @@ import { createSeasonRouter } from './routes/seasons.js'
 import { createMatchRouter } from './routes/matches.js'
 import { createRankingRouter } from './routes/rankings.js'
 import { createExportRouter } from './routes/export.js'
+import { createAuthRouter } from './routes/users.js'
 
 // Load environment variables
 dotenv.config()
@@ -1137,26 +1138,53 @@ app.post('/api/auth/login',
     try {
       const { username, password } = req.body
 
-      // Check if credentials match admin account
       let user = null
-      if (username === ADMIN_USERNAME) {
-        const isValidPassword = await bcrypt.compare(password, hashedAdminPassword)
-        
-        if (isValidPassword) {
-          user = {
-            username: ADMIN_USERNAME,
-            email: ADMIN_EMAIL,
-            role: 'admin'
+      let isDbUser = false
+
+      // Step 1: Check database users first
+      try {
+        const dbUser = await db.getUserByUsername(username)
+        if (dbUser && dbUser.is_active) {
+          const isValidPassword = await bcrypt.compare(password, dbUser.password_hash)
+          if (isValidPassword) {
+            user = {
+              id: dbUser.id,
+              username: dbUser.username,
+              email: dbUser.email,
+              role: dbUser.role,
+              displayName: dbUser.display_name
+            }
+            isDbUser = true
+            // Update last login time
+            await db.updateUserLastLogin(dbUser.id)
           }
         }
-      } else if (username === EDITOR_USERNAME) {
-        const isValidPassword = await bcrypt.compare(password, hashedEditorPassword)
-        
-        if (isValidPassword) {
-          user = {
-            username: EDITOR_USERNAME,
-            email: EDITOR_EMAIL,
-            role: 'editor'
+      } catch (dbError) {
+        console.error('Database user lookup error:', dbError)
+        // Continue to check env-based users
+      }
+
+      // Step 2: Fall back to env-based admin/editor (always available as super users)
+      if (!user) {
+        if (username === ADMIN_USERNAME) {
+          const isValidPassword = await bcrypt.compare(password, hashedAdminPassword)
+          if (isValidPassword) {
+            user = {
+              username: ADMIN_USERNAME,
+              email: ADMIN_EMAIL,
+              role: 'admin',
+              displayName: 'System Admin'
+            }
+          }
+        } else if (username === EDITOR_USERNAME) {
+          const isValidPassword = await bcrypt.compare(password, hashedEditorPassword)
+          if (isValidPassword) {
+            user = {
+              username: EDITOR_USERNAME,
+              email: EDITOR_EMAIL,
+              role: 'editor',
+              displayName: 'System Editor'
+            }
           }
         }
       }
@@ -1192,9 +1220,12 @@ app.post('/api/auth/login',
             message: 'Login successful',
             csrfToken: csrfToken, // Always send CSRF token for form protection
             user: {
+              id: user.id,
               username: user.username,
               email: user.email,
-              role: user.role
+              role: user.role,
+              displayName: user.displayName,
+              isSystemUser: !isDbUser
             }
           }
           
@@ -1331,6 +1362,16 @@ app.use('/api/export-excel', createExportRouter({
   authenticateToken,
   conditionalRateLimit,
   exportLimiter
+}))
+
+// User Account Management Routes (admin only)
+app.use('/api/auth', createAuthRouter({
+  db,
+  authenticateToken,
+  requireAdmin,
+  handleValidationErrors,
+  conditionalRateLimit,
+  createLimiter
 }))
 
 // Players Routes
@@ -1722,24 +1763,33 @@ app.put('/api/matches/:id',
     body('seasonId').isInt().withMessage('Valid season ID is required'),
     body('playDate').isISO8601().withMessage('Valid play date is required'),
     body('player1Id').isInt().withMessage('Valid player 1 ID is required'),
-    body('player2Id').isInt().withMessage('Valid player 2 ID is required'),
+    body('player2Id').optional({ nullable: true }).isInt().withMessage('Valid player 2 ID is required'),
     body('player3Id').isInt().withMessage('Valid player 3 ID is required'),
-    body('player4Id').isInt().withMessage('Valid player 4 ID is required'),
+    body('player4Id').optional({ nullable: true }).isInt().withMessage('Valid player 4 ID is required'),
     body('team1Score').isInt({ min: 0 }).withMessage('Valid team 1 score is required'),
     body('team2Score').isInt({ min: 0 }).withMessage('Valid team 2 score is required'),
-    body('winningTeam').isInt({ min: 1, max: 2 }).withMessage('Winning team must be 1 or 2')
+    body('winningTeam').isInt({ min: 1, max: 2 }).withMessage('Winning team must be 1 or 2'),
+    body('matchType').optional().isIn(['duo', 'solo']).withMessage('Match type must be duo or solo')
   ],
   handleValidationErrors,
   async (req, res) => {
     try {
       const matchId = parseInt(req.params.id)
-      const { seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam } = req.body
+      const { seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType = 'duo' } = req.body
 
-      // Validate that all players are different
-      const playerIds = [player1Id, player2Id, player3Id, player4Id]
-      const uniquePlayerIds = [...new Set(playerIds)]
-      if (uniquePlayerIds.length !== 4) {
-        return res.status(400).json({ error: 'All players must be different' })
+      // Validate players based on match type
+      if (matchType === 'solo') {
+        // Solo mode: only player1 and player3 are required
+        if (player1Id === player3Id) {
+          return res.status(400).json({ error: 'Players must be different' })
+        }
+      } else {
+        // Duo mode: all 4 players must be different
+        const playerIds = [player1Id, player2Id, player3Id, player4Id]
+        const uniquePlayerIds = [...new Set(playerIds)]
+        if (uniquePlayerIds.length !== 4) {
+          return res.status(400).json({ error: 'All players must be different' })
+        }
       }
 
       // Check if match exists
@@ -1748,7 +1798,7 @@ app.put('/api/matches/:id',
         return res.status(404).json({ error: 'Match not found' })
       }
 
-      await db.updateMatch(matchId, seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam)
+      await db.updateMatch(matchId, seasonId, playDate, player1Id, player2Id || null, player3Id, player4Id || null, team1Score, team2Score, winningTeam, matchType)
       
       // Invalidate all cache after updating match
       rankingsCache.clear()
@@ -2217,6 +2267,211 @@ app.delete('/api/clear-all-data',
     } catch (error) {
       console.error('Error clearing all data:', error)
       res.status(500).json({ error: 'Failed to clear all data' })
+    }
+  }
+)
+
+// Backup Route - Simple JSON backup for admin
+app.get('/api/backup', 
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      console.log(`📦 BACKUP requested by user: ${req.user.username}`)
+      
+      const [players, seasons, matches, users] = await Promise.all([
+        db.getPlayers(),
+        db.getSeasons(),
+        db.getMatches(),
+        db.getUsersForBackup() // Use method that includes password_hash
+      ])
+      
+      // Get season players for each season
+      const seasonsWithPlayers = await Promise.all(seasons.map(async (season) => {
+        const seasonPlayers = await db.getSeasonPlayers(season.id)
+        return { ...season, players: seasonPlayers.map(p => p.player_id || p.id) }
+      }))
+      
+      // Remove sensitive data from users but keep password_hash for restore
+      const usersForBackup = users.map(user => ({
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        password_hash: user.password_hash, // Keep for restore
+        role: user.role,
+        display_name: user.display_name,
+        is_active: user.is_active,
+        created_at: user.created_at,
+        notes: user.notes
+      }))
+      
+      const backupData = {
+        version: '2.1',
+        timestamp: new Date().toISOString(),
+        exportedBy: req.user.username,
+        players,
+        seasons: seasonsWithPlayers,
+        matches,
+        users: usersForBackup
+      }
+      
+      res.json(backupData)
+      console.log('✅ Backup created successfully (including users)')
+    } catch (error) {
+      console.error('Error creating backup:', error)
+      res.status(500).json({ error: 'Failed to create backup' })
+    }
+  }
+)
+
+// Restore Route - Full database restore from JSON
+app.post('/api/restore', 
+  authenticateToken,
+  requireAdmin,
+  async (req, res) => {
+    try {
+      const backupData = req.body
+      const currentUserId = req.user.id
+      const currentUsername = req.user.username
+      console.log(`🔄 RESTORE requested by user: ${currentUsername}`)
+      
+      // Validate backup structure
+      if (!backupData.players || !backupData.seasons || !backupData.matches) {
+        return res.status(400).json({ error: 'Invalid backup file structure' })
+      }
+      
+      const hasUsers = backupData.users && backupData.users.length > 0
+      console.log(`📊 Restoring: ${backupData.players.length} players, ${backupData.seasons.length} seasons, ${backupData.matches.length} matches${hasUsers ? `, ${backupData.users.length} users` : ''}`)
+      
+      // Clear existing data first (but preserve current admin user)
+      console.log('🗑️ Clearing existing data...')
+      await db.clearAllDataForRestore(currentUserId)
+      
+      // Restore players first
+      const playerIdMap = new Map() // old id -> new id
+      for (const player of backupData.players) {
+        const newPlayer = await db.addPlayer(player.name)
+        playerIdMap.set(player.id, newPlayer.id)
+      }
+      console.log(`✅ Restored ${backupData.players.length} players`)
+      
+      // Restore seasons
+      const seasonIdMap = new Map() // old id -> new id
+      for (const season of backupData.seasons) {
+        // createSeason signature: (name, startDate, endDate, autoEnd, description, loseMoneyPerLoss, playerIds)
+        const newSeasonId = await db.createSeason(
+          season.name,
+          season.start_date,
+          season.end_date || null,
+          season.auto_end !== false,
+          season.description || '',
+          season.lose_money_per_loss || 20000,
+          [] // Players will be added after all players are restored
+        )
+        seasonIdMap.set(season.id, newSeasonId)
+        
+        // Add season players if any
+        if (season.players && season.players.length > 0) {
+          const newPlayerIds = season.players.map(oldId => playerIdMap.get(oldId)).filter(Boolean)
+          if (newPlayerIds.length > 0) {
+            await db.setSeasonPlayers(newSeasonId, newPlayerIds)
+          }
+        }
+      }
+      console.log(`✅ Restored ${backupData.seasons.length} seasons`)
+      
+      // Restore matches
+      for (const match of backupData.matches) {
+        const newSeasonId = seasonIdMap.get(match.season_id)
+        const newPlayer1Id = playerIdMap.get(match.player1_id)
+        const newPlayer2Id = match.player2_id ? playerIdMap.get(match.player2_id) : null
+        const newPlayer3Id = playerIdMap.get(match.player3_id)
+        const newPlayer4Id = match.player4_id ? playerIdMap.get(match.player4_id) : null
+        
+        if (newSeasonId && newPlayer1Id && newPlayer3Id) {
+          // addMatch signature: (seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType)
+          await db.addMatch(
+            newSeasonId,
+            match.play_date,
+            newPlayer1Id,
+            newPlayer2Id,
+            newPlayer3Id,
+            newPlayer4Id,
+            match.team1_score,
+            match.team2_score,
+            match.winning_team,
+            match.match_type || 'duo'
+          )
+        }
+      }
+      console.log(`✅ Restored ${backupData.matches.length} matches`)
+      
+      // Restore users if present in backup
+      let usersRestored = 0
+      let usersSkipped = 0
+      if (hasUsers) {
+        for (const user of backupData.users) {
+          // Skip if this is the current logged-in user (don't overwrite ourselves)
+          if (user.username === currentUsername) {
+            console.log(`⏭️ Skipping current user: ${user.username}`)
+            usersSkipped++
+            continue
+          }
+          
+          // Check if username already exists (shouldn't happen after clear, but safety check)
+          const existingByUsername = await db.checkUsernameExists(user.username)
+          if (existingByUsername) {
+            console.log(`⏭️ Username already exists: ${user.username}`)
+            usersSkipped++
+            continue
+          }
+          
+          // Check if email already exists (the current user might have the same email)
+          const existingByEmail = await db.checkEmailExists(user.email)
+          if (existingByEmail) {
+            console.log(`⏭️ Email already exists: ${user.email} (skipping user ${user.username})`)
+            usersSkipped++
+            continue
+          }
+          
+          // Restore user with original password hash
+          try {
+            await db.restoreUser(
+              user.username,
+              user.email,
+              user.password_hash,
+              user.role,
+              user.display_name,
+              user.is_active,
+              user.notes
+            )
+            usersRestored++
+            console.log(`✅ Restored user: ${user.username}`)
+          } catch (userError) {
+            console.error(`Error restoring user ${user.username}:`, userError.message)
+            usersSkipped++
+          }
+        }
+        console.log(`✅ Restored ${usersRestored} users (${usersSkipped} skipped)`)
+      }
+      
+      // Clear cache
+      rankingsCache.clear()
+      
+      res.json({ 
+        success: true, 
+        message: 'Data restored successfully',
+        restored: {
+          players: backupData.players.length,
+          seasons: backupData.seasons.length,
+          matches: backupData.matches.length,
+          users: usersRestored
+        }
+      })
+      console.log('✅ Restore completed successfully')
+    } catch (error) {
+      console.error('Error restoring data:', error)
+      res.status(500).json({ error: 'Failed to restore data: ' + error.message })
     }
   }
 )

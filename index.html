@@ -1,210 +1,593 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="vi">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/tennis.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Hệ thống xếp hạng Tennis chuyên nghiệp">
     <title>Tennis Ranking System</title>
-  </head>
-  <body>
-    <div id="app">
-      <header>
-        <h1>🎾 Tennis Siêu lành mạnh </h1>
-        <p>Hệ thống xếp hạng tennis đôi</p>
-        <div class="admin-controls admin-only">
-          <button id="backupData" class="backup-btn">💾 Sao lưu dữ liệu</button>
-          <button id="restoreData" class="restore-btn">📥 Khôi phục dữ liệu</button>
-          <button id="clearAllData" class="danger-btn">🗑️ Xóa tất cả dữ liệu</button>
-        </div>
-      </header>
-
-      <main>
-        <div class="tabs">
-          <button class="tab-button admin-only" data-tab="players">Quản lý người chơi</button>
-          <button class="tab-button editor-only" data-tab="matches">Trận đấu</button>
-          <button class="tab-button admin-only" data-tab="seasons">Mùa giải</button>
-          <button class="tab-button active" data-tab="rankings">Xếp hạng</button>
-        </div>
-
-        <!-- Players Tab -->
-        <div class="tab-content" id="players-tab">
-          <div class="section admin-only">
-            <h2>Thêm người chơi mới</h2>
-            <div class="form-group">
-              <input type="text" id="playerName" placeholder="Tên người chơi" />
-              <button id="addPlayer">Thêm</button>
-            </div>
-          </div>
-
-          <div class="section">
-            <div class="section-header">
-              <h2>Danh sách người chơi</h2>
-            </div>
-            <div id="playersList" class="players-grid"></div>
-          </div>
-        </div>
-
-        <!-- Matches Tab -->
-        <div class="tab-content" id="matches-tab">
-          <div class="section">
-            <div class="section-header">
-              <h2>Ghi nhận kết quả trận đấu</h2>
-              <button id="addMatchModal" class="add-btn admin-only">➕ Thêm trận đấu</button>
-            </div>
-            <div class="match-form">
-              <div class="form-row">
-                <div class="form-group">
-                  <label for="matchDate">Ngày đánh:</label>
-                  <input type="date" id="matchDate" required>
-                </div>
-                <div class="form-group">
-                  <label for="matchSeason">Mùa giải:</label>
-                  <select id="matchSeason" required>
-                    <option value="">Chọn mùa giải</option>
-                  </select>
-                </div>
-              </div>
-              
-              <div class="teams-container">
-                <div class="team-section">
-                  <h3>Đội 1</h3>
-                  <div class="team-players">
-                    <select id="player1">
-                      <option value="">Chọn người chơi 1</option>
-                    </select>
-                    <select id="player2">
-                      <option value="">Chọn người chơi 2</option>
-                    </select>
-                  </div>
-                  <div class="team-score">
-                    <label>Điểm:</label>
-                    <input type="number" id="team1Score" min="0" placeholder="0" required>
-                  </div>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Open+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    
+    <!-- Styles -->
+    <link rel="stylesheet" href="./src/style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-content">
+                <div class="logo-section">
+                    <div class="logo-icon">🎾</div>
+                    <div class="logo-text">
+                        <h1>Tennis Ranking</h1>
+                        <span class="tagline">Hệ thống xếp hạng chuyên nghiệp</span>
+                    </div>
                 </div>
                 
-                <div class="vs">VS</div>
+                <nav class="main-nav">
+                    <button class="nav-btn active" data-tab="rankings">
+                        <span class="nav-icon">📊</span>
+                        <span class="nav-text">Bảng Xếp Hạng</span>
+                    </button>
+                    <button class="nav-btn" data-tab="matches">
+                        <span class="nav-icon">🎯</span>
+                        <span class="nav-text">Trận Đấu</span>
+                    </button>
+                    <button class="nav-btn" data-tab="seasons">
+                        <span class="nav-icon">🏆</span>
+                        <span class="nav-text">Mùa Giải</span>
+                    </button>
+                    <button class="nav-btn admin-only" data-tab="accounts">
+                        <span class="nav-icon">👥</span>
+                        <span class="nav-text">Tài Khoản</span>
+                    </button>
+                </nav>
                 
-                <div class="team-section">
-                  <h3>Đội 2</h3>
-                  <div class="team-players">
-                    <select id="player3">
-                      <option value="">Chọn người chơi 1</option>
-                    </select>
-                    <select id="player4">
-                      <option value="">Chọn người chơi 2</option>
-                    </select>
-                  </div>
-                  <div class="team-score">
-                    <label>Điểm:</label>
-                    <input type="number" id="team2Score" min="0" placeholder="0" required>
-                  </div>
+                <div class="auth-section">
+                    <div class="user-info logged-in-only">
+                        <span class="user-avatar">👤</span>
+                        <span class="user-name"></span>
+                        <span class="user-role badge"></span>
+                    </div>
+                    <button class="btn btn-ghost logged-out-only" id="loginBtn">
+                        <span>🔐</span> Đăng nhập
+                    </button>
+                    <button class="btn btn-ghost logged-in-only" id="logoutBtn">
+                        <span>🚪</span> Đăng xuất
+                    </button>
                 </div>
-              </div>
-
-              <div class="winner-section">
-                <div class="auto-winner">
-                  <span id="winnerDisplay">Nhập điểm số để tự động xác định đội thắng</span>
-                </div>
-                <div class="manual-winner hidden">
-                  <label>Chọn đội thắng thủ công:</label>
-                  <select id="winningTeam">
-                    <option value="">Chọn đội thắng</option>
-                    <option value="1">Đội 1</option>
-                    <option value="2">Đội 2</option>
-                  </select>
-                  <button type="button" id="useAutoWinner" class="small-btn">Dùng tự động</button>
-                </div>
-                <button type="button" id="useManualWinner" class="small-btn">Chọn thủ công</button>
-              </div>
-
-              <button id="recordMatch" class="record-btn">📝 Ghi nhận kết quả</button>
             </div>
-          </div>
-        </div>
+        </header>
 
-        <!-- Seasons Tab -->
-        <div class="tab-content" id="seasons-tab">
-          <div class="section admin-only">
-            <div class="section-header">
-              <h2>Quản lý mùa giải</h2>
-              <button id="addSeason" class="add-btn">➕ Tạo mùa giải mới</button>
-            </div>
-            <div id="seasonsList" class="seasons-grid"></div>
-          </div>
-        </div>
-
-        <!-- Rankings Tab -->
-        <div class="tab-content active" id="rankings-tab">
-          <div class="section">
-            <div class="section-header">
-              <h2>Bảng xếp hạng</h2>
-              <button id="exportRankings" class="export-btn">📊 Xuất Excel</button>
-            </div>
-            
-            <!-- View Mode Selection -->
-            <div class="view-mode-section">
-              <div class="view-mode-buttons">
-                <button id="viewModeDaily" class="view-mode-btn active">📅 Theo ngày đánh</button>
-                <button id="viewModeSeason" class="view-mode-btn">🏆 Theo mùa giải</button>
-                <button id="viewModeLifetime" class="view-mode-btn">⏳ Tổng (toàn thời gian)</button>
-              </div>
-              
-              <div class="view-controls">
-                <div id="dateSelectContainer" class="control-group">
-                  <label for="dateSelector">Chọn ngày đánh:</label>
-                  <select id="dateSelector"></select>
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Rankings Tab -->
+            <section class="tab-content active" id="rankings-tab">
+                <div class="section-header">
+                    <h2 class="section-title">
+                        <span class="title-icon">📊</span>
+                        Bảng Xếp Hạng
+                    </h2>
+                    <div class="view-mode-switcher">
+                        <button class="view-btn active" data-view="daily">Hàng ngày</button>
+                        <button class="view-btn" data-view="season">Theo mùa</button>
+                        <button class="view-btn" data-view="lifetime">Tổng cộng</button>
+                    </div>
                 </div>
                 
-                <div id="seasonSelectContainer" class="control-group hidden">
-                  <label for="seasonSelector">Chọn mùa giải:</label>
-                  <select id="seasonSelector"></select>
+                <!-- Daily View -->
+                <div class="view-section active" id="daily-view">
+                    <div class="filter-bar">
+                        <div class="date-picker-group">
+                            <label class="filter-label">Chọn ngày:</label>
+                            <select id="rankingDateSelect" class="select-field">
+                                <option value="">-- Chọn ngày --</option>
+                            </select>
+                        </div>
+                        <div class="actions-group">
+                            <button class="btn btn-secondary" id="todayBtn">Hôm nay</button>
+                            <button class="btn btn-primary edit-only" id="exportExcelBtn">
+                                <span>📥</span> Xuất Excel
+                            </button>
+                        </div>
+                    </div>
+                    <div class="table-container">
+                        <table class="data-table" id="dailyRankingTable">
+                            <thead>
+                                <tr>
+                                    <th class="col-rank">Hạng</th>
+                                    <th class="col-name">Tên</th>
+                                    <th class="col-form">Phong Độ</th>
+                                    <th class="col-matches">Số Trận</th>
+                                    <th class="col-wins">Thắng</th>
+                                    <th class="col-losses">Thua</th>
+                                    <th class="col-winrate">Tỉ Lệ</th>
+                                    <th class="col-balance">Tiền (+/-)</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
                 </div>
-              </div>
-            </div>
-            
-            <div class="current-view">
-              <h3 id="currentViewMode">Bảng xếp hạng theo ngày đánh gần nhất</h3>
-            </div>
+                
+                <!-- Season View -->
+                <div class="view-section" id="season-view">
+                    <div class="filter-bar">
+                        <div class="season-picker-group">
+                            <label class="filter-label">Chọn mùa:</label>
+                            <select id="seasonSelect" class="select-field"></select>
+                        </div>
+                    </div>
+                    <div class="table-container">
+                        <table class="data-table" id="seasonRankingTable">
+                            <thead>
+                                <tr>
+                                    <th class="col-rank">Hạng</th>
+                                    <th class="col-name">Tên</th>
+                                    <th class="col-form">Phong Độ</th>
+                                    <th class="col-matches">Số Trận</th>
+                                    <th class="col-wins">Thắng</th>
+                                    <th class="col-losses">Thua</th>
+                                    <th class="col-winrate">Tỉ Lệ</th>
+                                    <th class="col-balance">Tiền (+/-)</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                <!-- Lifetime View -->
+                <div class="view-section" id="lifetime-view">
+                    <div class="table-container">
+                        <table class="data-table" id="lifetimeRankingTable">
+                            <thead>
+                                <tr>
+                                    <th class="col-rank">Hạng</th>
+                                    <th class="col-name">Tên</th>
+                                    <th class="col-form">Phong Độ</th>
+                                    <th class="col-matches">Tổng Trận</th>
+                                    <th class="col-wins">Thắng</th>
+                                    <th class="col-losses">Thua</th>
+                                    <th class="col-winrate">Tỉ Lệ</th>
+                                    <th class="col-balance">Tổng Tiền</th>
+                                </tr>
+                            </thead>
+                            <tbody></tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
 
-            <div class="rankings-container">
-              <table id="rankingsTable" class="rankings-table">
-                <thead>
-                  <tr>
-                    <th>Hạng</th>
-                    <th>Tên</th>
-                    <th>Thắng</th>
-                    <th>Thua</th>
-                    <th>Tổng trận</th>
-                    <th>Điểm</th>
-                    <th>Tỷ lệ thắng</th>
-                    <th>Tiền thua</th>
-                    <th>Phong độ</th>
-                  </tr>
-                </thead>
-                <tbody></tbody>
-              </table>
-            </div>
-            
-            <!-- Matches for current view -->
-            <div class="matches-for-view">
-              <h3>Kết quả các trận trong ngày/mùa giải này</h3>
-              <div id="matchHistory" class="match-history"></div>
-            </div>
-          </div>
-        </div>
-      </main>
+            <!-- Matches Tab -->
+            <section class="tab-content" id="matches-tab">
+                <div class="section-header">
+                    <h2 class="section-title">
+                        <span class="title-icon">🎯</span>
+                        Quản Lý Trận Đấu
+                    </h2>
+                </div>
+                
+                <!-- Match Form Card -->
+                <div class="card match-form-card edit-only">
+                    <div class="card-header">
+                        <h3 class="card-title">Tạo Trận Đấu Mới</h3>
+                        <div class="match-type-toggle">
+                            <button class="type-btn active" data-type="duo">👥 2v2</button>
+                            <button class="type-btn" data-type="solo">👤 1v1</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <form id="matchForm" class="match-form">
+                            <input type="hidden" id="matchType" value="duo">
+                            
+                            <!-- Season Selector -->
+                            <div class="season-selector-row">
+                                <div class="form-group">
+                                    <label for="matchSeasonSelect">Chọn mùa giải <span class="required">*</span></label>
+                                    <select id="matchSeasonSelect" class="select-field" required>
+                                        <option value="">-- Chọn mùa giải trước --</option>
+                                    </select>
+                                    <small class="form-hint">Chọn mùa giải để xem người chơi được phép tham gia</small>
+                                </div>
+                            </div>
+                            
+                            <!-- Teams Section -->
+                            <div class="teams-container">
+                                <!-- Team 1 -->
+                                <div class="team-card team-1">
+                                    <div class="team-header">
+                                        <span class="team-badge team-1-badge">Đội 1</span>
+                                    </div>
+                                    <div class="team-players">
+                                        <div class="player-select-group">
+                                            <label class="player1-label">Người chơi 1</label>
+                                            <select id="player1" class="select-field player-select" required></select>
+                                        </div>
+                                        <div class="player-select-group duo-only">
+                                            <label>Người chơi 2</label>
+                                            <select id="player2" class="select-field player-select"></select>
+                                        </div>
+                                    </div>
+                                    <div class="team-score">
+                                        <label>Điểm</label>
+                                        <input type="number" id="team1Score" class="input-field score-input" min="0" value="0">
+                                    </div>
+                                </div>
+                                
+                                <div class="vs-divider">
+                                    <span class="vs-text">VS</span>
+                                </div>
+                                
+                                <!-- Team 2 -->
+                                <div class="team-card team-2">
+                                    <div class="team-header">
+                                        <span class="team-badge team-2-badge">Đội 2</span>
+                                    </div>
+                                    <div class="team-players">
+                                        <div class="player-select-group">
+                                            <label class="player3-label">Người chơi 3</label>
+                                            <select id="player3" class="select-field player-select" required></select>
+                                        </div>
+                                        <div class="player-select-group duo-only">
+                                            <label>Người chơi 4</label>
+                                            <select id="player4" class="select-field player-select"></select>
+                                        </div>
+                                    </div>
+                                    <div class="team-score">
+                                        <label>Điểm</label>
+                                        <input type="number" id="team2Score" class="input-field score-input" min="0" value="0">
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            <!-- Match Settings -->
+                            <div class="match-settings">
+                                <div class="setting-group">
+                                    <label>Đội thắng</label>
+                                    <select id="winner" class="select-field" required>
+                                        <option value="">Chọn đội thắng</option>
+                                        <option value="team1">Đội 1 thắng</option>
+                                        <option value="team2">Đội 2 thắng</option>
+                                    </select>
+                                </div>
+                                <div class="setting-group">
+                                    <label>Ngày thi đấu</label>
+                                    <input type="date" id="matchDate" class="input-field">
+                                </div>
+                            </div>
+                            <input type="hidden" id="winMoney" value="0">
+                            <input type="hidden" id="loseMoney" value="0">
+                            
+                            <div class="form-actions">
+                                <button type="submit" class="btn btn-primary btn-lg">
+                                    <span>✓</span> Lưu Trận Đấu
+                                </button>
+                                <button type="button" class="btn btn-ghost" id="resetFormBtn">
+                                    <span>↺</span> Làm mới
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+                
+                <!-- Guest Info -->
+                <div class="guest-info">
+                    <div class="info-card">
+                        <span class="info-icon">🔒</span>
+                        <p>Đăng nhập với quyền Editor hoặc Admin để tạo trận đấu mới.</p>
+                    </div>
+                </div>
+                
+                <!-- Match History -->
+                <div class="card match-history-card">
+                    <div class="card-header">
+                        <h3 class="card-title">Lịch Sử Trận Đấu</h3>
+                        <div class="filter-controls">
+                            <input type="date" id="matchHistoryDate" class="input-field">
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-container">
+                            <table class="data-table" id="matchHistoryTable">
+                                <thead>
+                                    <tr>
+                                        <th>Thời gian</th>
+                                        <th>Đội 1</th>
+                                        <th>Tỉ số</th>
+                                        <th>Đội 2</th>
+                                        <th>Tiền</th>
+                                        <th class="edit-only">Thao tác</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
 
-      <!-- Guest info box -->
-      <div class="guest-info">
-        <h3>🔍 Chế độ xem</h3>
-        <p>Bạn đang ở chế độ xem. Có thể xem bảng xếp hạng và lịch sử thi đấu.</p>
-        <p>Để thêm người chơi và ghi nhận kết quả, vui lòng đăng nhập.</p>
-      </div>
+            <!-- Seasons Tab -->
+            <section class="tab-content" id="seasons-tab">
+                <div class="section-header">
+                    <h2 class="section-title">
+                        <span class="title-icon">🏆</span>
+                        Quản Lý Mùa Giải
+                    </h2>
+                    <button class="btn btn-primary edit-only" id="createSeasonBtn">
+                        <span>+</span> Tạo Mùa Mới
+                    </button>
+                </div>
+                
+                <!-- Seasons List -->
+                <div class="seasons-grid" id="seasonsList"></div>
+                
+                <!-- Guest Info -->
+                <div class="guest-info">
+                    <div class="info-card">
+                        <span class="info-icon">🔒</span>
+                        <p>Đăng nhập với quyền Editor hoặc Admin để quản lý mùa giải.</p>
+                    </div>
+                </div>
+            </section>
 
-      <!-- Status message -->
-      <div id="fileStatus" class="status-message"></div>
+            <!-- Accounts Tab (Admin Only) -->
+            <section class="tab-content admin-only" id="accounts-tab">
+                <div class="section-header">
+                    <h2 class="section-title">
+                        <span class="title-icon">👥</span>
+                        Quản Lý Tài Khoản
+                    </h2>
+                    <button class="btn btn-primary" id="createAccountBtn">
+                        <span>+</span> Tạo Tài Khoản
+                    </button>
+                </div>
+                
+                <div class="card">
+                    <div class="card-body">
+                        <div class="table-container">
+                            <table class="data-table" id="accountsTable">
+                                <thead>
+                                    <tr>
+                                        <th>ID</th>
+                                        <th>Tên đăng nhập</th>
+                                        <th>Tên hiển thị</th>
+                                        <th>Email</th>
+                                        <th>Vai trò</th>
+                                        <th>Trạng thái</th>
+                                        <th>Đăng nhập gần nhất</th>
+                                        <th>Thao tác</th>
+                                    </tr>
+                                </thead>
+                                <tbody></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Backup & Restore Section -->
+                <div class="card mt-4">
+                    <div class="card-header">
+                        <h3 class="card-title">💾 Sao Lưu & Khôi Phục Dữ Liệu</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="backup-actions">
+                            <div class="backup-item">
+                                <div class="backup-info">
+                                    <h4>📥 Xuất JSON (Sao lưu đầy đủ)</h4>
+                                    <p>Tải xuống toàn bộ dữ liệu dưới dạng JSON để sao lưu</p>
+                                </div>
+                                <button class="btn btn-primary" id="backupJsonBtn">Tải JSON</button>
+                            </div>
+                            <div class="backup-item">
+                                <div class="backup-info">
+                                    <h4>📤 Nhập JSON (Khôi phục)</h4>
+                                    <p>Khôi phục dữ liệu từ file JSON đã sao lưu</p>
+                                </div>
+                                <input type="file" id="restoreJsonInput" accept=".json" class="hidden-file-input">
+                                <button class="btn btn-warning" id="restoreJsonBtn">Chọn File JSON</button>
+                            </div>
+                            <div class="backup-item">
+                                <div class="backup-info">
+                                    <h4>📊 Xuất Excel (Xem báo cáo)</h4>
+                                    <p>Tải xuống dữ liệu dưới dạng Excel để xem</p>
+                                </div>
+                                <button class="btn btn-ghost" id="backupExcelBtn">Tải Excel</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="app-footer">
+            <div class="footer-content">
+                <p>&copy; 2025 Tennis Ranking System. All rights reserved.</p>
+                <div class="footer-links">
+                    <span class="version-badge">v2.0</span>
+                </div>
+            </div>
+        </footer>
     </div>
 
-    <script type="module" src="/src/main.js"></script>
-  </body>
+    <!-- Modals -->
+    <!-- Login Modal -->
+    <div class="modal" id="loginModal">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content modal-sm">
+            <div class="modal-header">
+                <h3 class="modal-title">🔐 Đăng Nhập</h3>
+                <button class="modal-close" data-dismiss="modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="loginForm">
+                    <div class="form-group">
+                        <label for="loginUsername">Tên đăng nhập</label>
+                        <input type="text" id="loginUsername" class="input-field" required autocomplete="username">
+                    </div>
+                    <div class="form-group">
+                        <label for="loginPassword">Mật khẩu</label>
+                        <input type="password" id="loginPassword" class="input-field" required autocomplete="current-password">
+                    </div>
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary btn-block">Đăng nhập</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Season Modal -->
+    <div class="modal" id="seasonModal">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content modal-content-large">
+            <div class="modal-header">
+                <h3 class="modal-title">🏆 <span id="seasonModalTitle">Tạo Mùa Giải Mới</span></h3>
+                <button class="modal-close" data-dismiss="modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="seasonForm">
+                    <input type="hidden" id="seasonId">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="seasonName">Tên mùa giải <span class="required">*</span></label>
+                            <input type="text" id="seasonName" class="input-field" required placeholder="VD: Mùa Hè 2024">
+                        </div>
+                        <div class="form-group">
+                            <label for="seasonLoseMoney">Tiền thua mỗi trận (VND)</label>
+                            <input type="number" id="seasonLoseMoney" class="input-field" min="0" step="1000" value="20000">
+                            <small class="form-hint">Số tiền người thua phải trả mỗi trận</small>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="seasonStartDate">Ngày bắt đầu <span class="required">*</span></label>
+                            <input type="date" id="seasonStartDate" class="input-field" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="seasonEndDate">Ngày kết thúc (tùy chọn)</label>
+                            <input type="date" id="seasonEndDate" class="input-field">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label for="seasonDescription">Mô tả</label>
+                        <textarea id="seasonDescription" class="input-field" rows="2" placeholder="Mô tả về mùa giải..."></textarea>
+                    </div>
+                    <div class="form-group checkbox-field">
+                        <label>
+                            <input type="checkbox" id="seasonAutoEnd">
+                            <span>Tự động kết thúc vào ngày kết thúc</span>
+                        </label>
+                        <small class="form-hint">Nếu bật, mùa giải sẽ tự động kết thúc khi đến ngày kết thúc</small>
+                    </div>
+                    <div class="form-group">
+                        <label>Người chơi tham gia</label>
+                        <div class="player-selection-actions">
+                            <button type="button" id="selectAllPlayers" class="btn btn-ghost btn-sm">Chọn tất cả</button>
+                            <button type="button" id="deselectAllPlayers" class="btn btn-ghost btn-sm">Bỏ chọn tất cả</button>
+                        </div>
+                        <div class="players-checkbox-grid" id="seasonPlayersCheckboxes"></div>
+                        <small class="form-hint">Chọn người chơi được phép thi đấu. Nếu không chọn ai, tất cả sẽ được phép.</small>
+                    </div>
+                    <div id="seasonError" class="error-message"></div>
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-ghost" data-dismiss="modal">Hủy</button>
+                        <button type="submit" class="btn btn-primary" id="seasonSubmitBtn">Lưu mùa giải</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Account Modal -->
+    <div class="modal" id="accountModal">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">👤 <span id="accountModalTitle">Tạo Tài Khoản Mới</span></h3>
+                <button class="modal-close" data-dismiss="modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="accountForm">
+                    <input type="hidden" id="accountId">
+                    <div class="form-group">
+                        <label for="accountUsername">Tên đăng nhập <span class="required">*</span></label>
+                        <input type="text" id="accountUsername" class="input-field" required placeholder="Nhập tên đăng nhập">
+                    </div>
+                    <div class="form-group">
+                        <label for="accountPassword">Mật khẩu <span class="required" id="passwordRequired">*</span></label>
+                        <input type="password" id="accountPassword" class="input-field" placeholder="Nhập mật khẩu">
+                        <small class="form-hint" id="passwordHint"></small>
+                    </div>
+                    <div class="form-group">
+                        <label for="accountDisplayName">Tên hiển thị</label>
+                        <input type="text" id="accountDisplayName" class="input-field" placeholder="Nhập tên hiển thị">
+                    </div>
+                    <div class="form-group">
+                        <label for="accountEmail">Email</label>
+                        <input type="email" id="accountEmail" class="input-field" placeholder="email@example.com">
+                    </div>
+                    <div class="form-group">
+                        <label for="accountRole">Vai trò <span class="required">*</span></label>
+                        <select id="accountRole" class="select-field" required>
+                            <option value="viewer">Viewer (Chỉ xem)</option>
+                            <option value="editor" selected>Editor (Tạo/sửa trận đấu)</option>
+                            <option value="admin">Admin (Toàn quyền)</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label for="accountNotes">Ghi chú</label>
+                        <textarea id="accountNotes" class="input-field" rows="2" placeholder="Ghi chú thêm..."></textarea>
+                    </div>
+                    <div class="form-group">
+                        <label class="checkbox-label">
+                            <input type="checkbox" id="accountActive" checked>
+                            <span>Kích hoạt tài khoản</span>
+                        </label>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-ghost" data-dismiss="modal">Hủy</button>
+                        <button type="submit" class="btn btn-primary">Lưu tài khoản</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Confirm Delete Modal -->
+    <div class="modal" id="confirmModal">
+        <div class="modal-backdrop"></div>
+        <div class="modal-content modal-sm">
+            <div class="modal-header">
+                <h3 class="modal-title">⚠️ Xác nhận</h3>
+                <button class="modal-close" data-dismiss="modal">&times;</button>
+            </div>
+            <div class="modal-body">
+                <p id="confirmMessage">Bạn có chắc chắn muốn thực hiện thao tác này?</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-ghost" data-dismiss="modal">Hủy</button>
+                <button class="btn btn-danger" id="confirmBtn">Xác nhận</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div class="toast-container" id="toastContainer"></div>
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div class="loading-spinner">
+            <div class="spinner"></div>
+            <p>Đang tải...</p>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script type="module" src="./src/main.js"></script>
+</body>
 </html>

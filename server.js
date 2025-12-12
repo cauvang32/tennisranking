@@ -14,6 +14,7 @@ import TennisDatabase from './database-postgresql.js'
 import ExcelJS from 'exceljs'
 import csrf from 'csrf'
 import crypto from 'crypto'
+import os from 'os'
 import { getRealClientIP, logAccess, logError, getLogStats } from './access-logger.js'
 import { createPlayerRouter } from './routes/players.js'
 import { createSeasonRouter } from './routes/seasons.js'
@@ -443,18 +444,18 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      styleSrc: ["'self'"], // No inline styles needed anymore
-  scriptSrc: ["'self'", "https://static.cloudflareinsights.com"],
-      imgSrc: ["'self'", "data:"], // Remove wildcard https:
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://static.cloudflareinsights.com"],
+      imgSrc: ["'self'", "data:"],
       connectSrc: ["'self'"],
       objectSrc: ["'none'"],
       mediaSrc: ["'self'"],
       frameSrc: ["'none'"],
       baseUri: ["'self'"],
-      fontSrc: ["'self'", "data:"], // Remove wildcard https:
+      fontSrc: ["'self'", "data:", "https://fonts.gstatic.com"],
       formAction: ["'self'"],
-      frameAncestors: ["'none'"], // Changed from 'self' to 'none' for better security
-      scriptSrcAttr: ["'none'"],
+      frameAncestors: ["'none'"],
+      scriptSrcAttr: ["'unsafe-inline'"],
       upgradeInsecureRequests: [],
       workerSrc: ["'none'"],
       manifestSrc: ["'self'"],
@@ -507,17 +508,115 @@ app.use(helmet({
 }))
 
 // Enhanced rate limiting with comprehensive IP detection
+const envFlagTrue = (value) => {
+  if (value === undefined || value === null) return false
+  const normalized = value.toString().trim().toLowerCase()
+  return normalized === 'true' || normalized === '1' || normalized === 'yes'
+}
+
+const parseNumberEnv = (name, fallback) => {
+  const raw = process.env[name]
+  if (raw === undefined || raw === null || raw === '') return fallback
+  const parsed = Number(raw)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+const clampNumber = (value, min, max) => {
+  if (!Number.isFinite(value)) return min
+  return Math.min(max, Math.max(min, value))
+}
+
+const isRateLimitingDisabled = () => {
+  // Support both spellings (some deployments used DISABLE_RATELIMITING)
+  return envFlagTrue(process.env.DISABLE_RATE_LIMITING) || envFlagTrue(process.env.DISABLE_RATELIMITING)
+}
+
+// Dynamic rate limiting based on server resource pressure (CPU/RAM)
+const rateLimitDynamicEnabled = envFlagTrue(process.env.RATE_LIMIT_DYNAMIC_ENABLED)
+const rateLimitDynamicSampleMs = parseInt(process.env.RATE_LIMIT_DYNAMIC_SAMPLE_MS) || 5000
+
+const rateLimitCpuHighPct = clampNumber(parseNumberEnv('RATE_LIMIT_CPU_HIGH_PCT', 80), 0, 1000)
+const rateLimitCpuCriticalPct = clampNumber(parseNumberEnv('RATE_LIMIT_CPU_CRITICAL_PCT', 95), 0, 1000)
+const rateLimitRamHighPct = clampNumber(parseNumberEnv('RATE_LIMIT_RAM_HIGH_PCT', 85), 0, 100)
+const rateLimitRamCriticalPct = clampNumber(parseNumberEnv('RATE_LIMIT_RAM_CRITICAL_PCT', 95), 0, 100)
+
+const rateLimitDynamicScaleHigh = clampNumber(parseNumberEnv('RATE_LIMIT_DYNAMIC_SCALE_HIGH', 0.7), 0.01, 1)
+const rateLimitDynamicScaleCritical = clampNumber(parseNumberEnv('RATE_LIMIT_DYNAMIC_SCALE_CRITICAL', 0.4), 0.01, 1)
+const rateLimitDynamicMinScale = clampNumber(parseNumberEnv('RATE_LIMIT_DYNAMIC_MIN_SCALE', 0.2), 0.01, 1)
+
+let resourceSnapshot = {
+  cpuPct: 0,
+  ramUsedPct: 0,
+  updatedAt: 0
+}
+
+const sampleServerResources = () => {
+  try {
+    const cpuCores = os.cpus()?.length || 1
+    const load1 = Array.isArray(os.loadavg?.()) ? os.loadavg()[0] : 0
+    // Heuristic CPU% based on 1-minute load average / CPU cores.
+    // Can exceed 100% under heavy load; that's fine for thresholding.
+    const cpuPct = cpuCores > 0 ? (load1 / cpuCores) * 100 : 0
+
+    const totalMem = os.totalmem?.() || 0
+    const freeMem = os.freemem?.() || 0
+    const ramUsedPct = totalMem > 0 ? ((totalMem - freeMem) / totalMem) * 100 : 0
+
+    resourceSnapshot = {
+      cpuPct,
+      ramUsedPct,
+      updatedAt: Date.now()
+    }
+  } catch (error) {
+    // Ignore sampling errors; keep last good snapshot.
+  }
+}
+
+if (rateLimitDynamicEnabled) {
+  sampleServerResources()
+  const interval = setInterval(sampleServerResources, rateLimitDynamicSampleMs)
+  if (typeof interval.unref === 'function') interval.unref()
+}
+
+const getRateLimitDynamicMultiplier = () => {
+  if (!rateLimitDynamicEnabled) return 1
+
+  const { cpuPct, ramUsedPct } = resourceSnapshot
+
+  let multiplier = 1
+  if (cpuPct >= rateLimitCpuCriticalPct || ramUsedPct >= rateLimitRamCriticalPct) {
+    multiplier = rateLimitDynamicScaleCritical
+  } else if (cpuPct >= rateLimitCpuHighPct || ramUsedPct >= rateLimitRamHighPct) {
+    multiplier = rateLimitDynamicScaleHigh
+  }
+
+  return clampNumber(multiplier, rateLimitDynamicMinScale, 1)
+}
+
 const createProxyAwareRateLimiter = (options) => {
   // Check if rate limiting is disabled
-  if (process.env.DISABLE_RATE_LIMITING === 'true') {
+  if (isRateLimitingDisabled()) {
     console.log('🚫 Rate limiting is disabled via environment variable');
     return (req, res, next) => next();
+  }
+
+  const baseLimit = options.limit
+  const dynamicLimit = (req, res) => {
+    const resolvedBase = typeof baseLimit === 'function' ? baseLimit(req, res) : baseLimit
+    const numericBase = Number(resolvedBase)
+    const safeBase = Number.isFinite(numericBase) && numericBase > 0 ? numericBase : 1
+
+    const multiplier = getRateLimitDynamicMultiplier()
+    const computed = Math.floor(safeBase * multiplier)
+    return computed > 0 ? computed : 1
   }
 
   return rateLimit({
     ...options,
     standardHeaders: 'draft-8', // Use the latest IETF draft standard
     legacyHeaders: false,
+    // Always compute limit at request-time so dynamic scaling can apply.
+    limit: dynamicLimit,
     // Enhanced key generator using our comprehensive IP detection
     keyGenerator: (req) => {
       const clientIP = getRealClientIP(req);
@@ -565,7 +664,14 @@ console.log(`🔧 Rate Limiting Configuration:`);
 console.log(`   Window: ${rateLimitWindowMs}ms (${rateLimitWindowMs / 60000} minutes)`);
 console.log(`   General Limit: ${rateLimitMaxRequests} requests`);
 console.log(`   API Limit: ${rateLimitApiMax} requests`);
-console.log(`   Disabled: ${process.env.DISABLE_RATE_LIMITING === 'true'}`);
+console.log(`   Disabled: ${isRateLimitingDisabled()}`);
+console.log(`   Dynamic Enabled: ${rateLimitDynamicEnabled}`);
+if (rateLimitDynamicEnabled) {
+  console.log(`   Dynamic Sample: ${rateLimitDynamicSampleMs}ms`);
+  console.log(`   CPU High/Critical: ${rateLimitCpuHighPct}% / ${rateLimitCpuCriticalPct}%`);
+  console.log(`   RAM High/Critical: ${rateLimitRamHighPct}% / ${rateLimitRamCriticalPct}%`);
+  console.log(`   Scale High/Critical: ${rateLimitDynamicScaleHigh} / ${rateLimitDynamicScaleCritical} (min ${rateLimitDynamicMinScale})`);
+}
 
 const generalLimiter = createProxyAwareRateLimiter({
   windowMs: rateLimitWindowMs,
@@ -630,18 +736,10 @@ const createUserAwareRateLimiter = (anonymousLimit, authenticatedLimit, windowMs
         return anonymousLimit; // Anonymous users get base limit
       }
     },
-    keyGenerator: (req) => {
-      const baseIP = getRealClientIP(req);
-      // Add user context to the key for authenticated users
-      if (req.user) {
-        return `${baseIP}:${req.user.username}`;
-      }
-      return baseIP;
-    },
     message: (req) => {
       const isAuth = !!req.user;
       return { 
-        error: `Too many requests from this ${isAuth ? 'account' : 'IP'}. ${isAuth ? 'Authenticated users' : 'Anonymous users'} are limited. Please try again later.`
+        error: `Too many requests from this IP. ${isAuth ? 'Authenticated users receive higher limits' : 'Anonymous users are limited'}. Please try again later.`
       };
     }
   });
@@ -772,18 +870,7 @@ const validateCSRF = (req, res, next) => {
 }
 
 app.use(express.json({ 
-  limit: '10mb',
-  verify: (req, res, buf) => {
-    if (!buf || buf.length === 0) {
-      return
-    }
-    try {
-      JSON.parse(buf)
-    } catch (e) {
-      res.status(400).json({ error: 'Invalid JSON' })
-      return
-    }
-  }
+  limit: '50mb'  // Increased for large backup files
 }))
 
 // Subpath configuration - support both SUBPATH and BASE_PATH env vars
@@ -2350,8 +2437,11 @@ app.post('/api/restore',
       // Restore players first
       const playerIdMap = new Map() // old id -> new id
       for (const player of backupData.players) {
-        const newPlayer = await db.addPlayer(player.name)
-        playerIdMap.set(player.id, newPlayer.id)
+        const newPlayerId = await db.addPlayer(player.name)
+        // Use Number() to ensure consistent key types
+        // Note: addPlayer returns just the ID, not an object
+        playerIdMap.set(Number(player.id), newPlayerId)
+        console.log(`  👤 Player ${player.id} -> ${newPlayerId} (${player.name})`)
       }
       console.log(`✅ Restored ${backupData.players.length} players`)
       
@@ -2368,11 +2458,19 @@ app.post('/api/restore',
           season.lose_money_per_loss || 20000,
           [] // Players will be added after all players are restored
         )
-        seasonIdMap.set(season.id, newSeasonId)
+        // Use Number() to ensure consistent key types
+        seasonIdMap.set(Number(season.id), newSeasonId)
+        console.log(`  📅 Season ${season.id} -> ${newSeasonId} (${season.name})`)
+        
+        // If the original season was inactive, deactivate the new one too
+        if (season.is_active === false) {
+          await db.query('UPDATE seasons SET is_active = false WHERE id = $1', [newSeasonId])
+          console.log(`    ⏸️ Set season ${newSeasonId} as inactive`)
+        }
         
         // Add season players if any
         if (season.players && season.players.length > 0) {
-          const newPlayerIds = season.players.map(oldId => playerIdMap.get(oldId)).filter(Boolean)
+          const newPlayerIds = season.players.map(oldId => playerIdMap.get(Number(oldId))).filter(Boolean)
           if (newPlayerIds.length > 0) {
             await db.setSeasonPlayers(newSeasonId, newPlayerIds)
           }
@@ -2380,31 +2478,58 @@ app.post('/api/restore',
       }
       console.log(`✅ Restored ${backupData.seasons.length} seasons`)
       
+      // Debug: Log ID mappings
+      console.log('🗺️ Player ID Map:', Object.fromEntries(playerIdMap))
+      console.log('🗺️ Season ID Map:', Object.fromEntries(seasonIdMap))
+      
+      // Log first match from backup to debug structure
+      if (backupData.matches.length > 0) {
+        console.log('📋 First match in backup:', JSON.stringify(backupData.matches[0], null, 2))
+      }
+      
       // Restore matches
+      let matchesRestored = 0
+      let matchesSkipped = 0
       for (const match of backupData.matches) {
-        const newSeasonId = seasonIdMap.get(match.season_id)
-        const newPlayer1Id = playerIdMap.get(match.player1_id)
-        const newPlayer2Id = match.player2_id ? playerIdMap.get(match.player2_id) : null
-        const newPlayer3Id = playerIdMap.get(match.player3_id)
-        const newPlayer4Id = match.player4_id ? playerIdMap.get(match.player4_id) : null
+        // Convert to numbers to ensure proper Map lookup
+        const oldSeasonId = Number(match.season_id)
+        const oldPlayer1Id = Number(match.player1_id)
+        const oldPlayer2Id = match.player2_id ? Number(match.player2_id) : null
+        const oldPlayer3Id = Number(match.player3_id)
+        const oldPlayer4Id = match.player4_id ? Number(match.player4_id) : null
+        
+        const newSeasonId = seasonIdMap.get(oldSeasonId)
+        const newPlayer1Id = playerIdMap.get(oldPlayer1Id)
+        const newPlayer2Id = oldPlayer2Id ? playerIdMap.get(oldPlayer2Id) : null
+        const newPlayer3Id = playerIdMap.get(oldPlayer3Id)
+        const newPlayer4Id = oldPlayer4Id ? playerIdMap.get(oldPlayer4Id) : null
         
         if (newSeasonId && newPlayer1Id && newPlayer3Id) {
-          // addMatch signature: (seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType)
-          await db.addMatch(
-            newSeasonId,
-            match.play_date,
-            newPlayer1Id,
-            newPlayer2Id,
-            newPlayer3Id,
-            newPlayer4Id,
-            match.team1_score,
-            match.team2_score,
-            match.winning_team,
-            match.match_type || 'duo'
-          )
+          try {
+            // addMatch signature: (seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType)
+            await db.addMatch(
+              newSeasonId,
+              match.play_date,
+              newPlayer1Id,
+              newPlayer2Id,
+              newPlayer3Id,
+              newPlayer4Id,
+              match.team1_score,
+              match.team2_score,
+              match.winning_team,
+              match.match_type || 'duo'
+            )
+            matchesRestored++
+          } catch (matchError) {
+            console.error(`❌ Error restoring match:`, matchError.message)
+            matchesSkipped++
+          }
+        } else {
+          console.log(`⚠️ Skipping match - missing mapping: seasonId=${oldSeasonId}->${newSeasonId}, p1=${oldPlayer1Id}->${newPlayer1Id}, p3=${oldPlayer3Id}->${newPlayer3Id}`)
+          matchesSkipped++
         }
       }
-      console.log(`✅ Restored ${backupData.matches.length} matches`)
+      console.log(`✅ Restored ${matchesRestored} matches (${matchesSkipped} skipped)`)
       
       // Restore users if present in backup
       let usersRestored = 0

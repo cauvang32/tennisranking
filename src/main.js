@@ -771,9 +771,19 @@ class TennisRankingSystem {
         })
       }
 
+      // Player name inputs - both old and new
       const playerNameInput = document.getElementById('playerName')
       if (playerNameInput) {
         playerNameInput.addEventListener('keypress', async (e) => {
+          if (e.key === 'Enter') {
+            await this.addPlayer()
+          }
+        })
+      }
+      
+      const newPlayerNameInput = document.getElementById('newPlayerName')
+      if (newPlayerNameInput) {
+        newPlayerNameInput.addEventListener('keypress', async (e) => {
           if (e.key === 'Enter') {
             await this.addPlayer()
           }
@@ -1158,14 +1168,21 @@ class TennisRankingSystem {
   }
 
   async addPlayer() {
-    const playerName = document.getElementById('playerName').value.trim()
+    // Support both old input (playerName) and new input (newPlayerName)
+    const oldInput = document.getElementById('playerName')
+    const newInput = document.getElementById('newPlayerName')
+    const inputElement = (newInput && newInput.value.trim()) ? newInput : oldInput
+    
+    const playerName = inputElement?.value?.trim()
     if (!playerName) {
       this.updateFileStatus('❌ Vui lòng nhập tên người chơi', 'error')
+      this.showToast('Vui lòng nhập tên người chơi', 'error')
       return
     }
 
     if (!this.isAuthenticated) {
       this.updateFileStatus('❌ Cần đăng nhập để thêm người chơi', 'error')
+      this.showToast('Cần đăng nhập để thêm người chơi', 'error')
       return
     }
 
@@ -1181,14 +1198,19 @@ class TennisRankingSystem {
         await this.loadPlayers()
         this.renderPlayers()
         this.updatePlayerSelects()
-        document.getElementById('playerName').value = ''
+        // Clear both inputs
+        if (oldInput) oldInput.value = ''
+        if (newInput) newInput.value = ''
         this.updateFileStatus(`✅ Đã thêm người chơi: ${playerName}`, 'success')
+        this.showToast(`Đã thêm người chơi: ${playerName}`, 'success')
       } else {
         this.updateFileStatus(`❌ ${data.error}`, 'error')
+        this.showToast(data.error, 'error')
       }
     } catch (error) {
       console.error('Error adding player:', error)
       this.updateFileStatus('❌ Lỗi khi thêm người chơi', 'error')
+      this.showToast('Lỗi khi thêm người chơi', 'error')
     }
   }
 
@@ -1225,6 +1247,11 @@ class TennisRankingSystem {
       console.error('Error removing player:', error)
       this.updateFileStatus('❌ Lỗi khi xóa người chơi', 'error')
     }
+  }
+  
+  // Alias for table button onclick
+  async deletePlayer(playerId, playerName) {
+    await this.removePlayer(playerId)
   }
 
   async recordMatch() {
@@ -1362,22 +1389,68 @@ class TennisRankingSystem {
 
   renderPlayers() {
     try {
-      const container = document.getElementById('playersList')
-      if (!container) {
-        console.warn('Players list container not found')
-        return
-      }
-
       const userRole = this.user?.role
+      const canDelete = userRole === 'admin'
       
-      container.innerHTML = this.players.map(player => `
-        <div class="player-card">
-          <span class="player-name">${player.name}</span>
-          ${userRole === 'admin' ? `
-            <button class="delete-btn" data-player-id="${player.id}">❌</button>
-          ` : ''}
-        </div>
-      `).join('')
+      // Render old style player list (if container exists)
+      const container = document.getElementById('playersList')
+      if (container) {
+        container.innerHTML = this.players.map(player => `
+          <div class="player-card">
+            <span class="player-name">${player.name}</span>
+            ${canDelete ? `
+              <button class="delete-btn" data-player-id="${player.id}">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="3 6 5 6 21 6"/>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                </svg>
+              </button>
+            ` : ''}
+          </div>
+        `).join('')
+      }
+      
+      // Render Players tab table
+      const tableBody = document.getElementById('playersTableBody')
+      if (tableBody) {
+        tableBody.innerHTML = this.players.map(player => `
+          <tr>
+            <td><span class="id-badge">#${player.id}</span></td>
+            <td>
+              <div class="player-cell">
+                <span class="player-avatar-small">${player.name.charAt(0).toUpperCase()}</span>
+                <span class="player-name-text">${player.name}</span>
+              </div>
+            </td>
+            <td>${player.created_at ? this.formatDate(player.created_at) : '-'}</td>
+            ${canDelete ? `
+              <td>
+                <button class="btn btn-sm btn-danger delete-player-btn" data-player-id="${player.id}">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                  </svg>
+                  Xóa
+                </button>
+              </td>
+            ` : ''}
+          </tr>
+        `).join('')
+        
+        // Add event listeners for delete buttons
+        tableBody.querySelectorAll('.delete-player-btn').forEach(btn => {
+          btn.addEventListener('click', async () => {
+            const playerId = parseInt(btn.dataset.playerId)
+            await this.removePlayer(playerId)
+          })
+        })
+      }
+      
+      // Update player count badge
+      const countBadge = document.getElementById('playerCount')
+      if (countBadge) {
+        countBadge.textContent = `${this.players.length} người chơi`
+      }
     } catch (error) {
       console.error('Error rendering players:', error)
     }
@@ -1542,11 +1615,13 @@ class TennisRankingSystem {
     if (!tbody) return
     
     tbody.innerHTML = rankings.length === 0 
-      ? '<tr><td colspan="8" style="text-align: center; padding: 2rem; color: var(--text-muted);">Không có dữ liệu</td></tr>'
+      ? '<tr><td colspan="9" style="text-align: center; padding: 2rem; color: var(--text-muted);">Không có dữ liệu</td></tr>'
       : rankings.map((player, index) => {
         const balanceClass = player.money_balance > 0 ? 'positive' : (player.money_balance < 0 ? 'negative' : '')
         const balanceValue = player.money_balance || (player.money_won || 0) - (player.money_lost || 0)
         const formHtml = this.renderForm(player.form || player.recent_form || [])
+        const points = player.points || 0
+        const pointsClass = points > 0 ? 'positive' : (points < 0 ? 'negative' : '')
         return `
           <tr>
             <td class="col-rank">${this.getRankEmoji(index + 1)}${index + 1}</td>
@@ -1556,6 +1631,7 @@ class TennisRankingSystem {
             <td>${player.wins || 0}</td>
             <td>${player.losses || 0}</td>
             <td>${player.win_percentage || 0}%</td>
+            <td class="col-points ${pointsClass}">${points}</td>
             <td class="col-balance ${balanceClass}">${this.formatMoney(balanceValue)}</td>
           </tr>
         `
@@ -1624,26 +1700,53 @@ class TennisRankingSystem {
         
         const team1Class = match.winning_team === 1 ? 'winner-cell' : ''
         const team2Class = match.winning_team === 2 ? 'winner-cell' : ''
-        const matchMoney = match.win_money || match.lose_money || 50000
+        const matchMoney = match.lose_money_per_loss ?? 0
+        const winnerBadge = `<svg class="winner-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/></svg>`
         
         return `
           <tr>
             <td>${this.formatDate(match.play_date)}</td>
-            <td class="${team1Class}">${team1Players} ${match.winning_team === 1 ? '🏆' : ''}</td>
+            <td class="${team1Class}">${team1Players} ${match.winning_team === 1 ? winnerBadge : ''}</td>
             <td style="text-align: center; font-weight: 600;">${match.team1_score} - ${match.team2_score}</td>
-            <td class="${team2Class}">${team2Players} ${match.winning_team === 2 ? '🏆' : ''}</td>
+            <td class="${team2Class}">${team2Players} ${match.winning_team === 2 ? winnerBadge : ''}</td>
             <td>${this.formatMoney(matchMoney)}</td>
             ${canEdit ? `
               <td>
                 <div class="action-btns">
-                  <button class="edit-btn" onclick="app.editMatch(${match.id})">✏️</button>
-                  <button class="delete-btn" onclick="app.deleteMatch(${match.id})">🗑️</button>
+                  <button class="btn btn-sm btn-icon edit-match-btn" data-match-id="${match.id}" title="Sửa">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                    </svg>
+                  </button>
+                  <button class="btn btn-sm btn-icon btn-danger delete-match-btn" data-match-id="${match.id}" title="Xóa">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="3 6 5 6 21 6"/>
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                    </svg>
+                  </button>
                 </div>
               </td>
             ` : ''}
           </tr>
         `
       }).join('')
+    
+    // Add event listeners for edit/delete buttons
+    if (container) {
+      container.querySelectorAll('.edit-match-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const matchId = parseInt(btn.dataset.matchId)
+          this.editMatch(matchId)
+        })
+      })
+      container.querySelectorAll('.delete-match-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const matchId = parseInt(btn.dataset.matchId)
+          this.deleteMatch(matchId)
+        })
+      })
+    }
   }
 
   updatePlayerSelects() {
@@ -1794,6 +1897,20 @@ class TennisRankingSystem {
       const selectedDateOnly = this.selectedDate.split('T')[0]
       selector.value = selectedDateOnly
     }
+    
+    // Also update match history date selector
+    this.updateMatchHistoryDateSelector()
+  }
+  
+  updateMatchHistoryDateSelector() {
+    const selector = document.getElementById('matchHistoryDate')
+    if (!selector) return
+    
+    const placeholder = '<option value="">Tất cả ngày</option>'
+    selector.innerHTML = placeholder + this.playDates.map(dateObj => {
+      const dateOnly = dateObj.play_date.split('T')[0]
+      return `<option value="${dateOnly}">${this.formatDate(dateObj.play_date)}</option>`
+    }).join('')
   }
 
   updateSeasonSelector() {
@@ -2337,15 +2454,26 @@ class TennisRankingSystem {
           
           // Validate backup structure
           if (!backupData.players || !backupData.seasons || !backupData.matches) {
-            this.showToast('File backup không hợp lệ', 'error')
+            this.showToast('File backup không hợp lệ - thiếu dữ liệu players, seasons hoặc matches', 'error')
             return
           }
+          
+          console.log(`📤 Sending restore request with ${backupData.players.length} players, ${backupData.seasons.length} seasons, ${backupData.matches.length} matches`)
           
           // Send to server
           const response = await this.makeAuthenticatedRequest(`${this.apiBase}/restore`, {
             method: 'POST',
             body: JSON.stringify(backupData)
           })
+          
+          // Check if response is OK before parsing JSON
+          const contentType = response.headers.get('content-type')
+          if (!contentType || !contentType.includes('application/json')) {
+            const textResponse = await response.text()
+            console.error('Server returned non-JSON response:', textResponse)
+            this.showToast(`Lỗi server: ${response.status} ${response.statusText}`, 'error')
+            return
+          }
           
           const result = await response.json()
           
@@ -2365,14 +2493,24 @@ class TennisRankingSystem {
             this.updatePlayerSelects()
             this.updateSeasonSelector()
             this.updateDateSelector()
-            this.updateMatchSeasonSelector()
+            this.updateSeasonSelect()
           } else {
+            console.error('Restore failed:', result)
             this.showToast(result.error || 'Lỗi khi khôi phục dữ liệu', 'error')
           }
         } catch (parseError) {
-          console.error('Error parsing JSON:', parseError)
-          this.showToast('File JSON không hợp lệ', 'error')
+          console.error('Error in restore process:', parseError)
+          if (parseError.message?.includes('JSON')) {
+            this.showToast('Lỗi đọc file JSON - kiểm tra định dạng file', 'error')
+          } else {
+            this.showToast(`Lỗi: ${parseError.message}`, 'error')
+          }
         }
+      }
+      
+      reader.onerror = () => {
+        console.error('FileReader error')
+        this.showToast('Lỗi đọc file', 'error')
       }
       
       reader.readAsText(file)
@@ -2833,28 +2971,60 @@ class TennisRankingSystem {
     const modal = document.createElement('div')
     modal.className = 'modal'
     modal.innerHTML = `
-      <div class="modal-content">
-        <h2>Sửa trận đấu ${isSolo ? '(1v1)' : '(Đôi)'}</h2>
-        <form id="editMatchForm">
-          <div class="form-group">
-            <label for="editMatchDate">Ngày đánh:</label>
-            <input type="date" id="editMatchDate" value="${match.play_date.split('T')[0]}" required>
-          </div>
-          
-          <div class="form-group">
-            <label for="editSeasonId">Mùa giải:</label>
-            <select id="editSeasonId" required>
-              ${this.seasons.map(season => 
-                `<option value="${season.id}" ${season.id === match.season_id ? 'selected' : ''}>${season.name}</option>`
-              ).join('')}
-            </select>
+      <div class="modal-backdrop"></div>
+      <div class="modal-content modal-match-edit">
+        <div class="modal-header">
+          <h2 class="modal-title">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+            </svg>
+            Sửa trận đấu ${isSolo ? '(1v1)' : '(Đôi)'}
+          </h2>
+          <button type="button" class="modal-close" id="closeEditModal">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+          </button>
+        </div>
+        <form id="editMatchForm" class="modal-body">
+          <div class="form-row">
+            <div class="form-group">
+              <label for="editMatchDate">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                  <line x1="16" y1="2" x2="16" y2="6"/>
+                  <line x1="8" y1="2" x2="8" y2="6"/>
+                  <line x1="3" y1="10" x2="21" y2="10"/>
+                </svg>
+                Ngày đánh
+              </label>
+              <input type="date" id="editMatchDate" value="${match.play_date.split('T')[0]}" required>
+            </div>
+            <div class="form-group">
+              <label for="editSeasonId">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/>
+                  <line x1="4" y1="22" x2="4" y2="15"/>
+                </svg>
+                Mùa giải
+              </label>
+              <select id="editSeasonId" required>
+                ${this.seasons.map(season => 
+                  `<option value="${season.id}" ${season.id === match.season_id ? 'selected' : ''}>${season.name}</option>`
+                ).join('')}
+              </select>
+            </div>
           </div>
 
-          <div class="teams">
-            <div class="team-section">
-              <h3>${isSolo ? 'Người chơi 1' : 'Đội 1'}</h3>
+          <div class="teams-grid">
+            <div class="team-card team-1">
+              <div class="team-header">
+                <span class="team-badge">${isSolo ? 'Người chơi' : 'Đội 1'}</span>
+              </div>
               <div class="form-group">
-                <label for="editPlayer1">${isSolo ? 'Người chơi:' : 'Người chơi 1:'}</label>
+                <label for="editPlayer1">${isSolo ? 'Người chơi' : 'Người chơi 1'}</label>
                 <select id="editPlayer1" required>
                   ${this.players.map(player => 
                     `<option value="${player.id}" ${player.id === match.player1_id ? 'selected' : ''}>${player.name}</option>`
@@ -2863,7 +3033,7 @@ class TennisRankingSystem {
               </div>
               ${!isSolo ? `
               <div class="form-group">
-                <label for="editPlayer2">Người chơi 2:</label>
+                <label for="editPlayer2">Người chơi 2</label>
                 <select id="editPlayer2" required>
                   ${this.players.map(player => 
                     `<option value="${player.id}" ${player.id === match.player2_id ? 'selected' : ''}>${player.name}</option>`
@@ -2871,16 +3041,22 @@ class TennisRankingSystem {
                 </select>
               </div>
               ` : ''}
-              <div class="form-group">
-                <label for="editTeam1Score">Tỷ số:</label>
-                <input type="number" id="editTeam1Score" value="${match.team1_score}" min="0" required>
+              <div class="form-group score-input">
+                <label for="editTeam1Score">Tỷ số</label>
+                <input type="number" id="editTeam1Score" value="${match.team1_score}" min="0" required class="score-field">
               </div>
             </div>
 
-            <div class="team-section">
-              <h3>${isSolo ? 'Đối thủ' : 'Đội 2'}</h3>
+            <div class="vs-divider">
+              <span>VS</span>
+            </div>
+
+            <div class="team-card team-2">
+              <div class="team-header">
+                <span class="team-badge">${isSolo ? 'Đối thủ' : 'Đội 2'}</span>
+              </div>
               <div class="form-group">
-                <label for="editPlayer3">${isSolo ? 'Người chơi:' : 'Người chơi 3:'}</label>
+                <label for="editPlayer3">${isSolo ? 'Người chơi' : 'Người chơi 3'}</label>
                 <select id="editPlayer3" required>
                   ${this.players.map(player => 
                     `<option value="${player.id}" ${player.id === match.player3_id ? 'selected' : ''}>${player.name}</option>`
@@ -2889,7 +3065,7 @@ class TennisRankingSystem {
               </div>
               ${!isSolo ? `
               <div class="form-group">
-                <label for="editPlayer4">Người chơi 4:</label>
+                <label for="editPlayer4">Người chơi 4</label>
                 <select id="editPlayer4" required>
                   ${this.players.map(player => 
                     `<option value="${player.id}" ${player.id === match.player4_id ? 'selected' : ''}>${player.name}</option>`
@@ -2897,27 +3073,48 @@ class TennisRankingSystem {
                 </select>
               </div>
               ` : ''}
-              <div class="form-group">
-                <label for="editTeam2Score">Tỷ số:</label>
-                <input type="number" id="editTeam2Score" value="${match.team2_score}" min="0" required>
+              <div class="form-group score-input">
+                <label for="editTeam2Score">Tỷ số</label>
+                <input type="number" id="editTeam2Score" value="${match.team2_score}" min="0" required class="score-field">
               </div>
             </div>
           </div>
 
-          <div class="form-group">
-            <label for="editWinningTeam">Đội thắng:</label>
+          <div class="form-group winner-select">
+            <label for="editWinningTeam">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/>
+                <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/>
+                <path d="M4 22h16"/>
+                <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/>
+                <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/>
+                <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>
+              </svg>
+              Đội thắng
+            </label>
             <select id="editWinningTeam" required>
               <option value="1" ${match.winning_team === 1 ? 'selected' : ''}>${isSolo ? 'Người chơi 1' : 'Đội 1'}</option>
               <option value="2" ${match.winning_team === 2 ? 'selected' : ''}>${isSolo ? 'Đối thủ' : 'Đội 2'}</option>
             </select>
           </div>
 
-          <div class="form-actions">
-            <button type="submit">Cập nhật trận đấu</button>
-            <button type="button" id="cancelEditMatch">Hủy</button>
-          </div>
+          <div id="editMatchError" class="error-message"></div>
         </form>
-        <div id="editMatchError" class="error-message"></div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="cancelEditMatch">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="18" y1="6" x2="6" y2="18"/>
+              <line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
+            Hủy
+          </button>
+          <button type="submit" form="editMatchForm" class="btn btn-primary">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="20 6 9 17 4 12"/>
+            </svg>
+            Cập nhật
+          </button>
+        </div>
       </div>
     `
     
@@ -2926,6 +3123,12 @@ class TennisRankingSystem {
     // Show the modal with animation
     requestAnimationFrame(() => {
       modal.classList.add('show')
+    })
+    
+    // Close button handler
+    document.getElementById('closeEditModal').addEventListener('click', () => {
+      modal.classList.remove('show')
+      setTimeout(() => document.body.removeChild(modal), 200)
     })
     
     document.getElementById('editMatchForm').addEventListener('submit', async (e) => {
@@ -3012,13 +3215,14 @@ class TennisRankingSystem {
     })
     
     document.getElementById('cancelEditMatch').addEventListener('click', () => {
-      document.body.removeChild(modal)
+      modal.classList.remove('show')
+      setTimeout(() => document.body.removeChild(modal), 200)
     })
     
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) {
-        document.body.removeChild(modal)
-      }
+    // Close on backdrop click
+    modal.querySelector('.modal-backdrop').addEventListener('click', () => {
+      modal.classList.remove('show')
+      setTimeout(() => document.body.removeChild(modal), 200)
     })
   }
 

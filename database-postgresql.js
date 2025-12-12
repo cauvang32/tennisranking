@@ -463,6 +463,7 @@ class TennisDatabasePostgreSQL {
         COALESCE(m.match_type, 'duo') as match_type,
         m.created_at,
         s.name as season_name,
+        COALESCE(s.lose_money_per_loss, 20000) as lose_money_per_loss,
         p1.name as player1_name, COALESCE(p2.name, '') as player2_name, 
         p3.name as player3_name, COALESCE(p4.name, '') as player4_name
       FROM matches m
@@ -492,6 +493,7 @@ class TennisDatabasePostgreSQL {
         COALESCE(m.match_type, 'duo') as match_type,
         m.created_at,
         s.name as season_name,
+        COALESCE(s.lose_money_per_loss, 20000) as lose_money_per_loss,
         p1.name as player1_name, COALESCE(p2.name, '') as player2_name, 
         p3.name as player3_name, COALESCE(p4.name, '') as player4_name
       FROM matches m
@@ -514,6 +516,7 @@ class TennisDatabasePostgreSQL {
         COALESCE(m.match_type, 'duo') as match_type,
         m.created_at,
         s.name as season_name,
+        COALESCE(s.lose_money_per_loss, 20000) as lose_money_per_loss,
         p1.name as player1_name, COALESCE(p2.name, '') as player2_name, 
         p3.name as player3_name, COALESCE(p4.name, '') as player4_name
       FROM matches m
@@ -533,6 +536,7 @@ class TennisDatabasePostgreSQL {
       SELECT m.*, 
         COALESCE(m.match_type, 'duo') as match_type,
         s.name as season_name,
+        COALESCE(s.lose_money_per_loss, 20000) as lose_money_per_loss,
         p1.name as player1_name, COALESCE(p2.name, '') as player2_name, 
         p3.name as player3_name, COALESCE(p4.name, '') as player4_name
       FROM matches m
@@ -549,9 +553,12 @@ class TennisDatabasePostgreSQL {
 
   async getMatchById(matchId) {
     const result = await this.query(`
-      SELECT m.*, 
+      SELECT m.id, m.season_id, TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date,
+        m.player1_id, m.player2_id, m.player3_id, m.player4_id,
+        m.team1_score, m.team2_score, m.winning_team, m.created_at,
         COALESCE(m.match_type, 'duo') as match_type,
         s.name as season_name,
+        COALESCE(s.lose_money_per_loss, 20000) as lose_money_per_loss,
         p1.name as player1_name, COALESCE(p2.name, '') as player2_name, 
         p3.name as player3_name, COALESCE(p4.name, '') as player4_name
       FROM matches m

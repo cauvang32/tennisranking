@@ -3329,6 +3329,20 @@ class TennisRankingSystem {
   }
 
   // ========== Toast Notifications ==========
+  // Escape HTML special characters in user-supplied/content strings
+  escapeHtml(str) {
+    return str.replace(/[&<>"'`]/g, function (c) {
+      return ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+        '`': '&#96;',
+      })[c];
+    });
+  }
+
   showToast(message, type = 'success') {
     const container = document.getElementById('toastContainer')
     if (!container) return
@@ -3336,7 +3350,7 @@ class TennisRankingSystem {
     const toast = document.createElement('div')
     toast.className = `toast ${type}`
     toast.innerHTML = `
-      <span class="toast-message">${message}</span>
+      <span class="toast-message">${this.escapeHtml(message)}</span>
       <button class="toast-close">&times;</button>
     `
     

@@ -2573,7 +2573,7 @@ app.post('/api/restore',
             usersRestored++
             console.log(`✅ Restored user: ${user.username}`)
           } catch (userError) {
-            console.error(`Error restoring user ${user.username}:`, userError.message)
+            console.error('Error restoring user %s:', user.username, userError.message)
             usersSkipped++
           }
         }

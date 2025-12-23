@@ -439,6 +439,9 @@ if (process.env.TRUST_PROXY === 'true' || process.env.BEHIND_PROXY === 'true' ||
   console.log('🔧 Trust proxy disabled - development mode')
 }
 
+// Disable X-Powered-By header to prevent server technology disclosure
+app.disable('x-powered-by')
+
 // Middleware
 app.use(helmet({
   contentSecurityPolicy: {

@@ -200,6 +200,7 @@ tests:
     - job: setup-dependencies
   script:
     - echo "🧪 Running tests..."
+    - npm ci --prefer-offline --cache "$NPM_CACHE_DIR"
     # Run tests if they exist
     - npm test || echo "⚠️ No tests configured or tests failed"
   allow_failure: true
@@ -213,6 +214,7 @@ build-check:
     - job: setup-dependencies
   script:
     - echo "🔨 Verifying build..."
+    - npm ci --prefer-offline --cache "$NPM_CACHE_DIR"
     - npm run build
     - echo "✅ Build successful"
   artifacts:

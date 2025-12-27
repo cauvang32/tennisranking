@@ -285,6 +285,7 @@ rollback:
     - ubuntu-latest-shell
   rules:
     - when: manual
+      allow_failure: true
   allow_failure:
     exit_codes:
       - 99

@@ -234,6 +234,7 @@ deploy:
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: manual
+      allow_failure: true
   needs:
     - job: build-check
   
@@ -284,6 +285,9 @@ rollback:
     - ubuntu-latest-shell
   rules:
     - when: manual
+  allow_failure:
+    exit_codes:
+      - 99
   
   script:
     - cd "$DEPLOY_PATH"
@@ -297,7 +301,8 @@ rollback:
     - pm2 delete tennis || true
     - pm2 start server.js --name tennis --env production
     - pm2 save
-    - echo "✅ Rollback completed"
+    - echo "⚠️ Rollback completed - Pipeline marked as warning"
+    - exit 99
 
   environment:
     name: production

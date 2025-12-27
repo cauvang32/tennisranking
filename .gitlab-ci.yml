@@ -247,7 +247,9 @@ deploy:
   script:
     - cd "$DEPLOY_PATH"
     - echo "📂 Changed to deployment directory - $DEPLOY_PATH"
-    - echo "🔄 Setting git origin and pulling latest changes..."
+    - echo "� Configuring git safe directory..."
+    - git config --global --add safe.directory "$DEPLOY_PATH"
+    - echo "�🔄 Setting git origin and pulling latest changes..."
     - git remote set-url origin "$GIT_ORIGIN" || git remote add origin "$GIT_ORIGIN"
     - git fetch origin
     - git reset --hard origin/$CI_DEFAULT_BRANCH
@@ -286,6 +288,8 @@ rollback:
   script:
     - cd "$DEPLOY_PATH"
     - echo "⏪ Rolling back to previous commit..."
+    - echo "🔧 Configuring git safe directory..."
+    - git config --global --add safe.directory "$DEPLOY_PATH"
     - git reset --hard HEAD~1
     - pm2 stop tennis || true
     - npm install --production=false

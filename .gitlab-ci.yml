@@ -7,8 +7,9 @@ stages:
 variables:
   DEPLOY_PATH: /home/vps/tennisranking
   GIT_ORIGIN: https://git.quocanh.me/cauvang32/tennisranking
-  NODE_ENV: production
   NPM_CACHE_DIR: "$CI_PROJECT_DIR/.cache/npm"
+  # Note: NODE_ENV=production is set only at deploy time, not globally
+  # This ensures devDependencies (like vite) are installed during build
 
 # =========================
 # 🐳 DOCKER RUNNER (for security scans & tests)
@@ -200,7 +201,7 @@ tests:
     - job: setup-dependencies
   script:
     - echo "🧪 Running tests..."
-    - npm ci --prefer-offline --cache "$NPM_CACHE_DIR"
+    - npm ci --prefer-offline --cache "$NPM_CACHE_DIR" --include=dev
     # Run tests if they exist
     - npm test || echo "⚠️ No tests configured or tests failed"
   allow_failure: true
@@ -214,7 +215,7 @@ build-check:
     - job: setup-dependencies
   script:
     - echo "🔨 Verifying build..."
-    - npm ci --prefer-offline --cache "$NPM_CACHE_DIR"
+    - npm ci --prefer-offline --cache "$NPM_CACHE_DIR" --include=dev
     - npm run build
     - echo "✅ Build successful"
   artifacts:

@@ -243,7 +243,7 @@ deploy:
     - echo "🚀 Starting deployment to production..."
     - node --version || echo "Node.js not in PATH, using system version"
     - npm --version || echo "npm not in PATH, using system version"
-    - sudo -u vps pm2 --version || echo "PM2 not found, will install if needed"
+    - pm2 --version || echo "PM2 not found, will install if needed"
 
   script:
     - cd "$DEPLOY_PATH"
@@ -256,17 +256,17 @@ deploy:
     - git reset --hard origin/$CI_DEFAULT_BRANCH
     - echo "✅ Git pull completed"
     - echo "⏹️ Stopping PM2 process..."
-    - sudo -u vps pm2 stop tennis || echo "Process tennis was not running"
+    - pm2 stop tennis || echo "Process tennis was not running"
     - echo "📦 Installing dependencies..."
     - npm install --production=false
     - echo "🔨 Building application..."
     - npm run build
     - echo "▶️ Starting PM2 process..."
-    - sudo -u vps pm2 delete tennis || true
-    - sudo -u vps pm2 start server.js --name tennis --env production
-    - sudo -u vps pm2 save
+    - pm2 delete tennis || true
+    - pm2 start server.js --name tennis --env production
+    - pm2 save
     - echo "📊 PM2 Status:"
-    - sudo -u vps pm2 status
+    - pm2 status
     - echo "✅ Deployment completed successfully!"
 
   after_script:
@@ -295,12 +295,12 @@ rollback:
     - echo "🔧 Configuring git safe directory..."
     - git config --global --add safe.directory "$DEPLOY_PATH"
     - git reset --hard HEAD~1
-    - sudo -u vps pm2 stop tennis || true
+    - pm2 stop tennis || true
     - npm install --production=false
     - npm run build
-    - sudo -u vps pm2 delete tennis || true
-    - sudo -u vps pm2 start server.js --name tennis --env production
-    - sudo -u vps pm2 save
+    - pm2 delete tennis || true
+    - pm2 start server.js --name tennis --env production
+    - pm2 save
     - echo "⚠️ Rollback completed - Pipeline marked as warning"
     - exit 99
 

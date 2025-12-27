@@ -146,6 +146,49 @@ outdated-check:
     when: always
   allow_failure: true
 
+# Vulnerability Scanning with Snyk
+vulnerability-scan:
+  stage: security
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - job: setup-dependencies
+  before_script:
+    - apt-get update && apt-get install -y curl
+    - npm install -g snyk || true
+  script:
+    - echo "🛡️ Running vulnerability scan..."
+    - snyk test --json > snyk-report.json || true
+    - snyk test --severity-threshold=high || true
+    - echo "📊 Scanning for known vulnerabilities in dependencies..."
+    - npx better-npm-audit audit --level moderate || true
+  artifacts:
+    paths:
+      - snyk-report.json
+    expire_in: 30 days
+    when: always
+  allow_failure: true
+
+# OWASP Dependency Check
+dependency-vulnerability-check:
+  stage: security
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - job: setup-dependencies
+  script:
+    - echo "🔐 Running OWASP dependency vulnerability check..."
+    - npm install --save-dev audit-ci || true
+    - npx audit-ci --moderate --report-type full || true
+    - npm install --save-dev npm-check || true
+    - npx npm-check || true
+  artifacts:
+    paths:
+      - npm-audit-*.json
+    expire_in: 30 days
+    when: always
+  allow_failure: true
+
 # =========================
 # 🧪 TEST STAGE
 # =========================
@@ -199,36 +242,23 @@ deploy:
     - pm2 --version || echo "PM2 not found, will install if needed"
 
   script:
-    # Navigate to deployment directory
     - cd "$DEPLOY_PATH"
-    - echo "📂 Changed to deployment directory: $DEPLOY_PATH"
-    
-    # Set git origin and pull latest changes
+    - echo "📂 Changed to deployment directory - $DEPLOY_PATH"
     - echo "🔄 Setting git origin and pulling latest changes..."
     - git remote set-url origin "$GIT_ORIGIN" || git remote add origin "$GIT_ORIGIN"
     - git fetch origin
     - git reset --hard origin/$CI_DEFAULT_BRANCH
     - echo "✅ Git pull completed"
-    
-    # Stop PM2 process
     - echo "⏹️ Stopping PM2 process..."
-    - pm2 stop tennis || echo "⚠️ Process 'tennis' was not running"
-    
-    # Install dependencies
+    - pm2 stop tennis || echo "Process tennis was not running"
     - echo "📦 Installing dependencies..."
     - npm install --production=false
-    
-    # Build the application
     - echo "🔨 Building application..."
     - npm run build
-    
-    # Start PM2 process
     - echo "▶️ Starting PM2 process..."
     - pm2 delete tennis || true
     - pm2 start server.js --name tennis --env production
     - pm2 save
-    
-    # Show status
     - echo "📊 PM2 Status:"
     - pm2 status
     - echo "✅ Deployment completed successfully!"

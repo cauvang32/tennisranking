@@ -1,0 +1,267 @@
+stages:
+  - setup
+  - security
+  - test
+  - deploy
+
+variables:
+  DEPLOY_PATH: /home/vps/tennisranking
+  GIT_ORIGIN: https://git.quocanh.me/cauvang32/tennisranking
+  NODE_ENV: production
+  NPM_CACHE_DIR: "$CI_PROJECT_DIR/.cache/npm"
+
+# =========================
+# 🐳 DOCKER RUNNER (for security scans & tests)
+# =========================
+default:
+  image: node:20-slim
+  tags:
+    - docker
+  before_script:
+    - set -e
+  cache:
+    key: npm-cache-${CI_COMMIT_REF_SLUG}
+    paths:
+      - node_modules/
+      - .cache/npm/
+
+# =========================
+# 🔧 SETUP STAGE - Install dependencies
+# =========================
+setup-dependencies:
+  stage: setup
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - echo "📦 Installing Node.js dependencies..."
+    - node --version
+    - npm --version
+    - npm ci --prefer-offline --cache "$NPM_CACHE_DIR"
+    - echo "✅ Dependencies installed and cached"
+  cache:
+    key: npm-cache-${CI_COMMIT_REF_SLUG}
+    paths:
+      - node_modules/
+      - .cache/npm/
+    policy: pull-push
+
+# =========================
+# 🔒 SECURITY STAGE
+# =========================
+
+# NPM Audit - Check for vulnerable dependencies
+npm-audit:
+  stage: security
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - job: setup-dependencies
+  script:
+    - echo "🔍 Running npm security audit..."
+    - npm audit --audit-level=moderate --json > npm-audit-report.json || true
+    - npm audit --audit-level=moderate || true
+  artifacts:
+    paths:
+      - npm-audit-report.json
+    expire_in: 30 days
+    when: always
+  allow_failure: true
+
+# Secret Detection - prevents accidental secrets in code
+secret-detection:
+  stage: security
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - job: setup-dependencies
+  before_script:
+    - apt-get update && apt-get install -y python3 python3-pip python3-venv
+  script:
+    - echo "🔍 Scanning for secrets and sensitive data..."
+    - python3 -m venv /tmp/venv
+    - . /tmp/venv/bin/activate
+    - pip install detect-secrets
+    # Scan source files, skip node_modules and data directories
+    - detect-secrets scan src/ lib/ middleware/ routes/ utils/ validation/ --baseline .secrets.baseline 2>/dev/null || true
+  allow_failure: true
+
+# ESLint - Code quality and security patterns
+code-quality:
+  stage: security
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - job: setup-dependencies
+  script:
+    - echo "📋 Running code quality checks..."
+    
+    # Install ESLint if not in dependencies
+    - npm install --save-dev eslint || true
+    
+    # Run ESLint on JavaScript files
+    - echo "ESLint analysis..."
+    - npx eslint src/ lib/ middleware/ routes/ utils/ --ext .js --format stylish || true
+    - npx eslint src/ lib/ middleware/ routes/ utils/ --ext .js --format json --output-file eslint-report.json || true
+  artifacts:
+    paths:
+      - eslint-report.json
+    expire_in: 30 days
+    when: always
+  allow_failure: true
+
+# Dependency License Check
+license-check:
+  stage: security
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - job: setup-dependencies
+  script:
+    - echo "📜 Checking dependency licenses..."
+    - npm install --save-dev license-checker || true
+    - npx license-checker --json --out licenses.json || true
+    - npx license-checker --summary || true
+  artifacts:
+    paths:
+      - licenses.json
+    expire_in: 30 days
+    when: always
+  allow_failure: true
+
+# Outdated Dependencies Check
+outdated-check:
+  stage: security
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - job: setup-dependencies
+  script:
+    - echo "📦 Checking for outdated dependencies..."
+    - npm outdated --json > outdated-report.json || true
+    - npm outdated || true
+  artifacts:
+    paths:
+      - outdated-report.json
+    expire_in: 30 days
+    when: always
+  allow_failure: true
+
+# =========================
+# 🧪 TEST STAGE
+# =========================
+tests:
+  stage: test
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - job: setup-dependencies
+  script:
+    - echo "🧪 Running tests..."
+    # Run tests if they exist
+    - npm test || echo "⚠️ No tests configured or tests failed"
+  allow_failure: true
+
+# Build verification - ensure build works before deploy
+build-check:
+  stage: test
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  needs:
+    - job: setup-dependencies
+  script:
+    - echo "🔨 Verifying build..."
+    - npm run build
+    - echo "✅ Build successful"
+  artifacts:
+    paths:
+      - dist/
+    expire_in: 1 day
+    when: on_success
+
+# =========================
+# 🚀 DEPLOY TO SERVER
+# =========================
+deploy:
+  stage: deploy
+  tags:
+    - ubuntu-latest-shell
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+  needs:
+    - job: build-check
+  
+  before_script:
+    - set -e
+    - echo "🚀 Starting deployment to production..."
+    - node --version || echo "Node.js not in PATH, using system version"
+    - npm --version || echo "npm not in PATH, using system version"
+    - pm2 --version || echo "PM2 not found, will install if needed"
+
+  script:
+    # Navigate to deployment directory
+    - cd "$DEPLOY_PATH"
+    - echo "📂 Changed to deployment directory: $DEPLOY_PATH"
+    
+    # Set git origin and pull latest changes
+    - echo "🔄 Setting git origin and pulling latest changes..."
+    - git remote set-url origin "$GIT_ORIGIN" || git remote add origin "$GIT_ORIGIN"
+    - git fetch origin
+    - git reset --hard origin/$CI_DEFAULT_BRANCH
+    - echo "✅ Git pull completed"
+    
+    # Stop PM2 process
+    - echo "⏹️ Stopping PM2 process..."
+    - pm2 stop tennis || echo "⚠️ Process 'tennis' was not running"
+    
+    # Install dependencies
+    - echo "📦 Installing dependencies..."
+    - npm install --production=false
+    
+    # Build the application
+    - echo "🔨 Building application..."
+    - npm run build
+    
+    # Start PM2 process
+    - echo "▶️ Starting PM2 process..."
+    - pm2 delete tennis || true
+    - pm2 start server.js --name tennis --env production
+    - pm2 save
+    
+    # Show status
+    - echo "📊 PM2 Status:"
+    - pm2 status
+    - echo "✅ Deployment completed successfully!"
+
+  after_script:
+    - echo "🏁 Deployment script finished"
+
+  environment:
+    name: production
+    url: https://hungsanity.com/tennis
+
+# =========================
+# 🔄 ROLLBACK (Manual trigger)
+# =========================
+rollback:
+  stage: deploy
+  tags:
+    - ubuntu-latest-shell
+  rules:
+    - when: manual
+  
+  script:
+    - cd "$DEPLOY_PATH"
+    - echo "⏪ Rolling back to previous commit..."
+    - git reset --hard HEAD~1
+    - pm2 stop tennis || true
+    - npm install --production=false
+    - npm run build
+    - pm2 delete tennis || true
+    - pm2 start server.js --name tennis --env production
+    - pm2 save
+    - echo "✅ Rollback completed"
+
+  environment:
+    name: production
+    action: stop

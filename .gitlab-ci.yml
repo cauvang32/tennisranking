@@ -2,6 +2,7 @@ stages:
   - setup
   - security
   - test
+  - build
   - deploy
 
 variables:
@@ -12,7 +13,7 @@ variables:
   # This ensures devDependencies (like vite) are installed during build
 
 # =========================
-# 🐳 DOCKER RUNNER (for security scans & tests)
+# DEFAULT - DOCKER RUNNER
 # =========================
 default:
   image: node:20-slim
@@ -27,40 +28,39 @@ default:
       - .cache/npm/
 
 # =========================
-# 🔧 SETUP STAGE - Install dependencies
+# SETUP
 # =========================
 setup-dependencies:
   stage: setup
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
     - echo "📦 Installing Node.js dependencies..."
     - node --version
     - npm --version
     - npm ci --prefer-offline --cache "$NPM_CACHE_DIR"
-    - echo "✅ Dependencies installed and cached"
   cache:
     key: npm-cache-${CI_COMMIT_REF_SLUG}
     paths:
       - node_modules/
       - .cache/npm/
     policy: pull-push
+  artifacts:
+    paths:
+      - package-lock.json
+    expire_in: 1 hour
 
 # =========================
-# 🔒 SECURITY STAGE
+# SECURITY
 # =========================
-
-# NPM Audit - Check for vulnerable dependencies
 npm-audit:
   stage: security
+  needs: [setup-dependencies]
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  needs:
-    - job: setup-dependencies
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
-    - echo "🔍 Running npm security audit..."
-    - npm audit --audit-level=moderate --json > npm-audit-report.json || true
-    - npm audit --audit-level=moderate || true
+    - echo "🔍 Running npm audit..."
+    - npm audit --json --audit-level=moderate > npm-audit-report.json || true
   artifacts:
     paths:
       - npm-audit-report.json
@@ -68,41 +68,14 @@ npm-audit:
     when: always
   allow_failure: true
 
-# Secret Detection - prevents accidental secrets in code
-secret-detection:
+eslint:
   stage: security
+  needs: [setup-dependencies]
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  needs:
-    - job: setup-dependencies
-  before_script:
-    - apt-get update && apt-get install -y python3 python3-pip python3-venv
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
-    - echo "🔍 Scanning for secrets and sensitive data..."
-    - python3 -m venv /tmp/venv
-    - . /tmp/venv/bin/activate
-    - pip install detect-secrets
-    # Scan source files, skip node_modules and data directories
-    - detect-secrets scan src/ lib/ middleware/ routes/ utils/ validation/ --baseline .secrets.baseline 2>/dev/null || true
-  allow_failure: true
-
-# ESLint - Code quality and security patterns
-code-quality:
-  stage: security
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  needs:
-    - job: setup-dependencies
-  script:
-    - echo "📋 Running code quality checks..."
-    
-    # Install ESLint if not in dependencies
-    - npm install --save-dev eslint || true
-    
-    # Run ESLint on JavaScript files
-    - echo "ESLint analysis..."
-    - npx eslint src/ lib/ middleware/ routes/ utils/ --ext .js --format stylish || true
-    - npx eslint src/ lib/ middleware/ routes/ utils/ --ext .js --format json --output-file eslint-report.json || true
+    - echo "📋 Running ESLint..."
+    - npx eslint src/ lib/ middleware/ routes/ utils/ --ext .js,.ts --format json --output-file eslint-report.json || true
   artifacts:
     paths:
       - eslint-report.json
@@ -110,59 +83,63 @@ code-quality:
     when: always
   allow_failure: true
 
-# Dependency License Check
-license-check:
+semgrep:
+  image: returntocorp/semgrep:latest
   stage: security
+  needs: [setup-dependencies]
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  needs:
-    - job: setup-dependencies
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
-    - echo "📜 Checking dependency licenses..."
-    - npm install --save-dev license-checker || true
-    - npx license-checker --json --out licenses.json || true
-    - npx license-checker --summary || true
+    - echo "🔎 Running Semgrep..."
+    - semgrep --config=p/security-audit --json --output semgrep-report.json || true
   artifacts:
     paths:
-      - licenses.json
+      - semgrep-report.json
     expire_in: 30 days
     when: always
   allow_failure: true
 
-# Outdated Dependencies Check
-outdated-check:
+detect-secrets:
+  image: python:3.11-slim
   stage: security
+  needs: [setup-dependencies]
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  needs:
-    - job: setup-dependencies
-  script:
-    - echo "📦 Checking for outdated dependencies..."
-    - npm outdated --json > outdated-report.json || true
-    - npm outdated || true
-  artifacts:
-    paths:
-      - outdated-report.json
-    expire_in: 30 days
-    when: always
-  allow_failure: true
-
-# Vulnerability Scanning with Snyk
-vulnerability-scan:
-  stage: security
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  needs:
-    - job: setup-dependencies
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   before_script:
-    - apt-get update && apt-get install -y curl
-    - npm install -g snyk || true
+    - apt-get update && apt-get install -y python3-pip git
+    - pip install detect-secrets
   script:
-    - echo "🛡️ Running vulnerability scan..."
-    - snyk test --json > snyk-report.json || true
-    - snyk test --severity-threshold=high || true
-    - echo "📊 Scanning for known vulnerabilities in dependencies..."
-    - npx better-npm-audit audit --level moderate || true
+    - echo "🔐 Running detect-secrets..."
+    - if [ -f .secrets.baseline ]; then detect-secrets audit .secrets.baseline || true; else detect-secrets scan --all-files > detect-secrets-scan.json || true; fi
+  artifacts:
+    paths:
+      - detect-secrets-scan.json
+      - .secrets.baseline
+    expire_in: 30 days
+    when: always
+  allow_failure: true
+
+snyk:
+  stage: security
+  image: node:20-slim
+  needs: [setup-dependencies]
+  rules:
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+  before_script:
+    - npm install -g snyk || true
+  script: |
+    echo "🔎 Snyk job starting..."
+    # Debug (safe): print token length to check presence in CI
+    echo "SNYK_TOKEN length: ${#SNYK_TOKEN}"
+    if [ -z "$SNYK_TOKEN" ]; then
+      echo "⚠️ SNYK_TOKEN not set — skipping snyk scan"
+      # create empty report so artifact upload doesn't fail
+      echo '{}' > snyk-report.json
+      exit 0
+    fi
+    # Export (optional) - snyk CLI picks up SNYK_TOKEN env var automatically
+    export SNYK_TOKEN
+    snyk test --json > snyk-report.json || true
   artifacts:
     paths:
       - snyk-report.json
@@ -170,54 +147,32 @@ vulnerability-scan:
     when: always
   allow_failure: true
 
-# OWASP Dependency Check
-dependency-vulnerability-check:
-  stage: security
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  needs:
-    - job: setup-dependencies
-  script:
-    - echo "🔐 Running OWASP dependency vulnerability check..."
-    - npm install --save-dev audit-ci || true
-    - npx audit-ci --moderate --report-type full || true
-    - npm install --save-dev npm-check || true
-    - npx npm-check || true
-  artifacts:
-    paths:
-      - npm-audit-*.json
-    expire_in: 30 days
-    when: always
-  allow_failure: true
+
 
 # =========================
-# 🧪 TEST STAGE
+# TEST & BUILD
 # =========================
 tests:
   stage: test
+  needs: [setup-dependencies]
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  needs:
-    - job: setup-dependencies
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
     - echo "🧪 Running tests..."
-    - npm ci --prefer-offline --cache "$NPM_CACHE_DIR" --include=dev
-    # Run tests if they exist
-    - npm test || echo "⚠️ No tests configured or tests failed"
+    - npm test || echo "⚠️ Tests failed or not configured"
   allow_failure: true
 
-# Build verification - ensure build works before deploy
-build-check:
-  stage: test
+build:
+  stage: build
+  needs: [setup-dependencies]
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  needs:
-    - job: setup-dependencies
+    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
-    - echo "🔨 Verifying build..."
+    - echo "🔨 Building app..."
+    - node --version
+    - npm --version
     - npm ci --prefer-offline --cache "$NPM_CACHE_DIR" --include=dev
     - npm run build
-    - echo "✅ Build successful"
   artifacts:
     paths:
       - dist/
@@ -236,7 +191,7 @@ deploy:
       when: manual
       allow_failure: true
   needs:
-    - job: build-check
+    - job: build
   
   before_script:
     - set -e

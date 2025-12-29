@@ -130,30 +130,31 @@ snyk:
     - npm install -g snyk
 
   script:
-    - echo "🔎 Running Snyk scan (pruned, non-blocking)..."
+    - echo "🔎 Running Snyk monitor (CI-safe mode)..."
 
-    # skip safely if token missing
+    # skip cleanly if token missing
     - |
       if [ -z "$SNYK_TOKEN" ]; then
         echo "⚠️ SNYK_TOKEN not set — skipping snyk"
-        echo '{}' > snyk-report.json
         exit 0
       fi
 
-    # run snyk, DO NOT fail pipeline
-    - snyk test \
+    # upload snapshot only (no blocking, no timeout)
+    - snyk monitor \
         --prune-repeated-subdependencies \
-        --json > snyk-report.json || true
+        --project-name=tennisranking \
+        --json > snyk-monitor.json || true
 
-    - echo "✅ Snyk scan completed"
+    - echo "✅ Snyk monitor uploaded"
 
   artifacts:
     when: always
     paths:
-      - snyk-report.json
+      - snyk-monitor.json
     expire_in: 30 days
 
   allow_failure: true
+
 
 
 

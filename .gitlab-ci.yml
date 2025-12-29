@@ -145,7 +145,7 @@ snyk:
     fi
 
     # verbose logging for debug (remove when stable)
-    export SNYK_LOG_LEVEL=trace
+    #export SNYK_LOG_LEVEL=trace
     # prefer IPv4 (helps if IPv6 routing is flaky)
     export NODE_OPTIONS="--dns-result-order=ipv4first"
 

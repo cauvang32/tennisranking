@@ -125,51 +125,36 @@ snyk:
   needs: [setup-dependencies]
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
+
   before_script:
-    - npm install -g snyk@latest || true
-  script: |
-    echo "🔎 Snyk job starting..."
-    echo "SNYK_TOKEN length: ${#SNYK_TOKEN}"
+    - npm install -g snyk
 
-    # basic network tools for debugging inside the CI container
-    apt-get update -y && apt-get install -y curl dnsutils || true
-    echo "-> curl (ipv4):"; curl -4 -I -m 10 https://api.snyk.io || true
-    echo "-> curl (ipv6):"; curl -6 -I -m 10 https://api.snyk.io || true
-    nslookup api.snyk.io || true
+  script:
+    - echo "🔎 Running Snyk scan (pruned, non-blocking)..."
 
-    # if no token, skip safely and produce an artifact so upload won't fail
-    if [ -z "$SNYK_TOKEN" ]; then
-      echo "⚠️ SNYK_TOKEN not set — skipping snyk scan"
-      echo '{}' > snyk-report.json
-      exit 0
-    fi
+    # skip safely if token missing
+    - |
+      if [ -z "$SNYK_TOKEN" ]; then
+        echo "⚠️ SNYK_TOKEN not set — skipping snyk"
+        echo '{}' > snyk-report.json
+        exit 0
+      fi
 
-    # verbose logging for debug (remove when stable)
-    export SNYK_LOG_LEVEL=trace
-    # prefer IPv4 (helps if IPv6 routing is flaky)
-    export NODE_OPTIONS="--dns-result-order=ipv4first"
+    # run snyk, DO NOT fail pipeline
+    - snyk test \
+        --prune-repeated-subdependencies \
+        --json > snyk-report.json || true
 
-    # try snyk test with pruning + retries (prune reduces payload size)
-    for i in 1 2 3; do
-      echo "snyk attempt #$i ..."
-      snyk test --prune-repeated-subdependencies -d --json > snyk-report.json && break || true
-      echo "snyk attempt #$i failed, retrying in 5s..."
-      sleep 5
-    done
+    - echo "✅ Snyk scan completed"
 
-    # fallback: if test still failed, try monitor (sometimes smaller/safer) and keep a valid artifact
-    if [ ! -s snyk-report.json ]; then
-      echo "⚠️ snyk test failed repeatedly — attempting snyk monitor (prune) as fallback"
-      snyk monitor --prune-repeated-subdependencies --json > snyk-monitor.json || true
-      echo '{}' > snyk-report.json
-    fi
   artifacts:
+    when: always
     paths:
       - snyk-report.json
-      - snyk-monitor.json
     expire_in: 30 days
-    when: always
+
   allow_failure: true
+
 
 
 

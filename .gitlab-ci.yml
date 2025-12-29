@@ -119,41 +119,25 @@ detect-secrets:
     when: always
   allow_failure: true
 
-snyk:
+snyk-monitor:
   stage: security
   image: node:20-slim
-  needs: [setup-dependencies]
-  rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-
   before_script:
     - npm install -g snyk
-
   script:
-    - echo "🔎 Running Snyk monitor (CI-safe mode)..."
-
-    # skip cleanly if token missing
     - |
       if [ -z "$SNYK_TOKEN" ]; then
-        echo "⚠️ SNYK_TOKEN not set — skipping snyk"
+        echo "SNYK_TOKEN missing — skipping monitor"
         exit 0
       fi
-
-    # upload snapshot only (no blocking, no timeout)
-    - snyk monitor \
-        --prune-repeated-subdependencies \
-        --project-name=tennisranking \
-        --json > snyk-monitor.json || true
-
-    - echo "✅ Snyk monitor uploaded"
-
+      # run monitor: options BEFORE optional path; redirect JSON output
+      snyk monitor --prune-repeated-subdependencies --project-name=tennisranking --json > snyk-monitor.json || true
   artifacts:
     when: always
     paths:
       - snyk-monitor.json
-    expire_in: 30 days
-
   allow_failure: true
+
 
 
 

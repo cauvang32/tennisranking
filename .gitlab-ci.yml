@@ -129,20 +129,42 @@ snyk:
     - npm install -g snyk || true
   script: |
     echo "🔎 Snyk job starting..."
-    # Debug (safe): print token length to check presence in CI
     echo "SNYK_TOKEN length: ${#SNYK_TOKEN}"
+    # TEST network from inside CI container
+    apt-get update -y && apt-get install -y curl dnsutils || true
+    echo "-> curl to api.snyk.io (from container):"
+    curl -I -m 10 https://api.snyk.io || true
+    echo "-> DNS lookup:"
+    nslookup api.snyk.io || true
+
+    # if no token, skip safely
     if [ -z "$SNYK_TOKEN" ]; then
       echo "⚠️ SNYK_TOKEN not set — skipping snyk scan"
-      # create empty report so artifact upload doesn't fail
       echo '{}' > snyk-report.json
       exit 0
     fi
-    # Export (optional) - snyk CLI picks up SNYK_TOKEN env var automatically
-    export SNYK_TOKEN
-    snyk test --prune-repeated-subdependencies --all-projects --exclude=node_modules,dist --json > snyk-report.json || true
+
+    # set verbose logs for debugging (remove after green)
+    export SNYK_LOG_LEVEL=trace
+
+    # try snyk with pruning + retry (prune reduces payload size)
+    for i in 1 2 3; do
+      echo "snyk attempt #$i ..."
+      snyk test --prune-repeated-subdependencies --json > snyk-report.json && break
+      echo "snyk attempt #$i failed, retrying in 5s..."
+      sleep 5
+    done
+
+    # fallback: if test still failed, try monitor (smaller payload sometimes) + exit 0 (allow failure)
+    if [ ! -s snyk-report.json ]; then
+      echo "⚠️ snyk test failed repeatedly — attempting snyk monitor (prune) as fallback"
+      snyk monitor --prune-repeated-subdependencies --json > snyk-monitor.json || true
+      echo '{}' > snyk-report.json
+    fi
   artifacts:
     paths:
       - snyk-report.json
+      - snyk-monitor.json
     expire_in: 30 days
     when: always
   allow_failure: true

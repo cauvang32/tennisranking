@@ -139,7 +139,7 @@ snyk:
     fi
     # Export (optional) - snyk CLI picks up SNYK_TOKEN env var automatically
     export SNYK_TOKEN
-    snyk test --all-projects --exclude=node_modules,dist --json > snyk-report.json || true
+    snyk test --prune-repeated-subdependencies --all-projects --exclude=node_modules,dist --json > snyk-report.json || true
   artifacts:
     paths:
       - snyk-report.json

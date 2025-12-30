@@ -252,6 +252,7 @@ deploy:
   environment:
     name: production
     url: https://hungsanity.com/tennis
+    on_stop: stop-production
 
 # =========================
 # 🔄 ROLLBACK (Manual trigger)
@@ -282,6 +283,22 @@ rollback:
     - echo "⚠️ Rollback completed - Pipeline marked as warning"
     - exit 99
 
+  environment:
+    name: production
+    action: stop
+
+stop-production:
+  stage: deploy
+  tags:
+    - ubuntu-latest-shell
+  rules:
+    - when: manual
+  script:
+    - echo "⏹️ Stopping production environment..."
+    - cd "$DEPLOY_PATH" || true
+    - pm2 stop tennis || true
+    - pm2 delete tennis || true
+    - pm2 save || true
   environment:
     name: production
     action: stop

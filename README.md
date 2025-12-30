@@ -1,3 +1,6 @@
+# Repo moved to https://git.quocanh.me/cauvang32/tennisranking
+
+
 # Tennis Doubles Ranking System
 
 A web-based tennis doubles ranking system built with vanilla JavaScript and Vite. This application allows you to manage players, record matches, track rankings, and export data to Excel.

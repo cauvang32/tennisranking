@@ -1,3 +1,15 @@
+include:
+  - template: Jobs/SAST.gitlab-ci.yml
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+  - template: Jobs/Dependency-Scanning.gitlab-ci.yml
+
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push"
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - when: never
+  
 stages:
   - setup
   - security
@@ -11,6 +23,7 @@ variables:
   NPM_CACHE_DIR: "$CI_PROJECT_DIR/.cache/npm"
   # Note: NODE_ENV=production is set only at deploy time, not globally
   # This ensures devDependencies (like vite) are installed during build
+  SAST_STAGE: "security"
 
 # =========================
 # DEFAULT - DOCKER RUNNER
@@ -32,8 +45,6 @@ default:
 # =========================
 setup-dependencies:
   stage: setup
-  rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
     - echo "📦 Installing Node.js dependencies..."
     - node --version
@@ -50,8 +61,14 @@ setup-dependencies:
       - package-lock.json
     expire_in: 1 hour
 
+# NOTE:
+# ----
+# Các job security (SAST, secret_detection, dependency_scanning) được chèn tự động
+# từ 3 template include ở trên. Bạn KHÔNG CẦN định nghĩa lại semgrep/eslint/npm-audit/snyk.
+# Nếu muốn override một job template, định nghĩa job cùng tên sau include.
+
 # =========================
-# SECURITY
+# TEST & BUILD
 # =========================
 npm-audit:
   stage: security
@@ -83,102 +100,9 @@ eslint:
     when: always
   allow_failure: true
 
-semgrep:
-  image: returntocorp/semgrep:latest
-  stage: security
-  needs: [setup-dependencies]
-  rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-  script:
-    - echo "🔎 Running Semgrep..."
-    - semgrep --config=p/security-audit --json --output semgrep-report.json || true
-  artifacts:
-    paths:
-      - semgrep-report.json
-    expire_in: 30 days
-    when: always
-  allow_failure: true
-
-detect-secrets:
-  image: python:3.11-slim
-  stage: security
-  needs: [setup-dependencies]
-  rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-  before_script:
-    - apt-get update && apt-get install -y python3-pip git
-    - pip install detect-secrets
-  script:
-    - echo "🔐 Running detect-secrets..."
-    - if [ -f .secrets.baseline ]; then detect-secrets audit .secrets.baseline || true; else detect-secrets scan --all-files > detect-secrets-scan.json || true; fi
-  artifacts:
-    paths:
-      - detect-secrets-scan.json
-      - .secrets.baseline
-    expire_in: 30 days
-    when: always
-  allow_failure: true
-
-snyk:
-  stage: security
-  image: node:20-slim
-  needs: [setup-dependencies]
-  rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
-  before_script:
-    - npm install -g snyk@latest || true
-  script: |
-    echo "🔎 Snyk job starting..."
-    echo "SNYK_TOKEN length: ${#SNYK_TOKEN}"
-
-    # basic network tools for debugging inside the CI container
-    apt-get update -y && apt-get install -y curl dnsutils || true
-    echo "-> curl (ipv4):"; curl -4 -I -m 10 https://api.snyk.io || true
-    echo "-> curl (ipv6):"; curl -6 -I -m 10 https://api.snyk.io || true
-    nslookup api.snyk.io || true
-
-    # if no token, skip safely and produce an artifact so upload won't fail
-    if [ -z "$SNYK_TOKEN" ]; then
-      echo "⚠️ SNYK_TOKEN not set — skipping snyk scan"
-      echo '{}' > snyk-report.json
-      exit 0
-    fi
-
-    # verbose logging for debug (remove when stable)
-    #export SNYK_LOG_LEVEL=trace
-    # prefer IPv4 (helps if IPv6 routing is flaky)
-    export NODE_OPTIONS="--dns-result-order=ipv4first"
-
-    # try snyk test with pruning + retries (prune reduces payload size)
-    for i in 1 2 3; do
-      echo "snyk attempt #$i ..."
-      snyk test --prune-repeated-subdependencies -d --json > snyk-report.json && break || true
-      echo "snyk attempt #$i failed, retrying in 5s..."
-      sleep 5
-    done
-
-    # fallback: if test still failed, try monitor (sometimes smaller/safer) and keep a valid artifact
-    if [ ! -s snyk-report.json ]; then
-      echo "⚠️ snyk test failed repeatedly — attempting snyk monitor (prune) as fallback"
-      snyk monitor --prune-repeated-subdependencies --json > snyk-monitor.json || true
-      echo '{}' > snyk-report.json
-    fi
-  artifacts:
-    paths:
-      - snyk-report.json
-      - snyk-monitor.json
-    expire_in: 30 days
-    when: always
-  allow_failure: true
-
-# =========================
-# TEST & BUILD
-# =========================
 tests:
   stage: test
   needs: [setup-dependencies]
-  rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
     - echo "🧪 Running tests..."
     - npm test || echo "⚠️ Tests failed or not configured"
@@ -187,8 +111,6 @@ tests:
 build:
   stage: build
   needs: [setup-dependencies]
-  rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
     - echo "🔨 Building app..."
     - node --version
@@ -202,57 +124,50 @@ build:
     when: on_success
 
 # =========================
-# 🚀 DEPLOY TO SERVER
+# 🚀 DEPLOY TO SERVER (giữ nguyên)
 # =========================
 deploy:
   stage: deploy
   tags:
     - ubuntu-latest-shell
   rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
       when: manual
-      allow_failure: true
   needs:
     - job: build
-  
   before_script:
     - set -e
     - echo "🚀 Starting deployment to production..."
-    - node --version || echo "Node.js not in PATH, using system version"
-    - npm --version || echo "npm not in PATH, using system version"
-    - pm2 --version || echo "PM2 not found, will install if needed"
-
   script:
     - cd "$DEPLOY_PATH"
-    - echo "📂 Changed to deployment directory - $DEPLOY_PATH"
-    - echo "� Configuring git safe directory..."
     - git config --global --add safe.directory "$DEPLOY_PATH"
-    - echo "�🔄 Setting git origin and pulling latest changes..."
     - git remote set-url origin "$GIT_ORIGIN" || git remote add origin "$GIT_ORIGIN"
     - git fetch origin
     - git reset --hard origin/$CI_DEFAULT_BRANCH
-    - echo "✅ Git pull completed"
-    - echo "⏹️ Stopping PM2 process..."
-    - pm2 stop tennis || echo "Process tennis was not running"
-    - echo "📦 Installing dependencies..."
+    - pm2 stop tennis || true
     - npm install --production=false
-    - echo "🔨 Building application..."
     - npm run build
-    - echo "▶️ Starting PM2 process..."
     - pm2 delete tennis || true
     - pm2 start server.js --name tennis --env production
     - pm2 save
-    - echo "📊 PM2 Status:"
-    - pm2 status
-    - echo "✅ Deployment completed successfully!"
-
-  after_script:
-    - echo "🏁 Deployment script finished"
-
   environment:
     name: production
     url: https://hungsanity.com/tennis
     on_stop: stop-production
+
+stop-production:
+  stage: deploy
+  tags:
+    - ubuntu-latest-shell
+  rules:
+    - when: manual
+  script:
+    - cd "$DEPLOY_PATH" || true
+    - pm2 stop tennis || true
+    - pm2 delete tennis || true
+  environment:
+    name: production
+    action: stop
 
 # =========================
 # 🔄 ROLLBACK (Manual trigger)
@@ -285,20 +200,3 @@ rollback:
 
   environment:
     name: production
-    action: stop
-
-stop-production:
-  stage: deploy
-  tags:
-    - ubuntu-latest-shell
-  rules:
-    - when: manual
-  script:
-    - echo "⏹️ Stopping production environment..."
-    - cd "$DEPLOY_PATH" || true
-    - pm2 stop tennis || true
-    - pm2 delete tennis || true
-    - pm2 save || true
-  environment:
-    name: production
-    action: stop

@@ -1,6 +1,6 @@
 import winston from 'winston'
 import { createStream } from 'rotating-file-stream'
-import geoip from 'geoip-lite'
+import geoip from 'geoip-country'
 import { UAParser } from 'ua-parser-js'
 import fs from 'fs'
 import path from 'path'
@@ -122,10 +122,9 @@ export function createAccessLogEntry(req, res, responseTime, user = null) {
       if (geo) {
         geoInfo = {
           country: geo.country,
-          region: geo.region,
-          city: geo.city,
-          timezone: geo.timezone,
-          ll: geo.ll // latitude, longitude
+          countryName: geo.name,
+          continent: geo.continent,
+          continentName: geo.continent_name
         }
       }
     }
@@ -335,7 +334,7 @@ export function logAccess(req, res, responseTime, user = null) {
   // Also log to console in development mode with simplified format
   if (process.env.NODE_ENV === 'development') {
     const userInfo = user ? `${user.username}(${user.role})` : 'anonymous'
-    const geoInfo = logEntry.geo ? `${logEntry.geo.country}/${logEntry.geo.city}` : 'local'
+    const geoInfo = logEntry.geo ? `${logEntry.geo.country} (${logEntry.geo.countryName})` : 'local'
     const ipInfo = logEntry.clientIPFormatted || logEntry.clientIP
     console.log(`🌐 ${logEntry.method} ${logEntry.path} | ${ipInfo} (${geoInfo}) | ${userInfo} | ${logEntry.statusCode} | ${responseTime}ms`)
     

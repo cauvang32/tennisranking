@@ -2,11 +2,38 @@ import pg from 'pg'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs/promises'
+import { readFileSync } from 'fs'
 
 const { Pool } = pg
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
+
+// Build SSL configuration synchronously (required for constructor)
+function buildSSLConfig() {
+  if (process.env.DB_SSL !== 'true') {
+    return false
+  }
+
+  const rejectUnauthorized = process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false'
+  const sslConfig = { rejectUnauthorized }
+
+  // Support custom CA certificate for self-signed certs
+  if (process.env.DB_SSL_CA) {
+    try {
+      sslConfig.ca = readFileSync(process.env.DB_SSL_CA, 'utf8')
+    } catch (err) {
+      console.warn('⚠️ Could not load DB_SSL_CA certificate:', err.message)
+    }
+  }
+
+  // Security warning for disabled certificate validation
+  if (!rejectUnauthorized) {
+    console.warn('⚠️ WARNING: DB SSL certificate validation is DISABLED. Only use for local development!')
+  }
+
+  return sslConfig
+}
 
 class TennisDatabasePostgreSQL {
   constructor() {
@@ -16,7 +43,7 @@ class TennisDatabasePostgreSQL {
       database: process.env.DB_NAME,
       user: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
-      ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+      ssl: buildSSLConfig(),
       max: 20, // Maximum pool size
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,

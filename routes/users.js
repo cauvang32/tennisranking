@@ -12,7 +12,8 @@ export const createAuthRouter = ({
   createLimiter
 }) => {
   const router = Router()
-  const SALT_ROUNDS = 12
+  // 2026 security standard: 14 rounds for bcrypt (configurable via env)
+  const SALT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS) || 14
 
   // Get all users (admin only)
   router.get(

@@ -21,7 +21,7 @@ export const buildAuthMiddleware = ({
       }
     }
 
-    jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+    jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] }, (err, user) => {
       if (err) {
         if (req.cookies.authToken) {
           clearCookieAllPaths(res, 'authToken')
@@ -50,7 +50,7 @@ export const buildAuthMiddleware = ({
         }
       }
 
-      jwt.verify(token, process.env.JWT_SECRET, (err, user) => {
+      jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] }, (err, user) => {
         if (!err) {
           req.user = user
           req.isAuthenticated = true

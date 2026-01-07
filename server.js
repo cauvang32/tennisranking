@@ -402,9 +402,10 @@ if (!CSRF_SECRET) {
   process.exit(1)
 }
 
-// Hash the passwords on startup
-const hashedAdminPassword = await bcrypt.hash(ADMIN_PASSWORD, 10)
-const hashedEditorPassword = await bcrypt.hash(EDITOR_PASSWORD, 10)
+// Hash the passwords on startup (2026 security: 14 rounds minimum)
+const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS) || 14
+const hashedAdminPassword = await bcrypt.hash(ADMIN_PASSWORD, BCRYPT_ROUNDS)
+const hashedEditorPassword = await bcrypt.hash(EDITOR_PASSWORD, BCRYPT_ROUNDS)
 
 // Initialize database
 const db = new TennisDatabase()
@@ -417,17 +418,24 @@ setTimeout(async () => {
   console.log('✅ Cache preload completed')
 }, 2000) // Wait 2 seconds after startup
 
-// Periodic cache stats logging and cleanup (every 15 minutes)
-setInterval(() => {
-  // Clean up expired entries
-  const cleanedCount = rankingsCache.cleanupExpired()
-  
-  // Log stats
-  const stats = rankingsCache.getStats()
-  if (stats.hits + stats.misses > 0) {
-    console.log(`📊 Cache Stats: ${stats.currentEntries} entries (${stats.expiredEntries} expired), ${stats.hitRate} hit rate, ${stats.hits + stats.misses} total operations, ${cleanedCount} cleaned`)
+// Proactive cache refresh (every 4 minutes by default)
+const CACHE_PRELOAD_INTERVAL = parseInt(process.env.CACHE_PRELOAD_INTERVAL) || 240000
+setInterval(async () => {
+  try {
+    await rankingsCache.preloadCommonData(db)
+    
+    // Log stats periodically
+    const stats = rankingsCache.getStats()
+    if (stats.hits + stats.misses > 0) {
+      console.log(`📊 Cache Stats: ${stats.currentEntries} entries, ${stats.memoryUsageMB}MB, ${stats.hitRate} hit rate, ${stats.cleanups} cleanups`)
+      if (stats.resourceConstrained) {
+        console.warn('⚠️ System memory constrained - cache may evict entries')
+      }
+    }
+  } catch (error) {
+    console.error('Cache preload error:', error.message)
   }
-}, 15 * 60 * 1000) // 15 minutes
+}, CACHE_PRELOAD_INTERVAL)
 
 // Trust proxy (required for Cloudflare and other reverse proxies)
 // Proxy configuration for Nginx Proxy Manager
@@ -1089,7 +1097,7 @@ const authenticateToken = (req, res, next) => {
     }
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }, (err, user) => {
     if (err) {
       // Clear invalid cookie
       if (req.cookies.authToken) {
@@ -1125,7 +1133,7 @@ const checkAuth = (req, res, next) => {
       }
     }
     
-    jwt.verify(token, JWT_SECRET, (err, user) => {
+    jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }, (err, user) => {
       if (!err) {
         req.user = user
         req.isAuthenticated = true
@@ -1181,7 +1189,8 @@ const requireRole = (allowedRoles) => {
 const requireAdmin = requireRole('admin')
 const requireEditor = requireRole(['admin', 'editor'])
 
-// Generate JWT token
+// Generate JWT token with explicit algorithm (prevents algorithm confusion attacks)
+const JWT_ALGORITHM = 'HS256'
 const generateToken = (user) => {
   return jwt.sign(
     { 
@@ -1190,7 +1199,7 @@ const generateToken = (user) => {
       role: user.role || 'admin'
     }, 
     JWT_SECRET, 
-    { expiresIn: '24h' }
+    { expiresIn: '24h', algorithm: JWT_ALGORITHM }
   )
 }
 

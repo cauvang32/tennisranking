@@ -467,7 +467,8 @@ app.use(helmet({
       upgradeInsecureRequests: [],
       workerSrc: ["'none'"],
       manifestSrc: ["'self'"],
-      childSrc: ["'none'"]
+      childSrc: ["'none'"],
+      reportUri: ['/api/csp-report']
     }
   },
   crossOriginEmbedderPolicy: false,
@@ -1191,15 +1192,31 @@ const requireEditor = requireRole(['admin', 'editor'])
 
 // Generate JWT token with explicit algorithm (prevents algorithm confusion attacks)
 const JWT_ALGORITHM = 'HS256'
+const JWT_ACCESS_TOKEN_EXPIRY = process.env.JWT_ACCESS_TOKEN_EXPIRY || '15m'
+const JWT_REFRESH_TOKEN_EXPIRY = process.env.JWT_REFRESH_TOKEN_EXPIRY || '7d'
+
 const generateToken = (user) => {
   return jwt.sign(
     { 
       username: user.username, 
       email: user.email,
-      role: user.role || 'admin'
+      role: user.role || 'admin',
+      type: 'access'
     }, 
     JWT_SECRET, 
-    { expiresIn: '24h', algorithm: JWT_ALGORITHM }
+    { expiresIn: JWT_ACCESS_TOKEN_EXPIRY, algorithm: JWT_ALGORITHM }
+  )
+}
+
+const generateRefreshToken = (user) => {
+  return jwt.sign(
+    { 
+      username: user.username,
+      role: user.role || 'admin',
+      type: 'refresh'
+    }, 
+    JWT_SECRET, 
+    { expiresIn: JWT_REFRESH_TOKEN_EXPIRY, algorithm: JWT_ALGORITHM }
   )
 }
 
@@ -1287,12 +1304,20 @@ app.post('/api/auth/login',
       
       if (user) {
           const token = generateToken(user)
+          const refreshToken = generateRefreshToken(user)
           
           // Encrypt JWT token before storing in httpOnly cookie (addresses CodeQL alert)
           const encryptedToken = encryptJWT(token)
+          const encryptedRefreshToken = encryptJWT(refreshToken)
+          
           res.cookie('authToken', encryptedToken, withCookieDefaults({
             httpOnly: true, // Explicit for CodeQL static analysis (prevents js/client-exposed-cookie alert)
-            maxAge: 24 * 60 * 60 * 1000 // 24 hours
+            maxAge: 15 * 60 * 1000 // 15 minutes (short-lived access token)
+          }))
+          
+          res.cookie('refreshToken', encryptedRefreshToken, withCookieDefaults({
+            httpOnly: true,
+            maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days (long-lived refresh token)
           }))
           
           // Generate new session ID for CSRF protection
@@ -1369,6 +1394,7 @@ app.post('/api/auth/logout', checkAuth, (req, res) => {
     
     // Clear authentication and CSRF cookies
     clearCookieAllPaths(res, 'authToken')
+    clearCookieAllPaths(res, 'refreshToken')
     clearCookieAllPaths(res, 'csrfSessionId')
     
     // Send success response only once
@@ -1403,6 +1429,70 @@ app.get('/api/auth/status', checkAuth, (req, res) => {
     res.json({
       authenticated: false
     })
+  }
+})
+
+// CSP violation reporting endpoint
+app.post('/api/csp-report', express.json({ type: 'application/csp-report' }), (req, res) => {
+  const violation = req.body['csp-report'] || req.body
+  if (violation) {
+    logError('CSP Violation', {
+      blockedUri: violation['blocked-uri'],
+      violatedDirective: violation['violated-directive'],
+      documentUri: violation['document-uri'],
+      sourceFile: violation['source-file'],
+      lineNumber: violation['line-number'],
+      columnNumber: violation['column-number']
+    })
+  }
+  res.status(204).end()
+})
+
+// JWT refresh token endpoint
+app.post('/api/auth/refresh', async (req, res) => {
+  try {
+    const encryptedRefreshToken = req.cookies?.refreshToken
+    
+    if (!encryptedRefreshToken) {
+      return res.status(401).json({ error: 'No refresh token provided' })
+    }
+    
+    // Decrypt and verify refresh token
+    let decoded
+    try {
+      const refreshToken = decryptJWT(encryptedRefreshToken)
+      decoded = jwt.verify(refreshToken, JWT_SECRET, { algorithms: [JWT_ALGORITHM] })
+      
+      if (decoded.type !== 'refresh') {
+        return res.status(401).json({ error: 'Invalid token type' })
+      }
+    } catch (err) {
+      return res.status(401).json({ error: 'Invalid refresh token' })
+    }
+    
+    // Generate new access token
+    const user = { username: decoded.username, role: decoded.role }
+    const newAccessToken = generateToken(user)
+    const encryptedAccessToken = encryptJWT(newAccessToken)
+    
+    res.cookie('authToken', encryptedAccessToken, withCookieDefaults({
+      httpOnly: true,
+      maxAge: 15 * 60 * 1000 // 15 minutes
+    }))
+    
+    // Generate new CSRF token
+    const sessionId = req.cookies?.csrfSessionId || generateSessionId()
+    const csrfSecret = deriveCSRFSecret(sessionId)
+    const csrfToken = tokens.create(csrfSecret)
+    
+    res.json({
+      success: true,
+      csrfToken,
+      user: { username: decoded.username, role: decoded.role }
+    })
+  } catch (error) {
+    console.error('Token refresh error:', error)
+    res.status(500).json({ error: 'Token refresh failed' })
   }
 })
 

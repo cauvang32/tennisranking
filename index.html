@@ -146,6 +146,11 @@
                             <label class="filter-label">Chọn mùa:</label>
                             <select id="seasonSelect" class="select-field"></select>
                         </div>
+                        <div class="actions-group">
+                            <button class="btn btn-primary edit-only" id="exportSeasonBtn">
+                                <span>📥</span> Xuất Excel (Mùa)
+                            </button>
+                        </div>
                     </div>
                     <div class="table-container">
                         <table class="data-table" id="seasonRankingTable">
@@ -169,6 +174,13 @@
                 
                 <!-- Lifetime View -->
                 <div class="view-section" id="lifetime-view">
+                    <div class="filter-bar">
+                        <div class="actions-group">
+                            <button class="btn btn-primary edit-only" id="exportLifetimeBtn">
+                                <span>📥</span> Xuất Excel (Toàn thời gian)
+                            </button>
+                        </div>
+                    </div>
                     <div class="table-container">
                         <table class="data-table" id="lifetimeRankingTable">
                             <thead>

@@ -32,7 +32,6 @@
     "cors": "^2.8.5",
     "csrf": "^3.1.0",
     "dotenv": "^17.2.3",
-    "exceljs": "^4.4.0",
     "express": "^4.22.0",
     "express-rate-limit": "^8.2.1",
     "express-session": "^1.18.1",
@@ -42,8 +41,10 @@
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.0.2",
     "pg": "^8.12.0",
+    "read-excel-file": "^6.0.1",
     "rotating-file-stream": "^3.2.7",
     "ua-parser-js": "^2.0.7",
-    "winston": "^3.19.0"
+    "winston": "^3.19.0",
+    "write-excel-file": "^2.3.10"
   }
 }

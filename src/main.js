@@ -1,5 +1,4 @@
 import './style.css'
-import ExcelJS from 'exceljs'
 
 // Tennis Ranking System with PostgreSQL Database
 class TennisRankingSystem {
@@ -659,10 +658,22 @@ class TennisRankingSystem {
         })
       }
       
-      // Export Excel button
+      // Export Excel button (daily view)
       const exportExcelBtn = document.getElementById('exportExcelBtn')
       if (exportExcelBtn) {
-        exportExcelBtn.addEventListener('click', () => this.exportToExcel())
+        exportExcelBtn.addEventListener('click', () => this.exportToExcel('daily'))
+      }
+      
+      // Export Excel button (season view)
+      const exportSeasonBtn = document.getElementById('exportSeasonBtn')
+      if (exportSeasonBtn) {
+        exportSeasonBtn.addEventListener('click', () => this.exportToExcel('season'))
+      }
+      
+      // Export Excel button (lifetime view)
+      const exportLifetimeBtn = document.getElementById('exportLifetimeBtn')
+      if (exportLifetimeBtn) {
+        exportLifetimeBtn.addEventListener('click', () => this.exportToExcel('lifetime'))
       }
       
       // Ranking date picker (dropdown)
@@ -814,11 +825,11 @@ class TennisRankingSystem {
         })
       }
 
-      // Export rankings
+      // Export rankings (uses current view mode)
       const exportBtn = document.getElementById('exportRankings')
       if (exportBtn) {
         exportBtn.addEventListener('click', () => {
-          this.exportToExcel()
+          this.exportToExcel(this.currentViewMode)
         })
       }
 
@@ -913,10 +924,10 @@ class TennisRankingSystem {
         restoreJsonInput.addEventListener('change', (e) => this.restoreFromJson(e))
       }
       
-      // Backup Excel button (in accounts tab)
+      // Backup Excel button (in accounts tab - exports lifetime data)
       const backupExcelBtn = document.getElementById('backupExcelBtn')
       if (backupExcelBtn) {
-        backupExcelBtn.addEventListener('click', () => this.exportToExcel())
+        backupExcelBtn.addEventListener('click', () => this.exportToExcel('lifetime'))
       }
       
       // Match season selector
@@ -2322,21 +2333,37 @@ class TennisRankingSystem {
     }
   }
 
-  async exportToExcel() {
+  async exportToExcel(explicitMode = null) {
     try {
-      // Determine the export type based on current view mode
+      // Use explicit mode if provided, otherwise fall back to currentViewMode
+      const mode = explicitMode || this.currentViewMode
+      
+      // Determine the export type based on mode
       let exportUrl = `${this.apiBase}/export-excel`
       let fileName = 'tennis-rankings'
+      let statusSuffix = ''
       
-      if (this.currentViewMode === 'daily' && this.selectedDate) {
+      if (mode === 'daily') {
+        if (!this.selectedDate) {
+          this.showToast('Vui lòng chọn ngày để xuất Excel', 'error')
+          return
+        }
         exportUrl += `/date/${this.selectedDate}`
         fileName += `-${this.selectedDate}`
-      } else if (this.currentViewMode === 'season' && this.selectedSeason) {
+        statusSuffix = ` (theo ngày: ${this.formatDate(this.selectedDate)})`
+      } else if (mode === 'season') {
+        if (!this.selectedSeason) {
+          this.showToast('Vui lòng chọn mùa giải để xuất Excel', 'error')
+          return
+        }
         exportUrl += `/season/${this.selectedSeason}`
         fileName += `-season-${this.selectedSeason}`
-      } else if (this.currentViewMode === 'lifetime') {
+        const season = this.seasons.find(s => s.id === this.selectedSeason)
+        statusSuffix = ` (theo mùa giải: ${season ? season.name : this.selectedSeason})`
+      } else if (mode === 'lifetime') {
         exportUrl += '/lifetime'
         fileName += '-lifetime'
+        statusSuffix = ' (toàn thời gian)'
       }
       
       fileName += `-${new Date().toISOString().split('T')[0]}.xlsx`
@@ -2355,16 +2382,7 @@ class TennisRankingSystem {
         window.URL.revokeObjectURL(url)
         document.body.removeChild(a)
         
-        let statusMessage = '✅ Đã xuất dữ liệu ra Excel thành công'
-        if (this.currentViewMode === 'daily' && this.selectedDate) {
-          statusMessage += ` (theo ngày: ${this.formatDate(this.selectedDate)})`
-        } else if (this.currentViewMode === 'season' && this.selectedSeason) {
-          statusMessage += ` (theo mùa giải: ${this.selectedSeason})`
-        } else if (this.currentViewMode === 'lifetime') {
-          statusMessage += ' (toàn thời gian)'
-        }
-        
-        this.updateFileStatus(statusMessage, 'success')
+        this.updateFileStatus(`✅ Đã xuất dữ liệu ra Excel thành công${statusSuffix}`, 'success')
       } else {
         this.updateFileStatus('❌ Lỗi khi xuất dữ liệu ra Excel', 'error')
       }

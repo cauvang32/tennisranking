@@ -1,6 +1,10 @@
 import { Router } from 'express'
 import { asyncHandler } from '../utils/async-handler.js'
 
+// DoS mitigation: Process form queries in batches to avoid overwhelming the database
+// Instead of limiting results (which cuts off players), we batch the additional queries
+const BATCH_SIZE = 50
+
 export const createRankingRouter = ({ db, checkAuth, rankingsCache }) => {
   const router = Router()
 
@@ -12,10 +16,18 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache }) => {
     if (!rankings) {
       cacheHit = false
       rankings = await db.getPlayerStatsLifetime()
-      rankings = await Promise.all(rankings.map(async (player) => {
-        const form = await db.getPlayerForm(player.id, 5)
-        return { ...player, form }
-      }))
+      
+      // DoS mitigation: Process form queries in batches to prevent spawning too many concurrent DB queries
+      for (let i = 0; i < rankings.length; i += BATCH_SIZE) {
+        const batch = rankings.slice(i, i + BATCH_SIZE)
+        const forms = await Promise.all(batch.map(player => 
+          db.getPlayerForm(player.id, 5)
+        ))
+        batch.forEach((player, idx) => {
+          player.form = forms[idx]
+        })
+      }
+      
       rankingsCache.set(cacheKey, rankings, 10 * 60 * 1000)
     }
 
@@ -33,10 +45,18 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache }) => {
     if (!rankings) {
       cacheHit = false
       rankings = await db.getPlayerStatsBySeason(seasonId)
-      rankings = await Promise.all(rankings.map(async (player) => {
-        const form = await db.getPlayerFormBySeason(player.id, seasonId, 5)
-        return { ...player, form }
-      }))
+      
+      // DoS mitigation: Process form queries in batches
+      for (let i = 0; i < rankings.length; i += BATCH_SIZE) {
+        const batch = rankings.slice(i, i + BATCH_SIZE)
+        const forms = await Promise.all(batch.map(player => 
+          db.getPlayerFormBySeason(player.id, seasonId, 5)
+        ))
+        batch.forEach((player, idx) => {
+          player.form = forms[idx]
+        })
+      }
+      
       rankingsCache.set(cacheKey, rankings, 3 * 60 * 1000)
     }
 
@@ -54,10 +74,18 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache }) => {
     if (!rankings) {
       cacheHit = false
       rankings = await db.getPlayerStatsBySpecificDate(date)
-      rankings = await Promise.all(rankings.map(async (player) => {
-        const form = await db.getPlayerFormBySpecificDate(player.id, date, 5)
-        return { ...player, form }
-      }))
+      
+      // DoS mitigation: Process form queries in batches
+      for (let i = 0; i < rankings.length; i += BATCH_SIZE) {
+        const batch = rankings.slice(i, i + BATCH_SIZE)
+        const forms = await Promise.all(batch.map(player => 
+          db.getPlayerFormBySpecificDate(player.id, date, 5)
+        ))
+        batch.forEach((player, idx) => {
+          player.form = forms[idx]
+        })
+      }
+      
       rankingsCache.set(cacheKey, rankings, 15 * 60 * 1000)
     }
 

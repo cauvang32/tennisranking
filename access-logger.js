@@ -339,6 +339,8 @@ export function logAccess(req, res, responseTime, user = null) {
     console.log(`🌐 ${logEntry.method} ${logEntry.path} | ${ipInfo} (${geoInfo}) | ${userInfo} | ${logEntry.statusCode} | ${responseTime}ms`)
     
     // Log detailed IP detection info occasionally for debugging
+    // NOTE: Math.random() is intentionally used here for non-security debug sampling.
+    // This is NOT used for cryptographic purposes - only for probabilistic log sampling.
     if (Math.random() < 0.1) { // 10% of requests
       console.log(`🔍 IP Detection Details:`, {
         detected: logEntry.clientIP,

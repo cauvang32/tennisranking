@@ -52,6 +52,11 @@ export const createExportRouter = ({
   router.get('/season/:seasonId', checkAuth, conditionalRateLimit(exportLimiter), asyncHandler(async (req, res) => {
     const { seasonId } = req.params
     
+    // XSS Protection: Validate seasonId is numeric (sanitization)
+    if (!/^\d+$/.test(seasonId)) {
+      return res.status(400).json({ error: 'Invalid season ID' })
+    }
+    
     const [season, rankings, matches] = await Promise.all([
       db.getSeasonById(seasonId),
       db.getPlayerStatsBySeason(seasonId),

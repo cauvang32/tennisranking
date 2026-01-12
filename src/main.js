@@ -356,6 +356,16 @@ class TennisRankingSystem {
       throw new Error('Authentication required')
     }
     
+    // SSRF Protection: Validate URL is targeting our own API only
+    const allowedOrigin = window.location.origin
+    const parsedUrl = new URL(url, allowedOrigin)
+    if (parsedUrl.origin !== allowedOrigin) {
+      throw new Error('Invalid request URL: external URLs not allowed')
+    }
+    if (!parsedUrl.pathname.includes('/api/')) {
+      throw new Error('Invalid request URL: must target API endpoint')
+    }
+    
     const csrfToken = await this.getCSRFToken()
     if (!csrfToken) {
       throw new Error('CSRF token required')

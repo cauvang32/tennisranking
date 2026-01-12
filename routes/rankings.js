@@ -46,6 +46,12 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache }) => {
       cacheHit = false
       rankings = await db.getPlayerStatsBySeason(seasonId)
       
+      // DoS mitigation: Validate array length and process in batches
+      const MAX_RANKINGS = 10000 // Reasonable limit for rankings
+      if (rankings.length > MAX_RANKINGS) {
+        return res.status(400).json({ error: 'Rankings list exceeds maximum limit' })
+      }
+      
       // DoS mitigation: Process form queries in batches
       for (let i = 0; i < rankings.length; i += BATCH_SIZE) {
         const batch = rankings.slice(i, i + BATCH_SIZE)
@@ -74,6 +80,12 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache }) => {
     if (!rankings) {
       cacheHit = false
       rankings = await db.getPlayerStatsBySpecificDate(date)
+      
+      // DoS mitigation: Validate array length and process in batches
+      const MAX_RANKINGS = 10000 // Reasonable limit for rankings
+      if (rankings.length > MAX_RANKINGS) {
+        return res.status(400).json({ error: 'Rankings list exceeds maximum limit' })
+      }
       
       // DoS mitigation: Process form queries in batches
       for (let i = 0; i < rankings.length; i += BATCH_SIZE) {

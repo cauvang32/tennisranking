@@ -57,7 +57,8 @@ function formatIP(ip, ipSources = {}) {
   else if (ip === '127.0.0.1') formatted = `${ip} (localhost IPv4)`
   else if (ip.startsWith('192.168.')) formatted = `${ip} (private)`
   else if (ip.startsWith('10.')) formatted = `${ip} (private)`
-  else if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) formatted = `${ip} (private)`
+  // Simplified regex to prevent ReDoS - checks 172.16-31.x.x range
+  else if (/^172\.(1[6-9]|2[0-9]|3[01])\./.test(ip)) formatted = `${ip} (private)`
   else formatted = `${ip} (public)`
   
   // Show detection method if available

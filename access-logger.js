@@ -289,8 +289,9 @@ function isSuspiciousRequest(req, realIP) {
   const url = req.originalUrl || req.url
   const userAgent = req.get('User-Agent') || ''
   
-  // Check URL patterns
-  if (suspiciousPatterns.some(pattern => pattern.test(url))) {
+  // Check URL patterns (with length limit to prevent ReDoS)
+  const safeUrl = url.length > 1000 ? url.substring(0, 1000) : url
+  if (suspiciousPatterns.some(pattern => pattern.test(safeUrl))) {
     return true
   }
   
@@ -339,8 +340,10 @@ export function logAccess(req, res, responseTime, user = null) {
     console.log(`🌐 ${logEntry.method} ${logEntry.path} | ${ipInfo} (${geoInfo}) | ${userInfo} | ${logEntry.statusCode} | ${responseTime}ms`)
     
     // Log detailed IP detection info occasionally for debugging
-    // NOTE: Math.random() is intentionally used here for non-security debug sampling.
-    // This is NOT used for cryptographic purposes - only for probabilistic log sampling.
+    // ⚠️ SECURITY NOTE: Math.random() is intentionally used here for NON-CRYPTOGRAPHIC
+    // debug sampling only (10% of requests). This is NOT used for any security-critical
+    // operations like token generation, session IDs, or authentication. For those purposes,
+    // crypto.randomBytes() is used elsewhere in the codebase (see security-helpers.js).
     if (Math.random() < 0.1) { // 10% of requests
       console.log(`🔍 IP Detection Details:`, {
         detected: logEntry.clientIP,

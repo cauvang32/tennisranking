@@ -21,7 +21,17 @@ function buildSSLConfig() {
   // Support custom CA certificate for self-signed certs
   if (process.env.DB_SSL_CA) {
     try {
-      sslConfig.ca = readFileSync(process.env.DB_SSL_CA, 'utf8')
+      const path = require('path')
+      // Path traversal protection: Normalize and validate certificate path
+      const certPath = path.normalize(process.env.DB_SSL_CA)
+      const resolvedPath = path.resolve(certPath)
+      
+      // Ensure path doesn't contain traversal attempts
+      if (certPath.includes('..') || !resolvedPath.startsWith(path.resolve('.'))) {
+        console.warn('⚠️ Invalid DB_SSL_CA path: path traversal detected')
+      } else {
+        sslConfig.ca = readFileSync(resolvedPath, 'utf8')
+      }
     } catch (err) {
       console.warn('⚠️ Could not load DB_SSL_CA certificate:', err.message)
     }

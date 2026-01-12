@@ -26,3 +26,4 @@ dist-ssr
 .env
 data/tennis.db
 data/postgres-init/01-init.sql
+data/postgres-data/

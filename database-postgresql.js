@@ -707,6 +707,7 @@ class TennisDatabasePostgreSQL {
             THEN 1 END) as losses,
           COUNT(CASE WHEN m.id IS NOT NULL THEN 1 END) as total_matches
         FROM players p
+        INNER JOIN season_players sp ON sp.player_id = p.id AND sp.season_id = $1
         LEFT JOIN matches m ON (m.player1_id = p.id OR m.player2_id = p.id OR m.player3_id = p.id OR m.player4_id = p.id)
           AND m.season_id = $1
         GROUP BY p.id, p.name

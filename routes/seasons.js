@@ -46,7 +46,11 @@ export const createSeasonRouter = ({
     requireAdmin,
     conditionalRateLimit(createLimiter),
     [
-      body('name').isLength({ min: 1, max: 100 }).withMessage('Season name is required'),
+      body('name')
+        .trim()
+        .escape() // Escape HTML entities to prevent XSS
+        .isLength({ min: 1, max: 100 }).withMessage('Season name is required')
+        .matches(/^[a-zA-Z0-9\s\u0080-\uFFFF.,-]+$/).withMessage('Season name contains invalid characters'),
       body('startDate').isISO8601().withMessage('Valid start date is required'),
       body('endDate').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('Valid end date is required'),
       body('autoEnd').optional().isBoolean().withMessage('autoEnd must be boolean'),

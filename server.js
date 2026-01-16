@@ -4,7 +4,7 @@ import { dirname, join } from 'path'
 import cors from 'cors'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
-import { body, param, validationResult } from 'express-validator'
+import { body, param, query, validationResult } from 'express-validator'
 import jwt from 'jsonwebtoken'
 import bcrypt from 'bcryptjs'
 import cookieParser from 'cookie-parser'
@@ -457,8 +457,8 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://static.cloudflareinsights.com"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"], // TODO: Remove unsafe-inline by extracting inline styles
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://static.cloudflareinsights.com"], // TODO: Remove unsafe-inline by using nonces
       imgSrc: ["'self'", "data:"],
       connectSrc: ["'self'"],
       objectSrc: ["'none'"],
@@ -468,7 +468,7 @@ app.use(helmet({
       fontSrc: ["'self'", "data:", "https://fonts.gstatic.com"],
       formAction: ["'self'"],
       frameAncestors: ["'none'"],
-      scriptSrcAttr: ["'unsafe-inline'"],
+      scriptSrcAttr: ["'none'"], // Hardened: no inline event handlers
       upgradeInsecureRequests: [],
       workerSrc: ["'none'"],
       manifestSrc: ["'self'"],
@@ -1845,7 +1845,9 @@ app.post('/api/seasons/check-expired',
 )
 
 // Matches Routes
-app.get('/api/matches', checkAuth, async (req, res) => {
+app.get('/api/matches', checkAuth, [
+  query('limit').optional().isInt({ min: 1, max: 1000 }).withMessage('Limit must be between 1 and 1000')
+], handleValidationErrors, async (req, res) => {
   try {
     const limit = req.query.limit ? parseInt(req.query.limit) : null
     const matches = await db.getMatches(limit)
@@ -2820,6 +2822,10 @@ app.get('/api/admin/access-stats',
   authenticateToken,
   requireAdmin,
   smartApiLimiter,
+  [
+    query('hours').optional().isInt({ min: 1, max: 720 }).withMessage('Hours must be between 1 and 720')
+  ],
+  handleValidationErrors,
   async (req, res) => {
     try {
       const hours = parseInt(req.query.hours) || 24;
@@ -2843,6 +2849,14 @@ app.get('/api/admin/access-logs',
   authenticateToken,
   requireAdmin,
   smartApiLimiter,
+  [
+    query('limit').optional().isInt({ min: 1, max: 10000 }).withMessage('Limit must be between 1 and 10000'),
+    query('offset').optional().isInt({ min: 0 }).withMessage('Offset must be non-negative'),
+    query('ip').optional().isIP().withMessage('Invalid IP address format'),
+    query('user').optional().trim().escape().isLength({ max: 100 }).withMessage('User filter too long'),
+    query('path').optional().trim().isLength({ max: 500 }).withMessage('Path filter too long')
+  ],
+  handleValidationErrors,
   async (req, res) => {
     try {
       const limit = parseInt(req.query.limit) || 100;
@@ -2881,6 +2895,10 @@ app.get('/api/admin/ip-analysis',
   authenticateToken,
   requireAdmin,
   smartApiLimiter,
+  [
+    query('ip').optional().isIP().withMessage('Invalid IP address format')
+  ],
+  handleValidationErrors,
   async (req, res) => {
     try {
       const clientIP = getRealClientIP(req);

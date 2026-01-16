@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { body, param } from 'express-validator'
+import { body, param, query } from 'express-validator'
 import { asyncHandler } from '../utils/async-handler.js'
 
 export const createMatchRouter = ({
@@ -15,7 +15,9 @@ export const createMatchRouter = ({
 }) => {
   const router = Router()
 
-  router.get('/', checkAuth, asyncHandler(async (req, res) => {
+  router.get('/', checkAuth, [
+    query('limit').optional().isInt({ min: 1, max: 1000 }).withMessage('Limit must be between 1 and 1000')
+  ], handleValidationErrors, asyncHandler(async (req, res) => {
     const limit = req.query.limit ? parseInt(req.query.limit) : null
     const matches = await db.getMatches(limit)
     res.json(matches)

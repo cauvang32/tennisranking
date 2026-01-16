@@ -23,6 +23,17 @@ class TennisRankingSystem {
     this.init()
   }
 
+  // Security: HTML escape to prevent XSS attacks
+  escapeHtml(unsafe) {
+    if (unsafe === null || unsafe === undefined) return ''
+    return String(unsafe)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;')
+  }
+
   // Auto-detect API base URL for subpath deployments
   getApiBaseUrl() {
     const currentPath = window.location.pathname
@@ -400,7 +411,7 @@ class TennisRankingSystem {
       
       authDiv.innerHTML = `
         <div class="user-info">
-          <span class="user-name">👤 ${this.user.username}</span>
+          <span class="user-name">👤 ${this.escapeHtml(this.user.username)}</span>
           <span class="user-role ${roleClass}">${roleLabel}</span>
           <button id="logoutBtn" class="logout-btn">Đăng xuất</button>
         </div>
@@ -1062,7 +1073,7 @@ class TennisRankingSystem {
       
       // Update player selects with filtered players
       const playerOptions = seasonPlayers.map(player => 
-        `<option value="${player.id}">${player.name}</option>`
+        `<option value="${player.id}">${this.escapeHtml(player.name)}</option>`
       ).join('')
       
       allPlayerSelects.forEach(id => {
@@ -1418,7 +1429,7 @@ class TennisRankingSystem {
       if (container) {
         container.innerHTML = this.players.map(player => `
           <div class="player-card">
-            <span class="player-name">${player.name}</span>
+            <span class="player-name">${this.escapeHtml(player.name)}</span>
             ${canDelete ? `
               <button class="delete-btn" data-player-id="${player.id}">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1439,8 +1450,8 @@ class TennisRankingSystem {
             <td><span class="id-badge">#${player.id}</span></td>
             <td>
               <div class="player-cell">
-                <span class="player-avatar-small">${player.name.charAt(0).toUpperCase()}</span>
-                <span class="player-name-text">${player.name}</span>
+                <span class="player-avatar-small">${this.escapeHtml(player.name.charAt(0).toUpperCase())}</span>
+                <span class="player-name-text">${this.escapeHtml(player.name)}</span>
               </div>
             </td>
             <td>${player.created_at ? this.formatDate(player.created_at) : '-'}</td>
@@ -1646,7 +1657,7 @@ class TennisRankingSystem {
         return `
           <tr>
             <td class="col-rank">${this.getRankEmoji(index + 1)}${index + 1}</td>
-            <td class="col-name">${player.name}</td>
+            <td class="col-name">${this.escapeHtml(player.name)}</td>
             <td class="col-form"><div class="form-dots">${formHtml || '-'}</div></td>
             <td>${player.total_matches || 0}</td>
             <td>${player.wins || 0}</td>
@@ -1727,9 +1738,9 @@ class TennisRankingSystem {
         return `
           <tr>
             <td>${this.formatDate(match.play_date)}</td>
-            <td class="${team1Class}">${team1Players} ${match.winning_team === 1 ? winnerBadge : ''}</td>
+            <td class="${team1Class}">${this.escapeHtml(team1Players)} ${match.winning_team === 1 ? winnerBadge : ''}</td>
             <td style="text-align: center; font-weight: 600;">${match.team1_score} - ${match.team2_score}</td>
-            <td class="${team2Class}">${team2Players} ${match.winning_team === 2 ? winnerBadge : ''}</td>
+            <td class="${team2Class}">${this.escapeHtml(team2Players)} ${match.winning_team === 2 ? winnerBadge : ''}</td>
             <td>${this.formatMoney(matchMoney)}</td>
             ${canEdit ? `
               <td>
@@ -1784,7 +1795,7 @@ class TennisRankingSystem {
       }
       
       const playerOptions = availablePlayers.map(player => 
-        `<option value="${player.id}">${player.name}</option>`
+        `<option value="${player.id}">${this.escapeHtml(player.name)}</option>`
       ).join('')
 
       // For duo mode
@@ -1830,7 +1841,7 @@ class TennisRankingSystem {
       const seasonOptions = activeSeasons.map(season => {
         const endDateStr = season.end_date ? ` (Kết thúc: ${this.formatDate(season.end_date)})` : ''
         const loseMoneyStr = season.lose_money_per_loss ? ` - ${this.formatMoney(season.lose_money_per_loss)}/thua` : ''
-        return `<option value="${season.id}">${season.name}${endDateStr}${loseMoneyStr}</option>`
+        return `<option value="${season.id}">${this.escapeHtml(season.name)}${endDateStr}${loseMoneyStr}</option>`
       }).join('')
 
       matchSeasonSelect.innerHTML = `<option value="">-- Chọn mùa giải trước --</option>${seasonOptions}`
@@ -1939,7 +1950,7 @@ class TennisRankingSystem {
     if (!selector) return
 
     selector.innerHTML = this.seasons.map(season => 
-      `<option value="${season.id}">${season.name}${season.is_active ? ' (Đang hoạt động)' : ''}</option>`
+      `<option value="${season.id}">${this.escapeHtml(season.name)}${season.is_active ? ' (Đang hoạt động)' : ''}</option>`
     ).join('')
 
     if (this.selectedSeason) {
@@ -1991,8 +2002,8 @@ class TennisRankingSystem {
     if (checkboxContainer) {
       checkboxContainer.innerHTML = this.players.map(player => `
         <label class="player-checkbox">
-          <input type="checkbox" name="seasonPlayers" value="${player.id}" data-player-name="${player.name}">
-          <span>${player.name}</span>
+          <input type="checkbox" name="seasonPlayers" value="${player.id}" data-player-name="${this.escapeHtml(player.name)}">
+          <span>${this.escapeHtml(player.name)}</span>
         </label>
       `).join('')
     }

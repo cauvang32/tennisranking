@@ -27,7 +27,11 @@ export const createPlayerRouter = ({
     requireAdmin,
     conditionalRateLimit(createLimiter),
     [
-      body('name').isLength({ min: 1, max: 100 }).withMessage('Player name is required')
+      body('name')
+        .trim()
+        .escape() // Escape HTML entities to prevent XSS
+        .isLength({ min: 1, max: 100 }).withMessage('Player name is required')
+        .matches(/^[a-zA-Z0-9\s\u0080-\uFFFF]+$/).withMessage('Player name contains invalid characters')
     ],
     handleValidationErrors,
     asyncHandler(async (req, res) => {

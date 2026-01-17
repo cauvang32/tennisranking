@@ -81,6 +81,7 @@ class RankingsCache {
   constructor() {
     this.cache = new Map()
     this.defaultTTL = 5 * 60 * 1000 // 5 minutes default TTL
+    this.dataVersion = Date.now() // Cache version for client sync
     this.stats = {
       hits: 0,
       misses: 0,
@@ -89,6 +90,11 @@ class RankingsCache {
       preloads: 0,
       expired: 0
     }
+  }
+
+  // Get current data version for client cache sync
+  getDataVersion() {
+    return this.dataVersion
   }
 
   set(key, data, ttl = this.defaultTTL) {
@@ -144,41 +150,94 @@ class RankingsCache {
     return item.data
   }
 
-  // Preload commonly accessed data
+  // Preload commonly accessed data (uses batch queries to avoid N+1)
   async preloadCommonData(db) {
+    console.log('🔄 Starting cache preload...')
+    let preloadCount = 0
+    
     try {
-      // Preload lifetime rankings (most common request) with longer TTL
-      if (!this.cache.has('rankings:lifetime') || this.isExpired('rankings:lifetime')) {
-        const rankings = await db.getPlayerStatsLifetime()
-        const enhancedRankings = await Promise.all(rankings.map(async (player) => {
-          const form = await db.getPlayerForm(player.id, 5)
-          return { ...player, form }
-        }))
-        this.set('rankings:lifetime', enhancedRankings, 10 * 60 * 1000) // 10 minutes for lifetime data
+      // 1. Preload lifetime rankings using batch query (most accessed)
+      const lifetimeKey = 'rankings:lifetime'
+      if (!this.cache.has(lifetimeKey) || this.isExpired(lifetimeKey)) {
+        console.log('  → Preloading lifetime rankings...')
+        const lifetimeRankings = await db.getPlayerStatsWithFormsLifetime(5)
+        this.set(lifetimeKey, lifetimeRankings, 10 * 60 * 1000) // 10 min TTL
         this.stats.preloads++
-        
-        if (process.env.NODE_ENV === 'development') {
-          console.log('🚀 Cache PRELOAD: rankings:lifetime (10min TTL)')
+        preloadCount++
+        console.log(`  ✓ Cached ${lifetimeRankings.length} lifetime rankings`)
+      } else {
+        console.log('  ⏭️  Lifetime rankings still valid (skipped)')
+      }
+
+      // 2. Preload active season rankings using batch query
+      const activeSeason = await db.getActiveSeason()
+      if (activeSeason) {
+        const seasonKey = `rankings:season:${activeSeason.id}`
+        if (!this.cache.has(seasonKey) || this.isExpired(seasonKey)) {
+          console.log(`  → Preloading active season ${activeSeason.id} rankings...`)
+          const seasonRankings = await db.getPlayerStatsWithFormsBySeason(activeSeason.id, 5)
+          this.set(seasonKey, seasonRankings, 3 * 60 * 1000) // 3 min TTL
+          this.stats.preloads++
+          preloadCount++
+          console.log(`  ✓ Cached ${seasonRankings.length} season rankings`)
+        } else {
+          console.log(`  ⏭️  Season ${activeSeason.id} rankings still valid (skipped)`)
         }
       }
 
-      // Preload active season rankings
-      const activeSeason = await db.getActiveSeason()
-      if (activeSeason && (!this.cache.has(`rankings:season:${activeSeason.id}`) || this.isExpired(`rankings:season:${activeSeason.id}`))) {
-        const seasonRankings = await db.getPlayerStatsBySeason(activeSeason.id)
-        const enhancedSeasonRankings = await Promise.all(seasonRankings.map(async (player) => {
-          const form = await db.getPlayerFormBySeason(player.id, activeSeason.id, 5)
-          return { ...player, form }
-        }))
-        this.set(`rankings:season:${activeSeason.id}`, enhancedSeasonRankings, 3 * 60 * 1000) // 3 minutes for season data
+      // 3. Preload players list (small, frequently accessed)
+      const playersKey = 'list:players'
+      if (!this.cache.has(playersKey) || this.isExpired(playersKey)) {
+        console.log('  → Preloading players list...')
+        const players = await db.getPlayers()
+        this.set(playersKey, players, 10 * 60 * 1000) // 10 min TTL
         this.stats.preloads++
-        
-        if (process.env.NODE_ENV === 'development') {
-          console.log(`🚀 Cache PRELOAD: rankings:season:${activeSeason.id} (3min TTL)`)
-        }
+        preloadCount++
+        console.log(`  ✓ Cached ${players.length} players`)
+      } else {
+        console.log('  ⏭️  Players list still valid (skipped)')
       }
+
+      // 4. Preload seasons list (small, rarely changes)
+      const seasonsKey = 'list:seasons'
+      if (!this.cache.has(seasonsKey) || this.isExpired(seasonsKey)) {
+        console.log('  → Preloading seasons list...')
+        const seasons = await db.getSeasons()
+        this.set(seasonsKey, seasons, 10 * 60 * 1000) // 10 min TTL
+        this.stats.preloads++
+        preloadCount++
+        console.log(`  ✓ Cached ${seasons.length} seasons`)
+      } else {
+        console.log('  ⏭️  Seasons list still valid (skipped)')
+      }
+
+      // 5. Preload today's daily rankings (likely to be accessed)
+      const today = new Date().toISOString().split('T')[0]
+      const todayKey = `rankings:date:${today}`
+      if (!this.cache.has(todayKey) || this.isExpired(todayKey)) {
+        console.log(`  → Preloading today's rankings (${today})...`)
+        try {
+          const todayRankings = await db.getPlayerStatsByPlayDate(today)
+          if (todayRankings && todayRankings.length > 0) {
+            this.set(todayKey, todayRankings, 2 * 60 * 1000) // 2 min TTL
+            this.stats.preloads++
+            preloadCount++
+            console.log(`  ✓ Cached ${todayRankings.length} daily rankings`)
+          } else {
+            console.log('  ⚠️  No matches today (empty result)')
+          }
+        } catch (err) {
+          console.log('  ⚠️  Could not preload today\'s rankings:', err.message)
+        }
+      } else {
+        console.log(`  ⏭️  Today's rankings still valid (skipped)`)
+      }
+
+      console.log(`✅ Cache preload complete: ${preloadCount} entries loaded`)
+      return preloadCount
     } catch (error) {
-      console.log('Cache preload error (non-critical):', error.message)
+      console.error('❌ Cache preload error:', error.message)
+      throw error
     }
   }
 
@@ -227,9 +286,10 @@ class RankingsCache {
     }
     
     this.stats.invalidations += invalidated
+    this.dataVersion = Date.now() // Increment version for client sync
     
     if (process.env.NODE_ENV === 'development') {
-      console.log(`🗑️ Cache INVALIDATE: ${invalidated} entries (pattern: ${pattern || 'all'})`)
+      console.log(`🗑️ Cache INVALIDATE: ${invalidated} entries (pattern: ${pattern || 'all'}, version: ${this.dataVersion})`)
     }
   }
 
@@ -237,9 +297,10 @@ class RankingsCache {
     const size = this.cache.size
     this.cache.clear()
     this.stats.invalidations += size
+    this.dataVersion = Date.now() // Increment version for client sync
     
     if (process.env.NODE_ENV === 'development') {
-      console.log(`🧹 Cache CLEAR: ${size} entries removed`)
+      console.log(`🧹 Cache CLEAR: ${size} entries removed (version: ${this.dataVersion})`)
     }
   }
 
@@ -262,7 +323,8 @@ class RankingsCache {
       hitRate: `${hitRate}%`,
       currentEntries: this.cache.size,
       expiredEntries: expiredCount,
-      memoryUsage: JSON.stringify([...this.cache.entries()]).length
+      memoryUsage: JSON.stringify([...this.cache.entries()]).length,
+      dataVersion: this.dataVersion
     }
   }
   
@@ -417,15 +479,18 @@ const hashedEditorPassword = await bcrypt.hash(EDITOR_PASSWORD, BCRYPT_ROUNDS)
 const db = new TennisDatabase()
 await db.init()
 
-// Preload common cache data for better hit rates
-setTimeout(async () => {
-  console.log('🚀 Preloading cache with common data...')
+// Preload common cache data immediately on startup
+try {
   await rankingsCache.preloadCommonData(db)
-  console.log('✅ Cache preload completed')
-}, 2000) // Wait 2 seconds after startup
+} catch (error) {
+  console.error('❌ Initial cache preload failed:', error.message)
+  console.warn('⚠️  Server starting with empty cache - first requests will be slower')
+}
 
 // Proactive cache refresh (every 4 minutes by default)
 const CACHE_PRELOAD_INTERVAL = parseInt(process.env.CACHE_PRELOAD_INTERVAL) || 240000
+console.log(`⏰ Scheduling cache refresh every ${CACHE_PRELOAD_INTERVAL / 1000 / 60} minutes`)
+
 setInterval(async () => {
   try {
     await rankingsCache.preloadCommonData(db)
@@ -433,13 +498,10 @@ setInterval(async () => {
     // Log stats periodically
     const stats = rankingsCache.getStats()
     if (stats.hits + stats.misses > 0) {
-      console.log(`📊 Cache Stats: ${stats.currentEntries} entries, ${stats.memoryUsageMB}MB, ${stats.hitRate} hit rate, ${stats.cleanups} cleanups`)
-      if (stats.resourceConstrained) {
-        console.warn('⚠️ System memory constrained - cache may evict entries')
-      }
+      console.log(`📊 Cache Stats: ${stats.currentEntries} entries, ${stats.hitRate} hit rate`)
     }
   } catch (error) {
-    console.error('Cache preload error:', error.message)
+    console.error('❌ Periodic cache refresh failed:', error.message)
   }
 }, CACHE_PRELOAD_INTERVAL)
 
@@ -2077,13 +2139,8 @@ app.get('/api/rankings/lifetime', checkAuth, async (req, res) => {
     
     if (!rankings) {
       cacheHit = false
-      rankings = await db.getPlayerStatsLifetime()
-      
-      // Add form for each player
-      rankings = await Promise.all(rankings.map(async (player) => {
-        const form = await db.getPlayerForm(player.id, 5)
-        return { ...player, form }
-      }))
+      // Use optimized batch method (2 queries instead of N+1)
+      rankings = await db.getPlayerStatsWithFormsLifetime(5)
       
       // Lifetime data changes less frequently, use longer TTL
       rankingsCache.set(cacheKey, rankings, 10 * 60 * 1000) // 10 minutes
@@ -2109,13 +2166,8 @@ app.get('/api/rankings/season/:seasonId', checkAuth, async (req, res) => {
     
     if (!rankings) {
       cacheHit = false
-      rankings = await db.getPlayerStatsBySeason(seasonId)
-      
-      // Add form for each player (last 5 matches in this season)
-      rankings = await Promise.all(rankings.map(async (player) => {
-        const form = await db.getPlayerFormBySeason(player.id, seasonId, 5)
-        return { ...player, form }
-      }))
+      // Use optimized batch method (2 queries instead of N+1)
+      rankings = await db.getPlayerStatsWithFormsBySeason(seasonId, 5)
       
       // Season data changes more frequently during active season, shorter TTL
       rankingsCache.set(cacheKey, rankings, 3 * 60 * 1000) // 3 minutes
@@ -2751,6 +2803,15 @@ app.get('/api/cache-stats', checkAuth, (req, res) => {
   })
 })
 
+// Data version endpoint (public - for client cache sync)
+// Clients poll this to check if their cache is stale
+app.get('/api/data-version', (req, res) => {
+  res.json({
+    version: rankingsCache.getDataVersion(),
+    timestamp: formatSecureTimestamp()
+  })
+})
+
 // System Health Route (admin only)
 app.get('/api/health', authenticateToken, (req, res) => {
   const stats = rankingsCache.getStats()
@@ -2767,7 +2828,8 @@ app.get('/api/health', authenticateToken, (req, res) => {
       isActive: stats.currentEntries > 0,
       entries: stats.currentEntries,
       efficiency: stats.hitRate,
-      totalOperations: stats.hits + stats.misses
+      totalOperations: stats.hits + stats.misses,
+      dataVersion: stats.dataVersion
     },
     database: 'postgresql',
     environment: process.env.NODE_ENV || 'development'

@@ -22,48 +22,186 @@ class TennisRankingSystem {
     this.currentSeasonPlayers = [] // Players eligible for current selected season
     this.eventHandlers = [] // Track event listeners for cleanup
     
-    // Client-side cache with TTL (5 minutes default)
-    this.cache = new Map()
-    this.cacheTTL = 5 * 60 * 1000 // 5 minutes
+    // Smart client-side cache with type-specific TTLs
+    this.cache = {
+      rankings: new Map(),   // Key: 'daily:date' | 'season:id' | 'lifetime'
+      matches: new Map(),    // Key: 'all' | 'date:date' | 'season:id'
+      players: null,
+      seasons: null,
+      playDates: null,
+      lastFetch: new Map(),  // Track when each cache entry was fetched
+      serverVersion: null    // Server data version for cache invalidation
+    }
+    
+    // Different TTLs for different data types (in ms)
+    this.CACHE_TTL = {
+      rankings: 2 * 60 * 1000,      // 2 min - changes when matches recorded
+      matches: 1 * 60 * 1000,       // 1 min - changes frequently
+      players: 10 * 60 * 1000,      // 10 min - rarely changes
+      seasons: 10 * 60 * 1000,      // 10 min - rarely changes
+      playDates: 5 * 60 * 1000,     // 5 min - changes with new matches
+      versionCheck: 30 * 1000       // 30 sec - check server version
+    }
+    
+    // Start version polling for cache coherence
+    this.startVersionPolling()
     
     this.init()
   }
 
-  // Cache management methods
-  cacheGet(key) {
-    const item = this.cache.get(key)
-    if (!item) return null
+  // Poll server for data version changes (ensures cache coherence across clients)
+  startVersionPolling() {
+    // Check immediately on start
+    this.checkServerVersion()
     
-    // Check if expired
-    if (Date.now() > item.expiresAt) {
-      this.cache.delete(key)
+    // Then poll every 30 seconds
+    this.versionPollInterval = setInterval(() => {
+      this.checkServerVersion()
+    }, this.CACHE_TTL.versionCheck)
+  }
+
+  // Stop version polling (call on cleanup)
+  stopVersionPolling() {
+    if (this.versionPollInterval) {
+      clearInterval(this.versionPollInterval)
+      this.versionPollInterval = null
+    }
+  }
+
+  // Check if server data version has changed
+  async checkServerVersion() {
+    if (!this.serverMode) return
+    
+    try {
+      const response = await fetch(`${this.apiBase}/data-version`, {
+        credentials: 'include'
+      })
+      
+      if (response.ok) {
+        const data = await response.json()
+        const newVersion = data.version
+        
+        // If version changed, invalidate all client cache
+        if (this.cache.serverVersion !== null && this.cache.serverVersion !== newVersion) {
+          console.log(`🔄 Server data changed (${this.cache.serverVersion} → ${newVersion}), clearing cache`)
+          this.invalidateCache() // Full clear
+        }
+        
+        this.cache.serverVersion = newVersion
+      }
+    } catch (error) {
+      // Silently ignore - server might be unavailable
+      console.log('⚠️ Version check failed, using local cache')
+    }
+  }
+
+  // Smart cache: check if cached data is still valid
+  isCacheValid(cacheKey, type = 'rankings') {
+    const lastFetch = this.cache.lastFetch.get(cacheKey)
+    if (!lastFetch) return false
+    
+    const ttl = this.CACHE_TTL[type] || this.CACHE_TTL.rankings
+    return (Date.now() - lastFetch) < ttl
+  }
+
+  // Smart cache: set data with timestamp
+  setCache(type, key, data) {
+    const cacheKey = key ? `${type}:${key}` : type
+    
+    if (type === 'rankings' || type === 'matches') {
+      this.cache[type].set(key, data)
+    } else {
+      this.cache[type] = data
+    }
+    
+    this.cache.lastFetch.set(cacheKey, Date.now())
+    console.log(`💾 Cache SET: ${cacheKey}`)
+  }
+
+  // Smart cache: get data if valid
+  getCache(type, key = null) {
+    const cacheKey = key ? `${type}:${key}` : type
+    
+    if (!this.isCacheValid(cacheKey, type)) {
+      console.log(`❌ Cache MISS: ${cacheKey}`)
       return null
     }
     
-    return item.data
+    let data = null
+    if (type === 'rankings' || type === 'matches') {
+      data = this.cache[type].get(key)
+    } else {
+      data = this.cache[type]
+    }
+    
+    if (data) {
+      console.log(`✅ Cache HIT: ${cacheKey}`)
+    }
+    return data
   }
 
-  cacheSet(key, data, ttl = this.cacheTTL) {
-    this.cache.set(key, {
-      data,
-      expiresAt: Date.now() + ttl,
-      createdAt: Date.now()
+  // Smart cache invalidation - only clear what changed
+  invalidateCache(types = []) {
+    if (!types || types.length === 0) {
+      // Full clear (for restore/logout)
+      this.cache.rankings.clear()
+      this.cache.matches.clear()
+      this.cache.lastFetch.clear()
+      this.cache.players = null
+      this.cache.seasons = null
+      this.cache.playDates = null
+      console.log('🗑️ Full cache cleared')
+      return
+    }
+    
+    // Selective invalidation
+    types.forEach(type => {
+      switch(type) {
+        case 'rankings':
+          this.cache.rankings.clear()
+          for (const key of this.cache.lastFetch.keys()) {
+            if (key.startsWith('rankings:')) {
+              this.cache.lastFetch.delete(key)
+            }
+          }
+          console.log('🗑️ Rankings cache cleared')
+          break
+          
+        case 'matches':
+          this.cache.matches.clear()
+          this.cache.playDates = null
+          for (const key of this.cache.lastFetch.keys()) {
+            if (key.startsWith('matches:') || key === 'playDates') {
+              this.cache.lastFetch.delete(key)
+            }
+          }
+          console.log('🗑️ Matches cache cleared')
+          break
+          
+        case 'players':
+          this.cache.players = null
+          this.cache.lastFetch.delete('players')
+          console.log('🗑️ Players cache cleared')
+          break
+          
+        case 'seasons':
+          this.cache.seasons = null
+          this.cache.lastFetch.delete('seasons')
+          console.log('🗑️ Seasons cache cleared')
+          break
+          
+        case 'playDates':
+          this.cache.playDates = null
+          this.cache.lastFetch.delete('playDates')
+          console.log('🗑️ PlayDates cache cleared')
+          break
+      }
     })
   }
 
-  // Clear all cache - call this after any data modification
+  // Legacy method for compatibility
   clearCache() {
-    this.cache.clear()
-    console.log('🗑️ Client cache cleared')
-  }
-
-  // Clear cache for specific pattern
-  invalidateCache(pattern) {
-    for (const key of this.cache.keys()) {
-      if (key.includes(pattern)) {
-        this.cache.delete(key)
-      }
-    }
+    this.invalidateCache()
   }
 
   // Event listener management for proper cleanup
@@ -587,9 +725,17 @@ class TennisRankingSystem {
 
   async loadPlayers() {
     try {
+      // Check cache first (10 min TTL for players)
+      const cached = this.getCache('players')
+      if (cached) {
+        this.players = cached
+        return
+      }
+      
       const response = await fetch(`${this.apiBase}/players`)
       if (response.ok) {
         this.players = await response.json()
+        this.setCache('players', null, this.players)
       }
     } catch (error) {
       console.error('Error loading players:', error)
@@ -598,9 +744,18 @@ class TennisRankingSystem {
 
   async loadSeasons() {
     try {
+      // Check cache first (10 min TTL for seasons)
+      const cached = this.getCache('seasons')
+      if (cached) {
+        this.seasons = cached
+        this.updateSeasonSelect()
+        return
+      }
+      
       const response = await fetch(`${this.apiBase}/seasons`)
       if (response.ok) {
         this.seasons = await response.json()
+        this.setCache('seasons', null, this.seasons)
         this.updateSeasonSelect()
       }
     } catch (error) {
@@ -610,9 +765,17 @@ class TennisRankingSystem {
 
   async loadPlayDates() {
     try {
+      // Check cache first (5 min TTL for playDates)
+      const cached = this.getCache('playDates')
+      if (cached) {
+        this.playDates = cached
+        return
+      }
+      
       const response = await fetch(`${this.apiBase}/play-dates`)
       if (response.ok) {
         this.playDates = await response.json()
+        this.setCache('playDates', null, this.playDates)
       }
     } catch (error) {
       console.error('Error loading play dates:', error)
@@ -1302,7 +1465,7 @@ class TennisRankingSystem {
       const data = await response.json()
       
       if (response.ok) {
-        this.clearCache() // Invalidate client cache
+        this.invalidateCache(['players']) // Only players changed
         await this.loadPlayers()
         this.renderPlayers()
         this.updatePlayerSelects()
@@ -1337,7 +1500,7 @@ class TennisRankingSystem {
       })
 
       if (response.ok) {
-        this.clearCache() // Invalidate client cache
+        this.invalidateCache(['players', 'rankings', 'matches']) // Player deletion affects all
         await this.loadPlayers()
         await this.loadMatches()
         this.renderPlayers()
@@ -1472,7 +1635,7 @@ class TennisRankingSystem {
       const data = await response.json()
       
       if (response.ok) {
-        this.clearCache() // Invalidate client cache
+        this.invalidateCache(['rankings', 'matches', 'playDates']) // Only match-related data
         await this.loadMatches()
         await this.loadPlayDates()
         
@@ -1690,34 +1853,28 @@ class TennisRankingSystem {
     let rankings = []
     
     try {
+      let cacheKey = ''
+      let apiUrl = ''
+      
       if (this.currentViewMode === 'daily' && this.selectedDate) {
-        const cacheKey = `rankings:date:${this.selectedDate}`
-        rankings = this.cacheGet(cacheKey)
-        if (!rankings) {
-          const response = await fetch(`${this.apiBase}/rankings/date/${this.selectedDate}`)
-          if (response.ok) {
-            rankings = await response.json()
-            this.cacheSet(cacheKey, rankings)
-          }
-        }
+        cacheKey = `daily:${this.selectedDate}`
+        apiUrl = `${this.apiBase}/rankings/date/${this.selectedDate}`
       } else if (this.currentViewMode === 'season' && this.selectedSeason) {
-        const cacheKey = `rankings:season:${this.selectedSeason}`
-        rankings = this.cacheGet(cacheKey)
-        if (!rankings) {
-          const response = await fetch(`${this.apiBase}/rankings/season/${this.selectedSeason}`)
-          if (response.ok) {
-            rankings = await response.json()
-            this.cacheSet(cacheKey, rankings)
-          }
-        }
+        cacheKey = `season:${this.selectedSeason}`
+        apiUrl = `${this.apiBase}/rankings/season/${this.selectedSeason}`
       } else if (this.currentViewMode === 'lifetime') {
-        const cacheKey = 'rankings:lifetime'
-        rankings = this.cacheGet(cacheKey)
-        if (!rankings) {
-          const response = await fetch(`${this.apiBase}/rankings/lifetime`)
+        cacheKey = 'lifetime'
+        apiUrl = `${this.apiBase}/rankings/lifetime`
+      }
+      
+      if (cacheKey) {
+        // Use smart cache with type-specific TTL
+        rankings = this.getCache('rankings', cacheKey)
+        if (!rankings && apiUrl) {
+          const response = await fetch(apiUrl)
           if (response.ok) {
             rankings = await response.json()
-            this.cacheSet(cacheKey, rankings, 10 * 60 * 1000) // 10 min TTL for lifetime
+            this.setCache('rankings', cacheKey, rankings)
           }
         }
       }
@@ -1784,20 +1941,33 @@ class TennisRankingSystem {
     try {
       // Check for filter date
       const matchHistoryDate = document.getElementById('matchHistoryDate')?.value
+      let cacheKey = ''
+      let apiUrl = ''
       
       if (matchHistoryDate) {
-        const response = await fetch(`${this.apiBase}/matches/by-date/${matchHistoryDate}`)
-        if (response.ok) matches = await response.json()
+        cacheKey = `date:${matchHistoryDate}`
+        apiUrl = `${this.apiBase}/matches/by-date/${matchHistoryDate}`
       } else if (this.currentViewMode === 'daily' && this.selectedDate) {
-        const response = await fetch(`${this.apiBase}/matches/by-date/${this.selectedDate}`)
-        if (response.ok) matches = await response.json()
+        cacheKey = `date:${this.selectedDate}`
+        apiUrl = `${this.apiBase}/matches/by-date/${this.selectedDate}`
       } else if (this.currentViewMode === 'season' && this.selectedSeason) {
-        const response = await fetch(`${this.apiBase}/matches/by-season/${this.selectedSeason}`)
-        if (response.ok) matches = await response.json()
+        cacheKey = `season:${this.selectedSeason}`
+        apiUrl = `${this.apiBase}/matches/by-season/${this.selectedSeason}`
       } else {
-        const response = await fetch(`${this.apiBase}/matches`)
-        if (response.ok) matches = await response.json()
+        cacheKey = 'all'
+        apiUrl = `${this.apiBase}/matches`
       }
+      
+      // Check cache first
+      matches = this.getCache('matches', cacheKey)
+      if (!matches && apiUrl) {
+        const response = await fetch(apiUrl)
+        if (response.ok) {
+          matches = await response.json()
+          this.setCache('matches', cacheKey, matches)
+        }
+      }
+      matches = matches || []
     } catch (error) {
       console.error('Error loading matches:', error)
     }
@@ -2248,6 +2418,7 @@ class TennisRankingSystem {
       const data = await response.json()
       
       if (response.ok) {
+        this.invalidateCache(['seasons', 'rankings']) // Season changes affect rankings
         await this.loadSeasons()
         this.renderSeasons()
         this.updateSeasonSelector()
@@ -2288,6 +2459,7 @@ class TennisRankingSystem {
         }
       }
       
+      this.invalidateCache(['seasons', 'rankings']) // Season update affects rankings
       await this.loadSeasons()
       this.renderSeasons()
       this.updateSeasonSelector()
@@ -2421,6 +2593,9 @@ class TennisRankingSystem {
       const data = await response.json()
       
       if (response.ok) {
+        // Invalidate all related caches
+        this.invalidateCache(['seasons', 'rankings', 'matches', 'playDates'])
+        
         // Reload all data since deleting a season affects matches and rankings
         await Promise.all([
           this.loadSeasons(),
@@ -3085,7 +3260,7 @@ class TennisRankingSystem {
       const data = await response.json()
       
       if (response.ok) {
-        this.clearCache() // Invalidate client cache
+        this.invalidateCache(['rankings', 'matches', 'playDates']) // Only match-related data
         await this.loadMatches()
         await this.loadPlayDates()
         this.renderRankings()

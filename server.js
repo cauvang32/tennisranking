@@ -27,6 +27,7 @@ import { createMatchRouter } from './routes/matches.js'
 import { createRankingRouter } from './routes/rankings.js'
 import { createExportRouter } from './routes/export.js'
 import { createAuthRouter } from './routes/users.js'
+import { createTimeoutMiddleware, sendError, ErrorCodes } from './utils/async-handler.js'
 
 // Load environment variables
 dotenv.config()
@@ -857,6 +858,10 @@ app.use(compression({
     return compression.filter(req, res)
   }
 }))
+
+// Request timeout middleware (30 seconds default, configurable via env)
+const REQUEST_TIMEOUT_MS = parseInt(process.env.REQUEST_TIMEOUT_MS) || 30000
+app.use('/api', createTimeoutMiddleware(REQUEST_TIMEOUT_MS))
 
 // CSRF middleware generator (deprecated - using global protection now)
 const generateCSRFMiddleware = () => {
@@ -2421,8 +2426,8 @@ app.post('/api/restore',
         
         if (newSeasonId && newPlayer1Id && newPlayer3Id) {
           try {
-            // addMatch signature: (seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType)
-            await db.addMatch(
+            // addMatchWithTimestamp preserves original created_at for correct form/phong độ ordering
+            await db.addMatchWithTimestamp(
               newSeasonId,
               match.play_date,
               newPlayer1Id,
@@ -2432,7 +2437,8 @@ app.post('/api/restore',
               match.team1_score,
               match.team2_score,
               match.winning_team,
-              match.match_type || 'duo'
+              match.match_type || 'duo',
+              match.created_at || null  // Preserve original timestamp if available
             )
             matchesRestored++
           } catch (matchError) {
@@ -3127,23 +3133,63 @@ app.get('/', (req, res) => {
   res.redirect(SUBPATH)
 })
 
+// Helper function to check database connectivity
+async function checkDatabaseHealth() {
+  try {
+    const startTime = Date.now()
+    // Simple query to test database connectivity
+    await db.pool.query('SELECT 1')
+    return {
+      status: 'healthy',
+      responseTimeMs: Date.now() - startTime
+    }
+  } catch (error) {
+    return {
+      status: 'unhealthy',
+      error: error.message
+    }
+  }
+}
+
 // Health check endpoint for monitoring (unauthenticated for load balancers)
-app.get('/health', (req, res) => {
-  res.status(200).json({
-    status: 'healthy',
+app.get('/health', async (req, res) => {
+  const dbHealth = await checkDatabaseHealth()
+  const cacheStats = rankingsCache.getStats()
+  const memoryUsage = process.memoryUsage()
+  
+  const isHealthy = dbHealth.status === 'healthy'
+  
+  res.status(isHealthy ? 200 : 503).json({
+    status: isHealthy ? 'healthy' : 'degraded',
     timestamp: new Date().toISOString(),
     version: process.env.npm_package_version || '1.0.0',
     environment: process.env.NODE_ENV || 'development',
     domain: process.env.PUBLIC_DOMAIN || 'localhost',
     basePath: process.env.BASE_PATH || '/',
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    checks: {
+      database: dbHealth,
+      cache: {
+        status: 'healthy',
+        entries: cacheStats.currentEntries,
+        hitRate: cacheStats.hitRate
+      },
+      memory: {
+        heapUsedMB: Math.round(memoryUsage.heapUsed / 1024 / 1024),
+        heapTotalMB: Math.round(memoryUsage.heapTotal / 1024 / 1024),
+        rssMB: Math.round(memoryUsage.rss / 1024 / 1024)
+      }
+    }
   })
 })
 
 // API Health endpoint with proxy information (for testing)
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
+  const dbHealth = await checkDatabaseHealth()
+  const cacheStats = rankingsCache.getStats()
+  
   const proxyInfo = {
-    status: 'healthy',
+    status: dbHealth.status === 'healthy' ? 'healthy' : 'degraded',
     timestamp: new Date().toISOString(),
     proxyTrust: app.get('trust proxy') !== false,
     clientIP: req.ip,
@@ -3153,7 +3199,16 @@ app.get('/api/health', (req, res) => {
     forwardedHost: req.get('X-Forwarded-Host'),
     environment: process.env.NODE_ENV || 'development',
     behindProxy: process.env.BEHIND_PROXY === 'true',
-    uptime: process.uptime()
+    uptime: process.uptime(),
+    checks: {
+      database: dbHealth,
+      cache: {
+        entries: cacheStats.currentEntries,
+        hitRate: cacheStats.hitRate,
+        hits: cacheStats.hits,
+        misses: cacheStats.misses
+      }
+    }
   }
   
   // Log proxy information for debugging
@@ -3166,7 +3221,7 @@ app.get('/api/health', (req, res) => {
     })
   }
   
-  res.status(200).json(proxyInfo)
+  res.status(dbHealth.status === 'healthy' ? 200 : 503).json(proxyInfo)
 })
 
 // Fallback for any other routes (in production)

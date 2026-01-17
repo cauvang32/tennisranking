@@ -181,6 +181,37 @@ class TennisDatabasePostgreSQL {
         CREATE INDEX IF NOT EXISTS idx_season_players_player_id ON season_players(player_id);
       `)
 
+      // Additional indexes for player lookups (form queries)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_matches_player1_id ON matches(player1_id);
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_matches_player2_id ON matches(player2_id);
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_matches_player3_id ON matches(player3_id);
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_matches_player4_id ON matches(player4_id);
+      `)
+      
+      // Composite index for season+date queries
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_matches_season_date ON matches(season_id, play_date DESC);
+      `)
+      
+      // Composite index for form lookup (covering index)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_matches_form_lookup 
+        ON matches(play_date DESC, created_at DESC) 
+        INCLUDE (player1_id, player2_id, player3_id, player4_id, winning_team);
+      `)
+      
+      // Composite index for season_players
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_season_players_composite ON season_players(season_id, player_id);
+      `)
+
       await client.query('COMMIT')
     } catch (error) {
       await client.query('ROLLBACK')
@@ -490,6 +521,19 @@ class TennisDatabasePostgreSQL {
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id
     `, [seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType])
     return result.rows[0].id
+  }
+
+  // Add match with preserved created_at (for restore operations)
+  async addMatchWithTimestamp(seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType = 'duo', createdAt = null) {
+    if (createdAt) {
+      const result = await this.query(`
+        INSERT INTO matches (season_id, play_date, player1_id, player2_id, player3_id, player4_id, team1_score, team2_score, winning_team, match_type, created_at) 
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id
+      `, [seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType, createdAt])
+      return result.rows[0].id
+    } else {
+      return this.addMatch(seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType)
+    }
   }
 
   async getMatches(limit = null) {
@@ -896,6 +940,134 @@ class TennisDatabasePostgreSQL {
       LIMIT $3
     `, [playerId, date, limit])
     return result.rows
+  }
+
+  /**
+   * Batch get player forms for multiple players at once (avoids N+1 queries)
+   * Returns Map<playerId, formResults[]>
+   */
+  async getPlayerFormsInBatch(playerIds, limit = 5) {
+    if (!playerIds || playerIds.length === 0) {
+      return new Map()
+    }
+
+    // Use ROW_NUMBER() to get last N matches per player
+    const result = await this.query(`
+      WITH player_matches AS (
+        SELECT 
+          p.id as player_id,
+          CASE WHEN 
+            (m.winning_team = 1 AND (m.player1_id = p.id OR m.player2_id = p.id)) OR 
+            (m.winning_team = 2 AND (m.player3_id = p.id OR m.player4_id = p.id))
+            THEN 'win' ELSE 'loss' 
+          END as result,
+          TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date,
+          ROW_NUMBER() OVER (
+            PARTITION BY p.id 
+            ORDER BY m.play_date DESC, m.created_at DESC
+          ) as rn
+        FROM unnest($1::int[]) AS p(id)
+        INNER JOIN matches m ON 
+          m.player1_id = p.id OR m.player2_id = p.id OR 
+          m.player3_id = p.id OR m.player4_id = p.id
+      )
+      SELECT player_id, result, play_date
+      FROM player_matches
+      WHERE rn <= $2
+      ORDER BY player_id, rn
+    `, [playerIds, limit])
+
+    // Group results by player_id
+    const formMap = new Map()
+    for (const playerId of playerIds) {
+      formMap.set(playerId, [])
+    }
+    for (const row of result.rows) {
+      const forms = formMap.get(row.player_id) || []
+      forms.push({ result: row.result, play_date: row.play_date })
+      formMap.set(row.player_id, forms)
+    }
+    return formMap
+  }
+
+  /**
+   * Batch get player forms for a specific season (avoids N+1 queries)
+   * Returns Map<playerId, formResults[]>
+   */
+  async getPlayerFormsBySeasonBatch(playerIds, seasonId, limit = 5) {
+    if (!playerIds || playerIds.length === 0) {
+      return new Map()
+    }
+
+    const result = await this.query(`
+      WITH player_matches AS (
+        SELECT 
+          p.id as player_id,
+          CASE WHEN 
+            (m.winning_team = 1 AND (m.player1_id = p.id OR m.player2_id = p.id)) OR 
+            (m.winning_team = 2 AND (m.player3_id = p.id OR m.player4_id = p.id))
+            THEN 'win' ELSE 'loss' 
+          END as result,
+          TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date,
+          ROW_NUMBER() OVER (
+            PARTITION BY p.id 
+            ORDER BY m.play_date DESC, m.created_at DESC
+          ) as rn
+        FROM unnest($1::int[]) AS p(id)
+        INNER JOIN matches m ON 
+          (m.player1_id = p.id OR m.player2_id = p.id OR 
+           m.player3_id = p.id OR m.player4_id = p.id)
+          AND m.season_id = $2
+      )
+      SELECT player_id, result, play_date
+      FROM player_matches
+      WHERE rn <= $3
+      ORDER BY player_id, rn
+    `, [playerIds, seasonId, limit])
+
+    // Group results by player_id
+    const formMap = new Map()
+    for (const playerId of playerIds) {
+      formMap.set(playerId, [])
+    }
+    for (const row of result.rows) {
+      const forms = formMap.get(row.player_id) || []
+      forms.push({ result: row.result, play_date: row.play_date })
+      formMap.set(row.player_id, forms)
+    }
+    return formMap
+  }
+
+  /**
+   * Get player stats with forms in a single query (lifetime)
+   */
+  async getPlayerStatsWithFormsLifetime(formLimit = 5) {
+    const rankings = await this.getPlayerStatsLifetime()
+    if (rankings.length === 0) return rankings
+
+    const playerIds = rankings.map(p => p.id)
+    const formsMap = await this.getPlayerFormsInBatch(playerIds, formLimit)
+
+    return rankings.map(player => ({
+      ...player,
+      form: formsMap.get(player.id) || []
+    }))
+  }
+
+  /**
+   * Get player stats with forms for a season in optimized batch
+   */
+  async getPlayerStatsWithFormsBySeason(seasonId, formLimit = 5) {
+    const rankings = await this.getPlayerStatsBySeason(seasonId)
+    if (rankings.length === 0) return rankings
+
+    const playerIds = rankings.map(p => p.id)
+    const formsMap = await this.getPlayerFormsBySeasonBatch(playerIds, seasonId, formLimit)
+
+    return rankings.map(player => ({
+      ...player,
+      form: formsMap.get(player.id) || []
+    }))
   }
 
   // ==========================================

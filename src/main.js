@@ -20,7 +20,66 @@ class TennisRankingSystem {
     this.isManualWinnerMode = false
     this.currentMatchType = 'duo' // 'duo' (đánh đôi) or 'solo' (đánh đơn)
     this.currentSeasonPlayers = [] // Players eligible for current selected season
+    this.eventHandlers = [] // Track event listeners for cleanup
+    
+    // Client-side cache with TTL (5 minutes default)
+    this.cache = new Map()
+    this.cacheTTL = 5 * 60 * 1000 // 5 minutes
+    
     this.init()
+  }
+
+  // Cache management methods
+  cacheGet(key) {
+    const item = this.cache.get(key)
+    if (!item) return null
+    
+    // Check if expired
+    if (Date.now() > item.expiresAt) {
+      this.cache.delete(key)
+      return null
+    }
+    
+    return item.data
+  }
+
+  cacheSet(key, data, ttl = this.cacheTTL) {
+    this.cache.set(key, {
+      data,
+      expiresAt: Date.now() + ttl,
+      createdAt: Date.now()
+    })
+  }
+
+  // Clear all cache - call this after any data modification
+  clearCache() {
+    this.cache.clear()
+    console.log('🗑️ Client cache cleared')
+  }
+
+  // Clear cache for specific pattern
+  invalidateCache(pattern) {
+    for (const key of this.cache.keys()) {
+      if (key.includes(pattern)) {
+        this.cache.delete(key)
+      }
+    }
+  }
+
+  // Event listener management for proper cleanup
+  addTrackedEventListener(element, event, handler, options) {
+    if (!element) return
+    element.addEventListener(event, handler, options)
+    this.eventHandlers.push({ element, event, handler, options })
+  }
+
+  removeAllTrackedEventListeners() {
+    this.eventHandlers.forEach(({ element, event, handler, options }) => {
+      if (element) {
+        element.removeEventListener(event, handler, options)
+      }
+    })
+    this.eventHandlers = []
   }
 
   // Security: HTML escape to prevent XSS attacks
@@ -32,6 +91,23 @@ class TennisRankingSystem {
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&#039;')
+  }
+
+  // Loading overlay control
+  showLoader(message = 'Đang tải...') {
+    const overlay = document.getElementById('loadingOverlay')
+    if (overlay) {
+      const messageEl = overlay.querySelector('p')
+      if (messageEl) messageEl.textContent = message
+      overlay.classList.add('show')
+    }
+  }
+
+  hideLoader() {
+    const overlay = document.getElementById('loadingOverlay')
+    if (overlay) {
+      overlay.classList.remove('show')
+    }
   }
 
   // Auto-detect API base URL for subpath deployments
@@ -822,10 +898,11 @@ class TennisRankingSystem {
         })
       }
 
-      // Delete player buttons (using event delegation)
+      // Delete player buttons (using event delegation for both .delete-btn and .delete-player-btn)
       document.addEventListener('click', async (e) => {
-        if (e.target.classList.contains('delete-btn') && e.target.dataset.playerId) {
-          const playerId = parseInt(e.target.dataset.playerId)
+        const deleteBtn = e.target.closest('.delete-btn, .delete-player-btn')
+        if (deleteBtn && deleteBtn.dataset.playerId) {
+          const playerId = parseInt(deleteBtn.dataset.playerId)
           await this.removePlayer(playerId)
         }
       })
@@ -1207,13 +1284,11 @@ class TennisRankingSystem {
     
     const playerName = inputElement?.value?.trim()
     if (!playerName) {
-      this.updateFileStatus('❌ Vui lòng nhập tên người chơi', 'error')
       this.showToast('Vui lòng nhập tên người chơi', 'error')
       return
     }
 
     if (!this.isAuthenticated) {
-      this.updateFileStatus('❌ Cần đăng nhập để thêm người chơi', 'error')
       this.showToast('Cần đăng nhập để thêm người chơi', 'error')
       return
     }
@@ -1227,28 +1302,26 @@ class TennisRankingSystem {
       const data = await response.json()
       
       if (response.ok) {
+        this.clearCache() // Invalidate client cache
         await this.loadPlayers()
         this.renderPlayers()
         this.updatePlayerSelects()
         // Clear both inputs
         if (oldInput) oldInput.value = ''
         if (newInput) newInput.value = ''
-        this.updateFileStatus(`✅ Đã thêm người chơi: ${playerName}`, 'success')
         this.showToast(`Đã thêm người chơi: ${playerName}`, 'success')
       } else {
-        this.updateFileStatus(`❌ ${data.error}`, 'error')
         this.showToast(data.error, 'error')
       }
     } catch (error) {
       console.error('Error adding player:', error)
-      this.updateFileStatus('❌ Lỗi khi thêm người chơi', 'error')
       this.showToast('Lỗi khi thêm người chơi', 'error')
     }
   }
 
   async removePlayer(playerId) {
     if (!this.isAuthenticated) {
-      this.updateFileStatus('❌ Cần đăng nhập để xóa người chơi', 'error')
+      this.showToast('Cần đăng nhập để xóa người chơi', 'error')
       return
     }
 
@@ -1264,20 +1337,21 @@ class TennisRankingSystem {
       })
 
       if (response.ok) {
+        this.clearCache() // Invalidate client cache
         await this.loadPlayers()
         await this.loadMatches()
         this.renderPlayers()
         this.renderRankings()
         this.renderMatchHistory()
         this.updatePlayerSelects()
-        this.updateFileStatus(`✅ Đã xóa người chơi: ${player.name}`, 'success')
+        this.showToast(`Đã xóa người chơi: ${player.name}`, 'success')
       } else {
         const data = await response.json()
-        this.updateFileStatus(`❌ ${data.error}`, 'error')
+        this.showToast(data.error, 'error')
       }
     } catch (error) {
       console.error('Error removing player:', error)
-      this.updateFileStatus('❌ Lỗi khi xóa người chơi', 'error')
+      this.showToast('Lỗi khi xóa người chơi', 'error')
     }
   }
   
@@ -1398,6 +1472,7 @@ class TennisRankingSystem {
       const data = await response.json()
       
       if (response.ok) {
+        this.clearCache() // Invalidate client cache
         await this.loadMatches()
         await this.loadPlayDates()
         
@@ -1469,13 +1544,7 @@ class TennisRankingSystem {
           </tr>
         `).join('')
         
-        // Add event listeners for delete buttons
-        tableBody.querySelectorAll('.delete-player-btn').forEach(btn => {
-          btn.addEventListener('click', async () => {
-            const playerId = parseInt(btn.dataset.playerId)
-            await this.removePlayer(playerId)
-          })
-        })
+        // Event listeners handled by event delegation in setupEventListeners
       }
       
       // Update player count badge
@@ -1622,17 +1691,40 @@ class TennisRankingSystem {
     
     try {
       if (this.currentViewMode === 'daily' && this.selectedDate) {
-        const response = await fetch(`${this.apiBase}/rankings/date/${this.selectedDate}`)
-        if (response.ok) rankings = await response.json()
+        const cacheKey = `rankings:date:${this.selectedDate}`
+        rankings = this.cacheGet(cacheKey)
+        if (!rankings) {
+          const response = await fetch(`${this.apiBase}/rankings/date/${this.selectedDate}`)
+          if (response.ok) {
+            rankings = await response.json()
+            this.cacheSet(cacheKey, rankings)
+          }
+        }
       } else if (this.currentViewMode === 'season' && this.selectedSeason) {
-        const response = await fetch(`${this.apiBase}/rankings/season/${this.selectedSeason}`)
-        if (response.ok) rankings = await response.json()
+        const cacheKey = `rankings:season:${this.selectedSeason}`
+        rankings = this.cacheGet(cacheKey)
+        if (!rankings) {
+          const response = await fetch(`${this.apiBase}/rankings/season/${this.selectedSeason}`)
+          if (response.ok) {
+            rankings = await response.json()
+            this.cacheSet(cacheKey, rankings)
+          }
+        }
       } else if (this.currentViewMode === 'lifetime') {
-        const response = await fetch(`${this.apiBase}/rankings/lifetime`)
-        if (response.ok) rankings = await response.json()
+        const cacheKey = 'rankings:lifetime'
+        rankings = this.cacheGet(cacheKey)
+        if (!rankings) {
+          const response = await fetch(`${this.apiBase}/rankings/lifetime`)
+          if (response.ok) {
+            rankings = await response.json()
+            this.cacheSet(cacheKey, rankings, 10 * 60 * 1000) // 10 min TTL for lifetime
+          }
+        }
       }
+      rankings = rankings || []
     } catch (error) {
       console.error('Error loading rankings:', error)
+      rankings = []
     }
 
     // Determine which table to use based on view mode
@@ -2519,6 +2611,9 @@ class TennisRankingSystem {
           if (response.ok) {
             this.showToast('Khôi phục dữ liệu thành công! Đang tải lại...', 'success')
             
+            // Invalidate all client cache
+            this.clearCache()
+            
             // Reload all data
             await this.loadPlayers()
             await this.loadSeasons()
@@ -2990,6 +3085,7 @@ class TennisRankingSystem {
       const data = await response.json()
       
       if (response.ok) {
+        this.clearCache() // Invalidate client cache
         await this.loadMatches()
         await this.loadPlayDates()
         this.renderRankings()
@@ -3556,17 +3652,17 @@ class TennisRankingSystem {
         
         return `
           <tr>
-            <td>${account.id}</td>
-            <td><strong>${account.username}</strong>${isSelf ? ' <span class="badge role-viewer">Bạn</span>' : ''}</td>
-            <td>${account.display_name || '-'}</td>
-            <td>${account.email || '-'}</td>
-            <td><span class="badge ${roleClass}">${account.role.toUpperCase()}</span></td>
+            <td>${this.escapeHtml(account.id)}</td>
+            <td><strong>${this.escapeHtml(account.username)}</strong>${isSelf ? ' <span class="badge role-viewer">Bạn</span>' : ''}</td>
+            <td>${this.escapeHtml(account.display_name) || '-'}</td>
+            <td>${this.escapeHtml(account.email) || '-'}</td>
+            <td><span class="badge ${roleClass}">${this.escapeHtml(account.role).toUpperCase()}</span></td>
             <td><span class="${statusClass}">${account.is_active ? '✅ Hoạt động' : '❌ Vô hiệu'}</span></td>
-            <td>${lastLogin}</td>
+            <td>${this.escapeHtml(lastLogin)}</td>
             <td>
               <div class="action-btns">
-                <button class="edit-btn" data-account-id="${account.id}" title="Chỉnh sửa">✏️</button>
-                <button class="delete-btn" data-account-id="${account.id}" ${isSelf ? 'disabled title="Không thể xóa tài khoản của chính mình"' : 'title="Xóa"'}>🗑️</button>
+                <button class="edit-btn" data-account-id="${this.escapeHtml(account.id)}" title="Chỉnh sửa">✏️</button>
+                <button class="delete-btn" data-account-id="${this.escapeHtml(account.id)}" ${isSelf ? 'disabled title="Không thể xóa tài khoản của chính mình"' : 'title="Xóa"'}>🗑️</button>
               </div>
             </td>
           </tr>

@@ -1007,7 +1007,8 @@ if (isDevelopment) {
       const isImmutableAsset = /\.(?:js|css|mjs|cjs|svg|png|jpg|jpeg|gif|ico|webp|avif|woff|woff2|ttf)$/i.test(lowerPath)
 
       if (isHTML) {
-        res.setHeader('Cache-Control', 'no-store, max-age=0')
+        // Allow HTML caching for nginx with revalidation (10 minutes)
+        res.setHeader('Cache-Control', 'public, max-age=600, must-revalidate')
       } else if (isImmutableAsset) {
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
       } else {

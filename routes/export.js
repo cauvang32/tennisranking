@@ -43,8 +43,11 @@ export const createExportRouter = ({
 
     const buffer = await createDateExportBuffer({ date, rankings, matches })
     
+    // XSS Protection: Sanitize filename (only allow alphanumeric, dash, underscore)
+    const sanitizedDate = date.replace(/[^a-zA-Z0-9-_]/g, '')
+    
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    res.setHeader('Content-Disposition', `attachment; filename="tennis-rankings-${date}.xlsx"`)
+    res.setHeader('Content-Disposition', `attachment; filename="tennis-rankings-${sanitizedDate}.xlsx"`)
     res.send(Buffer.from(buffer))
   }))
 
@@ -66,8 +69,11 @@ export const createExportRouter = ({
     const seasonName = season ? season.name : `Mùa ${seasonId}`
     const buffer = await createSeasonExportBuffer({ seasonName, rankings, matches })
     
+    // XSS Protection: seasonId already validated as numeric above, but sanitize for safety
+    const sanitizedSeasonId = seasonId.replace(/[^0-9]/g, '')
+    
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    res.setHeader('Content-Disposition', `attachment; filename="tennis-rankings-season-${seasonId}.xlsx"`)
+    res.setHeader('Content-Disposition', `attachment; filename="tennis-rankings-season-${sanitizedSeasonId}.xlsx"`)
     res.send(Buffer.from(buffer))
   }))
 

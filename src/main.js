@@ -602,6 +602,18 @@ class TennisRankingSystem {
       ...options.headers
     }
     
+    // SSRF Protection: Validate URL is relative or same-origin
+    try {
+      const parsedUrl = new URL(url, window.location.origin)
+      // Only allow same-origin or relative URLs
+      if (parsedUrl.origin !== window.location.origin) {
+        throw new Error('Cross-origin requests not allowed')
+      }
+    } catch (error) {
+      // If URL parsing fails or cross-origin, reject
+      return Promise.reject(new Error('Invalid URL: ' + error.message))
+    }
+    
     return fetch(url, {
       ...options,
       headers,

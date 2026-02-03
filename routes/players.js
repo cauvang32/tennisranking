@@ -38,8 +38,7 @@ export const createPlayerRouter = ({
       const { name } = req.body
       try {
         const playerId = await db.addPlayer(name)
-        rankingsCache.clear()
-        setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+        await rankingsCache.invalidateOnPlayerChange()
         res.json({ success: true, id: playerId, name })
       } catch (error) {
         if (error.message.includes('UNIQUE constraint failed')) {
@@ -61,8 +60,7 @@ export const createPlayerRouter = ({
     asyncHandler(async (req, res) => {
       const playerId = parseInt(req.params.id)
       await db.removePlayer(playerId)
-      rankingsCache.clear()
-      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      await rankingsCache.invalidateOnPlayerChange()
       res.json({ success: true, message: 'Player removed successfully' })
     })
   )

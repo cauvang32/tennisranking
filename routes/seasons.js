@@ -76,8 +76,7 @@ export const createSeasonRouter = ({
       }
 
       const seasonId = await db.createSeason(name, startDate, endDate, autoEnd, description, loseMoneyPerLoss, playerIds)
-      rankingsCache.clear()
-      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      await rankingsCache.invalidateOnSeasonChange()
 
       res.json({ success: true, id: seasonId, name, startDate, endDate, autoEnd, description, loseMoneyPerLoss, playerIds })
     })
@@ -109,8 +108,7 @@ export const createSeasonRouter = ({
       }
 
       await db.updateSeason(seasonId, name, startDate, endDate, autoEnd, description, loseMoneyPerLoss)
-      rankingsCache.clear()
-      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      await rankingsCache.invalidateOnSeasonChange()
       res.json({ success: true, message: 'Season updated successfully' })
     })
   )
@@ -138,7 +136,7 @@ export const createSeasonRouter = ({
       }
 
       await db.setSeasonPlayers(seasonId, playerIds, addedBy)
-      rankingsCache.clear()
+      await rankingsCache.invalidateOnSeasonChange()
       res.json({ success: true, message: 'Season players updated successfully' })
     })
   )
@@ -165,7 +163,7 @@ export const createSeasonRouter = ({
       }
 
       await db.addPlayerToSeason(seasonId, playerId, addedBy)
-      rankingsCache.clear()
+      await rankingsCache.invalidateOnSeasonChange()
       res.json({ success: true, message: 'Player added to season successfully' })
     })
   )
@@ -185,7 +183,7 @@ export const createSeasonRouter = ({
       const playerId = parseInt(req.params.playerId)
 
       await db.removePlayerFromSeason(seasonId, playerId)
-      rankingsCache.clear()
+      await rankingsCache.invalidateOnSeasonChange()
       res.json({ success: true, message: 'Player removed from season successfully' })
     })
   )
@@ -204,8 +202,7 @@ export const createSeasonRouter = ({
       const endDate = req.body.endDate || new Date().toISOString().split('T')[0]
       const endedBy = req.user.username
       await db.endSeason(seasonId, endDate, endedBy)
-      rankingsCache.clear()
-      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      await rankingsCache.invalidateOnSeasonChange()
       res.json({ success: true, message: 'Season ended successfully' })
     })
   )
@@ -229,8 +226,7 @@ export const createSeasonRouter = ({
         return
       }
       await db.reactivateSeason(seasonId)
-      rankingsCache.clear()
-      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      await rankingsCache.invalidateOnSeasonChange()
       console.log(`✅ Season ${seasonId} reactivated by ${username}`)
       res.json({ success: true, message: 'Season reactivated successfully' })
     })
@@ -255,8 +251,7 @@ export const createSeasonRouter = ({
         return
       }
       await db.deleteSeason(seasonId)
-      rankingsCache.clear()
-      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      await rankingsCache.invalidateOnSeasonChange()
       res.json({ success: true, message: 'Season deleted successfully' })
     })
   )
@@ -268,8 +263,7 @@ export const createSeasonRouter = ({
     asyncHandler(async (req, res) => {
       const expiredSeasons = await db.checkAndEndExpiredSeasons()
       if (expiredSeasons.length > 0) {
-        rankingsCache.clear()
-        setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+        await rankingsCache.invalidateOnSeasonChange()
       }
       res.json({ success: true, ended: expiredSeasons.length, seasons: expiredSeasons })
     })

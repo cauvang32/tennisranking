@@ -109,8 +109,7 @@ export const createMatchRouter = ({
         
         // For solo matches, player2 and player4 are null
         const matchId = await db.addMatch(seasonId, playDate, player1Id, null, player3Id, null, team1Score, team2Score, winningTeam, matchType)
-        rankingsCache.clear()
-        setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+        await rankingsCache.invalidateOnMatchChange(playDate)
         res.json({ success: true, id: matchId })
       } else {
         // Duo match validation (existing logic)
@@ -128,8 +127,7 @@ export const createMatchRouter = ({
         }
         
         const matchId = await db.addMatch(seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType)
-        rankingsCache.clear()
-        setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+        await rankingsCache.invalidateOnMatchChange(playDate)
         res.json({ success: true, id: matchId })
       }
     })
@@ -185,8 +183,7 @@ export const createMatchRouter = ({
         await db.updateMatch(matchId, seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType)
       }
       
-      rankingsCache.clear()
-      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      await rankingsCache.invalidateOnMatchChange(playDate)
       res.json({ success: true, message: 'Match updated successfully' })
     })
   )
@@ -205,9 +202,9 @@ export const createMatchRouter = ({
         res.status(404).json({ error: 'Match not found' })
         return
       }
+      const matchDate = existingMatch.play_date
       await db.deleteMatch(matchId)
-      rankingsCache.clear()
-      setTimeout(() => rankingsCache.preloadCommonData(db), 100)
+      await rankingsCache.invalidateOnMatchChange(matchDate)
       res.json({ success: true, message: 'Match deleted successfully' })
     })
   )

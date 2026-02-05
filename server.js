@@ -238,31 +238,34 @@ try {
   console.warn('⚠️  Server starting without Redis cache')
 }
 
-// Preload common cache data immediately on startup
+// Clear all cache and preload startup data on server start
+// This ensures fresh cache state and immediate availability of common data
 try {
-  await rankingsCache.preloadCommonData(db)
+  await rankingsCache.clearAndPreload(db)
 } catch (error) {
-  console.error('❌ Initial cache preload failed:', error.message)
+  console.error('❌ Initial cache setup failed:', error.message)
   console.warn('⚠️  Server starting with empty cache - first requests will be slower')
 }
 
-// Proactive cache refresh (every 4 minutes by default)
-const CACHE_PRELOAD_INTERVAL = parseInt(process.env.CACHE_PRELOAD_INTERVAL) || 240000
-console.log(`⏰ Scheduling cache refresh every ${CACHE_PRELOAD_INTERVAL / 1000 / 60} minutes`)
+// Periodic cache check (every 4 minutes by default)
+// Only loads data if not already cached (invalidation handles updates)
+const CACHE_CHECK_INTERVAL = parseInt(process.env.CACHE_PRELOAD_INTERVAL) || 240000
+console.log(`⏰ Scheduling cache check every ${CACHE_CHECK_INTERVAL / 1000 / 60} minutes`)
 
 setInterval(async () => {
   try {
+    // Check and reload any missing startup cache (after invalidation or eviction)
     await rankingsCache.preloadCommonData(db)
     
-    // Log stats periodically (Redis cache uses sync getStats)
+    // Log stats periodically
     const stats = rankingsCache.getStats()
     if (stats.hits + stats.misses > 0) {
       console.log(`📊 Cache Stats: ${stats.hitRate} hit rate, connected: ${stats.isConnected}`)
     }
   } catch (error) {
-    console.error('❌ Periodic cache refresh failed:', error.message)
+    console.error('❌ Periodic cache check failed:', error.message)
   }
-}, CACHE_PRELOAD_INTERVAL)
+}, CACHE_CHECK_INTERVAL)
 
 // Trust proxy (required for Cloudflare and other reverse proxies)
 // Proxy configuration for Nginx Proxy Manager

@@ -904,6 +904,16 @@ class TennisRankingSystem {
         createAccountBtn.addEventListener('click', () => this.showAccountModal())
       }
       
+      // Refresh cache status button (admin only)
+      const refreshCacheStatusBtn = document.getElementById('refreshCacheStatusBtn')
+      if (refreshCacheStatusBtn) {
+        refreshCacheStatusBtn.addEventListener('click', () => {
+          if (this.user?.role === 'admin') {
+            this.renderCacheStatus()
+          }
+        })
+      }
+      
       // Today button
       const todayBtn = document.getElementById('todayBtn')
       if (todayBtn) {
@@ -1399,6 +1409,10 @@ class TennisRankingSystem {
       this.renderSeasons()
     } else if (tabName === 'accounts') {
       this.renderAccounts()
+      // Also render cache status for admin users
+      if (this.user?.role === 'admin') {
+        this.renderCacheStatus()
+      }
     }
   }
 
@@ -3874,6 +3888,126 @@ class TennisRankingSystem {
     } catch (error) {
       console.error('Error rendering accounts:', error)
       container.innerHTML = '<tr><td colspan="8" class="text-center">Lỗi tải danh sách tài khoản</td></tr>'
+    }
+  }
+
+  // ========== Cache Status Display (Admin Only) ==========
+  async renderCacheStatus() {
+    const container = document.getElementById('cacheStatusContainer')
+    if (!container) return
+
+    // Only render for admin users
+    if (!this.isAuthenticated || this.user?.role !== 'admin') {
+      container.innerHTML = '<p class="cache-status-error">⚠️ Chỉ admin mới có thể xem trạng thái cache</p>'
+      return
+    }
+
+    // Show loading state
+    container.innerHTML = `
+      <div class="cache-status-loading">
+        <div class="loading-spinner"></div>
+        <span>Đang tải trạng thái cache...</span>
+      </div>
+    `
+
+    try {
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/cache-stats`, {
+        method: 'GET'
+      })
+
+      if (!response.ok) {
+        const errorData = await response.json()
+        throw new Error(errorData.error || 'Không thể tải trạng thái cache')
+      }
+
+      const data = await response.json()
+      const stats = data.cacheStats
+      const recommendations = data.recommendations
+      const serverInfo = data.serverInfo
+
+      // Calculate hit rate class
+      const hitRateValue = parseFloat(stats.hitRate) || 0
+      const hitRateClass = hitRateValue >= 70 ? 'positive' : (hitRateValue >= 40 ? 'warning' : 'negative')
+      
+      // Connection status
+      const connectionClass = stats.isConnected ? 'positive' : 'negative'
+      const connectionText = stats.isConnected ? '✅ Kết nối' : '❌ Mất kết nối'
+
+      container.innerHTML = `
+        <div class="cache-status-grid">
+          <div class="cache-stat-card">
+            <span class="stat-label">Trạng thái Redis</span>
+            <span class="stat-value ${connectionClass}">${connectionText}</span>
+          </div>
+          <div class="cache-stat-card">
+            <span class="stat-label">Tỷ lệ Hit</span>
+            <span class="stat-value ${hitRateClass}">${this.escapeHtml(stats.hitRate)}</span>
+          </div>
+          <div class="cache-stat-card">
+            <span class="stat-label">Hits / Misses</span>
+            <span class="stat-value">${stats.hits} / ${stats.misses}</span>
+          </div>
+          <div class="cache-stat-card">
+            <span class="stat-label">Số entry</span>
+            <span class="stat-value">${stats.currentEntries || 0}</span>
+          </div>
+          <div class="cache-stat-card">
+            <span class="stat-label">Bộ nhớ sử dụng</span>
+            <span class="stat-value">${this.escapeHtml(stats.memoryUsage || 'N/A')}</span>
+          </div>
+          <div class="cache-stat-card">
+            <span class="stat-label">Sets / Invalidations</span>
+            <span class="stat-value">${stats.sets || 0} / ${stats.invalidations || 0}</span>
+          </div>
+        </div>
+
+        ${recommendations ? `
+          <div class="cache-recommendations">
+            <h4>💡 Khuyến nghị</h4>
+            <ul>
+              <li><strong>Hiệu suất:</strong> ${this.escapeHtml(recommendations.performance)}</li>
+              <li><strong>Bộ nhớ:</strong> ${this.escapeHtml(recommendations.memory)}</li>
+              <li><strong>Ghi chú:</strong> ${this.escapeHtml(recommendations.info)}</li>
+            </ul>
+          </div>
+        ` : ''}
+
+        ${serverInfo ? `
+          <div class="cache-server-info">
+            <h4>🖥️ Thông tin Server</h4>
+            <div class="server-info-grid">
+              <span><strong>Uptime:</strong> ${this.formatUptime(serverInfo.uptime)}</span>
+              <span><strong>Môi trường:</strong> ${this.escapeHtml(serverInfo.environment)}</span>
+              <span><strong>Redis:</strong> ${serverInfo.redisConnected ? '✅ Đã kết nối' : '❌ Chưa kết nối'}</span>
+            </div>
+          </div>
+        ` : ''}
+      `
+
+    } catch (error) {
+      console.error('Error fetching cache status:', error)
+      container.innerHTML = `
+        <p class="cache-status-error">
+          ❌ Lỗi tải trạng thái cache: ${this.escapeHtml(error.message)}
+        </p>
+      `
+    }
+  }
+
+  // Format uptime in human-readable format
+  formatUptime(seconds) {
+    if (!seconds || seconds < 0) return 'N/A'
+    
+    const hours = Math.floor(seconds / 3600)
+    const minutes = Math.floor((seconds % 3600) / 60)
+    const secs = Math.floor(seconds % 60)
+    
+    if (hours > 0) {
+      return `${hours}h ${minutes}m ${secs}s`
+    } else if (minutes > 0) {
+      return `${minutes}m ${secs}s`
+    } else {
+      return `${secs}s`
     }
   }
 

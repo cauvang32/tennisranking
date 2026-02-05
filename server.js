@@ -2516,26 +2516,39 @@ app.post('/api/restore-data',
   }
 )
 
-// Cache Stats Route (development only)
-app.get('/api/cache-stats', checkAuth, (req, res) => {
-  if (process.env.NODE_ENV !== 'development') {
-    return res.status(404).json({ error: 'Endpoint not available in production' })
+// Cache Stats Route (admin only - for monitoring cache performance)
+app.get('/api/cache-stats', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const stats = rankingsCache.getStats()
+    const info = await rankingsCache.getInfo()
+    
+    res.json({
+      success: true,
+      cacheStats: {
+        ...stats,
+        currentEntries: info.currentEntries || 0,
+        memoryUsage: info.memoryUsage || 'N/A'
+      },
+      recommendations: {
+        performance: stats.hitRate === '0.00%' ? 'Cache chưa được sử dụng - bình thường cho hệ thống mới' :
+                    parseFloat(stats.hitRate) < 50 ? 'Tỷ lệ hit thấp - cần kiểm tra logic invalidation' :
+                    parseFloat(stats.hitRate) > 80 ? 'Hiệu suất cache xuất sắc' :
+                    'Hiệu suất cache tốt',
+        memory: info.memoryUsage && info.memoryUsage !== 'N/A' ? 
+                `Đang sử dụng ${info.memoryUsage} bộ nhớ` :
+                'Thông tin bộ nhớ không khả dụng',
+        info: 'Cache tự động invalidate khi dữ liệu thay đổi'
+      },
+      serverInfo: {
+        uptime: Math.floor(process.uptime()),
+        environment: process.env.NODE_ENV || 'development',
+        redisConnected: stats.isConnected || false
+      }
+    })
+  } catch (error) {
+    console.error('Error getting cache stats:', error)
+    res.status(500).json({ error: 'Failed to get cache statistics' })
   }
-  
-  const stats = rankingsCache.getStats()
-  res.json({
-    success: true,
-    cacheStats: stats,
-    recommendations: {
-      performance: stats.hitRate === '0.00%' ? 'Cache not used yet - normal for new system' :
-                  parseFloat(stats.hitRate) < 50 ? 'Low hit rate - check invalidation logic' :
-                  parseFloat(stats.hitRate) > 80 ? 'Excellent cache performance' :
-                  'Good cache performance',
-      memory: stats.memoryUsage > 1000000 ? 'High memory usage - consider Redis for scaling' :
-              'Memory usage within normal range',
-      info: 'Cache invalidates automatically on data changes and server restart'
-    }
-  })
 })
 
 // Data version endpoint (public - for client cache sync)

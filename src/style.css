@@ -2188,6 +2188,114 @@ body.match-mode-solo .duo-only {
   color: var(--text-secondary);
 }
 
+/* ========== Cache Status Section ========== */
+.cache-status-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  padding: var(--space-lg);
+  color: var(--text-secondary);
+}
+
+.cache-status-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-md);
+}
+
+.cache-stat-card {
+  background: var(--bg-secondary);
+  border-radius: var(--radius);
+  padding: var(--space-md);
+  border: 1px solid var(--border);
+}
+
+.cache-stat-card h4 {
+  margin: 0 0 var(--space-xs);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-secondary);
+}
+
+.cache-stat-card .stat-value {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.cache-stat-card .stat-value.positive {
+  color: var(--success);
+}
+
+.cache-stat-card .stat-value.warning {
+  color: var(--warning);
+}
+
+.cache-stat-card .stat-value.negative {
+  color: var(--danger);
+}
+
+.cache-recommendations {
+  margin-top: var(--space-md);
+  padding: var(--space-md);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius);
+  border-left: 3px solid var(--primary);
+}
+
+.cache-recommendations h4 {
+  margin: 0 0 var(--space-sm);
+  font-size: 0.875rem;
+  color: var(--text-primary);
+}
+
+.cache-recommendations ul {
+  margin: 0;
+  padding-left: var(--space-md);
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.cache-recommendations li {
+  margin-bottom: var(--space-xs);
+}
+
+.cache-server-info {
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.cache-server-info span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+
+.cache-server-info .connected {
+  color: var(--success);
+}
+
+.cache-server-info .disconnected {
+  color: var(--danger);
+}
+
+.cache-status-error {
+  padding: var(--space-md);
+  background: rgba(var(--danger-rgb), 0.1);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius);
+  color: var(--danger);
+  text-align: center;
+}
+
 /* ========== Season Selector Row ========== */
 .season-selector-row {
   margin-bottom: var(--space-lg);

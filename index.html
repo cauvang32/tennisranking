@@ -521,6 +521,21 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Cache Status Section (Admin Only) -->
+                <div class="card mt-4">
+                    <div class="card-header">
+                        <h3 class="card-title">📊 Trạng Thái Cache (Redis)</h3>
+                        <button class="btn btn-sm btn-ghost" id="refreshCacheStatusBtn">🔄 Làm mới</button>
+                    </div>
+                    <div class="card-body">
+                        <div id="cacheStatusContainer">
+                            <div class="cache-status-loading">
+                                <span class="spinner"></span> Đang tải thông tin cache...
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </section>
         </main>
 

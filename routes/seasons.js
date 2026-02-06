@@ -21,7 +21,7 @@ export const createSeasonRouter = ({
       'seasons',
       () => db.getSeasons()
     )
-    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(seasons)
   }))
 
@@ -30,7 +30,7 @@ export const createSeasonRouter = ({
       'seasons:active',
       () => db.getActiveSeasons()
     )
-    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(seasons)
   }))
 
@@ -39,7 +39,7 @@ export const createSeasonRouter = ({
       'season:active',
       () => db.getActiveSeason()
     )
-    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(activeSeason)
   }))
 
@@ -53,7 +53,7 @@ export const createSeasonRouter = ({
       cacheKey,
       () => db.getSeasonPlayers(seasonId)
     )
-    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(players)
   }))
 

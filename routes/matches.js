@@ -24,7 +24,7 @@ export const createMatchRouter = ({
       cacheKey,
       () => db.getMatches(limit)
     )
-    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(matches)
   }))
 
@@ -35,7 +35,7 @@ export const createMatchRouter = ({
       cacheKey,
       () => db.getMatchesByPlayDate(date)
     )
-    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(matches)
   }))
 
@@ -46,7 +46,7 @@ export const createMatchRouter = ({
       cacheKey,
       () => db.getMatchesBySeason(seasonId)
     )
-    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(matches)
   }))
 
@@ -65,7 +65,7 @@ export const createMatchRouter = ({
       res.status(404).json({ error: 'Match not found' })
       return
     }
-    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(match)
   }))
 
@@ -238,7 +238,7 @@ export const createMatchRouter = ({
       'playdates',
       () => db.getPlayDates()
     )
-    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(playDates)
   }))
 
@@ -247,7 +247,7 @@ export const createMatchRouter = ({
       'playdate:latest',
       () => db.getLatestPlayDate()
     )
-    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json({ playDate: latestDate })
   }))
 

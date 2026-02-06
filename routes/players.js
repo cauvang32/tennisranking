@@ -21,7 +21,7 @@ export const createPlayerRouter = ({
       'players',
       () => db.getPlayers()
     )
-    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(sanitizeResponse(players))
   }))
 

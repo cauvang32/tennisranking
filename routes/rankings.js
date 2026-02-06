@@ -14,8 +14,8 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache }) => {
       () => db.getPlayerStatsWithFormsLifetime(5)
     )
 
-    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
-    res.set('X-Cache-Key', cacheKey)
+    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('Redis-Cache-Key', cacheKey)
     res.json(rankings)
   }))
 
@@ -30,8 +30,8 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache }) => {
       () => db.getPlayerStatsWithFormsBySeason(seasonId, 5)
     )
 
-    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
-    res.set('X-Cache-Key', cacheKey)
+    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('Redis-Cache-Key', cacheKey)
     res.json(rankings)
   }))
 
@@ -58,8 +58,8 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache }) => {
       }
     )
 
-    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
-    res.set('X-Cache-Key', cacheKey)
+    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    res.set('Redis-Cache-Key', cacheKey)
     res.json(rankings)
   }))
 

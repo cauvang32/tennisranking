@@ -585,7 +585,9 @@ const createUserAwareRateLimiter = (anonymousLimit, authenticatedLimit, windowMs
 };
 
 // Apply user-aware rate limiting to API endpoints
-const smartApiLimiter = createUserAwareRateLimiter(50, 200); // Anonymous: 50/15min, Auth: 200/15min
+const rateLimitAnonymousMax = parseInt(process.env.RATE_LIMIT_ANONYMOUS_MAX) || 50;
+const rateLimitAuthenticatedMax = parseInt(process.env.RATE_LIMIT_AUTHENTICATED_MAX) || 200;
+const smartApiLimiter = createUserAwareRateLimiter(rateLimitAnonymousMax, rateLimitAuthenticatedMax);
 
 // Apply rate limiting conditionally based on environment
 if (process.env.NODE_ENV !== 'development') {

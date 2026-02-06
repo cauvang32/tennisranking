@@ -10,6 +10,7 @@ import bcrypt from 'bcryptjs'
 import cookieParser from 'cookie-parser'
 import dotenv from 'dotenv'
 import compression from 'compression'
+import zlib from 'zlib'
 import TennisDatabase from './database-postgresql.js'
 import {
   createFullExportBuffer,
@@ -674,15 +675,61 @@ app.use(cors(corsOptions))
 // Cookie parser middleware for JWT in httpOnly cookies
 app.use(cookieParser())
 
-// Enable gzip compression for responses larger than 1KB
+// Enable Brotli + gzip compression for responses larger than 1KB
+// Brotli achieves ~15-25% better compression than gzip on text assets
+const compressionFilter = (req, res) => {
+  if (req.headers['x-no-compression']) {
+    return false
+  }
+  return compression.filter(req, res)
+}
+
+app.use((req, res, next) => {
+  // Skip compression for tiny responses or opt-out requests
+  if (!compressionFilter(req, res)) {
+    return next()
+  }
+
+  const acceptEncoding = req.headers['accept-encoding'] || ''
+
+  // Prefer Brotli if the client supports it
+  if (acceptEncoding.includes('br')) {
+    // Manually compress with Brotli for API JSON responses
+    const originalJson = res.json.bind(res)
+    res.json = (body) => {
+      const raw = JSON.stringify(body)
+      // Only Brotli-compress responses larger than threshold (1KB)
+      if (Buffer.byteLength(raw, 'utf8') < 1024) {
+        return originalJson(body)
+      }
+
+      zlib.brotliCompress(Buffer.from(raw), {
+        params: {
+          [zlib.constants.BROTLI_PARAM_MODE]: zlib.constants.BROTLI_MODE_TEXT,
+          [zlib.constants.BROTLI_PARAM_QUALITY]: 4 // Fast compression (1-11, 4 is a good speed/ratio trade-off)
+        }
+      }, (err, compressed) => {
+        if (err || res.headersSent) {
+          // Fallback: let gzip middleware handle it
+          if (!res.headersSent) return originalJson(body)
+          return
+        }
+        res.setHeader('Content-Encoding', 'br')
+        res.setHeader('Content-Type', 'application/json; charset=utf-8')
+        res.setHeader('Content-Length', compressed.length)
+        res.removeHeader('Transfer-Encoding')
+        res.end(compressed)
+      })
+    }
+  }
+
+  next()
+})
+
+// Fallback: gzip compression for clients that don't support Brotli
 app.use(compression({
   threshold: 1024,
-  filter: (req, res) => {
-    if (req.headers['x-no-compression']) {
-      return false
-    }
-    return compression.filter(req, res)
-  }
+  filter: compressionFilter
 }))
 
 // Request timeout middleware (30 seconds default, configurable via env)
@@ -811,7 +858,7 @@ if (SUBPATH !== '/' && !isDevelopment) {
   })
 }
 
-// Prevent caching of API responses (dynamic data)
+// Prevent caching of API responses (dynamic data) but enable conditional requests via ETag
 const apiCachePaths = [
   '/api',
   SUBPATH !== '/' && !isDevelopment ? `${SUBPATH}/api` : null
@@ -819,9 +866,30 @@ const apiCachePaths = [
 
 if (apiCachePaths.length) {
   app.use(apiCachePaths, (req, res, next) => {
-    res.setHeader('Cache-Control', 'no-store, max-age=0')
-    res.setHeader('Pragma', 'no-cache')
-    res.setHeader('Expires', '0')
+    // For GET requests: allow conditional caching with ETag (304 Not Modified)
+    // This saves bandwidth when data hasn't changed
+    if (req.method === 'GET') {
+      res.setHeader('Cache-Control', 'no-cache') // Always revalidate, but allow 304
+      res.setHeader('Pragma', 'no-cache')
+      
+      // Set ETag based on data version for cache-coherent endpoints
+      const dataVersion = rankingsCache.getDataVersion()
+      if (dataVersion) {
+        const etag = `W/"v-${dataVersion}"`
+        res.setHeader('ETag', etag)
+        
+        // Check If-None-Match header for conditional request
+        const ifNoneMatch = req.get('If-None-Match')
+        if (ifNoneMatch === etag) {
+          return res.status(304).end()
+        }
+      }
+    } else {
+      // For mutations: never cache
+      res.setHeader('Cache-Control', 'no-store, max-age=0')
+      res.setHeader('Pragma', 'no-cache')
+      res.setHeader('Expires', '0')
+    }
     next()
   })
 }
@@ -2024,13 +2092,111 @@ app.get('/api/cache-stats', authenticateToken, requireAdmin, async (req, res) =>
   }
 })
 
+// SSE endpoint — pushes data-version changes to connected clients in real time
+// Replaces the need for polling /api/data-version every 2 minutes
+const sseClients = new Set()
+
+app.get('/api/events', (req, res) => {
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no') // Disable Nginx buffering for SSE
+  res.flushHeaders()
+
+  // Send initial version so client can sync immediately
+  const currentVersion = rankingsCache.getDataVersion()
+  res.write(`data: ${JSON.stringify({ version: currentVersion })}\n\n`)
+
+  // Keep-alive: send a comment every 30s to prevent proxy/browser timeout
+  const keepAlive = setInterval(() => {
+    res.write(': keepalive\n\n')
+  }, 30000)
+
+  // Track this client
+  sseClients.add(res)
+
+  // Clean up on disconnect
+  req.on('close', () => {
+    clearInterval(keepAlive)
+    sseClients.delete(res)
+  })
+})
+
+// Push version changes to all SSE clients when cache is invalidated
+rankingsCache.on('versionChange', (version) => {
+  const payload = `data: ${JSON.stringify({ version })}\n\n`
+  for (const client of sseClients) {
+    try {
+      client.write(payload)
+    } catch {
+      sseClients.delete(client)
+    }
+  }
+})
+
 // Data version endpoint (public - for client cache sync)
-// Clients poll this to check if their cache is stale
+// Clients poll this to check if their cache is stale (fallback when SSE unavailable)
 app.get('/api/data-version', (req, res) => {
   res.json({
     version: rankingsCache.getDataVersion(),
     timestamp: formatSecureTimestamp()
   })
+})
+
+// Combined init endpoint — single request replaces 4-6 parallel fetches on page load
+// Returns: players, seasons, playDates, latestPlayDate, activeSeasons, lifetime rankings, data version
+// All data comes from Redis cache (permanent startup keys, stampede-protected)
+app.get('/api/init', checkAuth, async (req, res) => {
+  try {
+    const [
+      { data: players },
+      { data: seasons },
+      { data: playDates },
+      { data: latestPlayDate },
+      { data: activeSeasons },
+      { data: lifetimeRankings }
+    ] = await Promise.all([
+      rankingsCache.getOrSet('players', () => db.getPlayers()),
+      rankingsCache.getOrSet('seasons', () => db.getSeasons()),
+      rankingsCache.getOrSet('playdates', () => db.getPlayDates()),
+      rankingsCache.getOrSet('playdate:latest', () => db.getLatestPlayDate()),
+      rankingsCache.getOrSet('seasons:active', () => db.getActiveSeasons()),
+      rankingsCache.getOrSet('rankings:lifetime', () => db.getPlayerStatsWithFormsLifetime(5))
+    ])
+
+    // Determine the default view date (latest play date)
+    const defaultDate = latestPlayDate || (playDates.length > 0 ? (playDates[0].play_date?.split('T')[0] || playDates[0].play_date) : null)
+
+    // Also fetch date rankings + matches for the latest date if available (likely cache-hit from startup warmup)
+    let defaultDateRankings = null
+    let defaultDateMatches = null
+    if (defaultDate) {
+      const dateOnly = defaultDate.split('T')[0]
+      const [dateRankingsResult, dateMatchesResult] = await Promise.all([
+        rankingsCache.getOrSet(`rankings:date:${dateOnly}`, () => db.getPlayerStatsWithFormsByDate(dateOnly, 5)),
+        rankingsCache.getOrSet(`matches:date:${dateOnly}`, () => db.getMatchesByPlayDate(dateOnly))
+      ])
+      defaultDateRankings = dateRankingsResult.data
+      defaultDateMatches = dateMatchesResult.data
+    }
+
+    res.json({
+      players,
+      seasons,
+      playDates,
+      latestPlayDate,
+      activeSeasons,
+      lifetimeRankings,
+      defaultDate: defaultDate ? defaultDate.split('T')[0] : null,
+      defaultDateRankings,
+      defaultDateMatches,
+      version: rankingsCache.getDataVersion()
+    })
+  } catch (error) {
+    console.error('Error in /api/init:', error)
+    res.status(500).json({ error: 'Failed to load initial data' })
+  }
 })
 
 // System Health Route (admin only)

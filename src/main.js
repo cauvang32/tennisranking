@@ -40,7 +40,7 @@ class TennisRankingSystem {
       players: 10 * 60 * 1000,      // 10 min - rarely changes
       seasons: 10 * 60 * 1000,      // 10 min - rarely changes
       playDates: 5 * 60 * 1000,     // 5 min - changes with new matches
-      versionCheck: 30 * 1000       // 30 sec - check server version
+      versionCheck: 2 * 60 * 1000   // 2 min - check server version (reduced from 30s)
     }
     
     // Start version polling for cache coherence
@@ -49,22 +49,95 @@ class TennisRankingSystem {
     this.init()
   }
 
-  // Poll server for data version changes (ensures cache coherence across clients)
+  // Real-time server data sync using SSE (Server-Sent Events)
+  // Falls back to polling if SSE is unavailable (e.g., old browsers, proxy issues)
   startVersionPolling() {
-    // Check immediately on start
+    this.connectSSE()
+  }
+
+  // Establish SSE connection for instant cache invalidation
+  connectSSE() {
+    if (!this.serverMode) return
+
+    // Build SSE URL from API base (strip /api suffix to get /api/events)
+    const sseUrl = `${this.apiBase}/events`
+
+    try {
+      this.eventSource = new EventSource(sseUrl, { withCredentials: true })
+
+      this.eventSource.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          const newVersion = data.version
+
+          if (this.cache.serverVersion !== null && this.cache.serverVersion !== newVersion) {
+            console.log(`🔄 SSE: Server data changed (${this.cache.serverVersion} → ${newVersion}), clearing cache`)
+            this.invalidateCache()
+
+            // Reload current view data after invalidation
+            this.reloadCurrentView()
+          }
+
+          this.cache.serverVersion = newVersion
+        } catch (parseError) {
+          console.warn('⚠️ SSE: Failed to parse event data')
+        }
+      }
+
+      this.eventSource.onopen = () => {
+        console.log('🟢 SSE: Connected for real-time updates')
+        // SSE connected — stop polling fallback if active
+        this.stopPollingFallback()
+      }
+
+      this.eventSource.onerror = () => {
+        console.warn('⚠️ SSE: Connection error — falling back to polling')
+        // EventSource will auto-reconnect, but start polling as fallback
+        this.startPollingFallback()
+      }
+    } catch (error) {
+      console.warn('⚠️ SSE: Not supported — using polling fallback')
+      this.startPollingFallback()
+    }
+  }
+
+  // Polling fallback when SSE is unavailable
+  startPollingFallback() {
+    if (this.versionPollInterval) return // Already polling
+
     this.checkServerVersion()
-    
-    // Then poll every 30 seconds
     this.versionPollInterval = setInterval(() => {
       this.checkServerVersion()
     }, this.CACHE_TTL.versionCheck)
+    console.log('🔄 Polling fallback active (every 2 min)')
   }
 
-  // Stop version polling (call on cleanup)
-  stopVersionPolling() {
+  stopPollingFallback() {
     if (this.versionPollInterval) {
       clearInterval(this.versionPollInterval)
       this.versionPollInterval = null
+    }
+  }
+
+  // Stop all version sync (SSE + polling)
+  stopVersionPolling() {
+    if (this.eventSource) {
+      this.eventSource.close()
+      this.eventSource = null
+    }
+    this.stopPollingFallback()
+  }
+
+  // Reload current view data after cache invalidation (called by SSE handler)
+  async reloadCurrentView() {
+    try {
+      // Reload data that the user is currently viewing
+      if (document.querySelector('.tab-content.active')?.id === 'rankings-tab') {
+        await this.renderRankings()
+        await this.renderMatchHistory()
+      }
+    } catch (error) {
+      console.warn('⚠️ Failed to reload current view:', error)
     }
   }
 
@@ -714,13 +787,54 @@ class TennisRankingSystem {
     }
 
     try {
-      // Load all data
-      await Promise.all([
-        this.loadPlayers(),
-        this.loadSeasons(),
-        this.loadPlayDates(),
-        this.loadMatches()
-      ])
+      // Single combined request replaces 4+ parallel fetches
+      const response = await fetch(`${this.apiBase}/init`, { credentials: 'include' })
+      
+      if (response.ok) {
+        const data = await response.json()
+        
+        // Populate all data from combined response
+        this.players = data.players || []
+        this.seasons = data.seasons || []
+        this.playDates = data.playDates || []
+        
+        // Pre-populate client caches from init response
+        this.setCache('players', null, this.players)
+        this.setCache('seasons', null, this.seasons)
+        this.setCache('playDates', null, this.playDates)
+        
+        // Cache lifetime rankings
+        if (data.lifetimeRankings) {
+          this.setCache('rankings', 'lifetime', data.lifetimeRankings)
+        }
+        
+        // Cache default date rankings + matches (avoids extra fetches on first render)
+        if (data.defaultDate && data.defaultDateRankings) {
+          this.setCache('rankings', `daily:${data.defaultDate}`, data.defaultDateRankings)
+        }
+        if (data.defaultDate && data.defaultDateMatches) {
+          this.setCache('matches', `date:${data.defaultDate}`, data.defaultDateMatches)
+        }
+        
+        // Set server version for cache coherence
+        this.cache.serverVersion = data.version
+        
+        // Set default selected date
+        if (data.defaultDate) {
+          this.selectedDate = data.defaultDate
+        }
+        
+        this.updateSeasonSelect()
+      } else {
+        // Fallback to individual requests if /api/init not available
+        console.warn('⚠️ /api/init failed, falling back to individual requests')
+        await Promise.all([
+          this.loadPlayers(),
+          this.loadSeasons(),
+          this.loadPlayDates(),
+          this.loadMatches()
+        ])
+      }
       
       // Update UI components after loading data
       this.updatePlayerSelects()

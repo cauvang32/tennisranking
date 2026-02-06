@@ -12,13 +12,22 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: 'dist',
       assetsDir: 'assets',
-      // Ensure relative paths work correctly
+      // Enable source maps for production debugging (optional)
+      sourcemap: false,
+      // Minification target for modern browsers
+      target: 'es2020',
+      // CSS code splitting
+      cssCodeSplit: true,
       rollupOptions: {
         output: {
-          // Use relative paths for assets
+          // Use content-hash for long-term caching (immutable assets)
           assetFileNames: 'assets/[name]-[hash][extname]',
           chunkFileNames: 'assets/[name]-[hash].js',
-          entryFileNames: 'assets/[name]-[hash].js'
+          entryFileNames: 'assets/[name]-[hash].js',
+          // Manual chunks for better caching — vendor code changes less often
+          manualChunks: {
+            // Separate vendor styles/libs if any are imported
+          }
         }
       }
     },

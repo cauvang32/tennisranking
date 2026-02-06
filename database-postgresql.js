@@ -1039,6 +1039,70 @@ class TennisDatabasePostgreSQL {
   }
 
   /**
+   * Batch get player forms for a specific date (avoids N+1 queries)
+   * Returns Map<playerId, formResults[]>
+   */
+  async getPlayerFormsByDateBatch(playerIds, date, limit = 5) {
+    if (!playerIds || playerIds.length === 0) {
+      return new Map()
+    }
+
+    const result = await this.query(`
+      WITH player_matches AS (
+        SELECT 
+          p.id as player_id,
+          CASE WHEN 
+            (m.winning_team = 1 AND (m.player1_id = p.id OR m.player2_id = p.id)) OR 
+            (m.winning_team = 2 AND (m.player3_id = p.id OR m.player4_id = p.id))
+            THEN 'win' ELSE 'loss' 
+          END as result,
+          TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date,
+          ROW_NUMBER() OVER (
+            PARTITION BY p.id 
+            ORDER BY m.play_date DESC, m.created_at DESC
+          ) as rn
+        FROM unnest($1::int[]) AS p(id)
+        INNER JOIN matches m ON 
+          (m.player1_id = p.id OR m.player2_id = p.id OR 
+           m.player3_id = p.id OR m.player4_id = p.id)
+          AND DATE(m.play_date) = $2
+      )
+      SELECT player_id, result, play_date
+      FROM player_matches
+      WHERE rn <= $3
+      ORDER BY player_id, rn
+    `, [playerIds, date, limit])
+
+    // Group results by player_id
+    const formMap = new Map()
+    for (const playerId of playerIds) {
+      formMap.set(playerId, [])
+    }
+    for (const row of result.rows) {
+      const forms = formMap.get(row.player_id) || []
+      forms.push({ result: row.result, play_date: row.play_date })
+      formMap.set(row.player_id, forms)
+    }
+    return formMap
+  }
+
+  /**
+   * Get player stats with forms for a specific date in optimized batch
+   */
+  async getPlayerStatsWithFormsByDate(date, formLimit = 5) {
+    const rankings = await this.getPlayerStatsBySpecificDate(date)
+    if (rankings.length === 0) return rankings
+
+    const playerIds = rankings.map(p => p.id)
+    const formsMap = await this.getPlayerFormsByDateBatch(playerIds, date, formLimit)
+
+    return rankings.map(player => ({
+      ...player,
+      form: formsMap.get(player.id) || []
+    }))
+  }
+
+  /**
    * Get player stats with forms in a single query (lifetime)
    */
   async getPlayerStatsWithFormsLifetime(formLimit = 5) {

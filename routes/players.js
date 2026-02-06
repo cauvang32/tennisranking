@@ -17,7 +17,11 @@ export const createPlayerRouter = ({
   const router = Router()
 
   router.get('/', checkAuth, asyncHandler(async (req, res) => {
-    const players = await db.getPlayers()
+    const { data: players, hit: cacheHit } = await rankingsCache.getOrSet(
+      'players',
+      () => db.getPlayers()
+    )
+    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(sanitizeResponse(players))
   }))
 

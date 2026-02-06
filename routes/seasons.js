@@ -17,17 +17,29 @@ export const createSeasonRouter = ({
   const router = Router()
 
   router.get('/', checkAuth, asyncHandler(async (req, res) => {
-    const seasons = await db.getSeasons()
+    const { data: seasons, hit: cacheHit } = await rankingsCache.getOrSet(
+      'seasons',
+      () => db.getSeasons()
+    )
+    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(seasons)
   }))
 
   router.get('/active', checkAuth, asyncHandler(async (req, res) => {
-    const seasons = await db.getActiveSeasons()
+    const { data: seasons, hit: cacheHit } = await rankingsCache.getOrSet(
+      'seasons:active',
+      () => db.getActiveSeasons()
+    )
+    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(seasons)
   }))
 
   router.get('/active-one', checkAuth, asyncHandler(async (req, res) => {
-    const activeSeason = await db.getActiveSeason()
+    const { data: activeSeason, hit: cacheHit } = await rankingsCache.getOrSet(
+      'season:active',
+      () => db.getActiveSeason()
+    )
+    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(activeSeason)
   }))
 
@@ -36,7 +48,12 @@ export const createSeasonRouter = ({
     param('id').isInt().withMessage('Invalid season ID')
   ], handleValidationErrors, asyncHandler(async (req, res) => {
     const seasonId = parseInt(req.params.id)
-    const players = await db.getSeasonPlayers(seasonId)
+    const cacheKey = `season:${seasonId}:players`
+    const { data: players, hit: cacheHit } = await rankingsCache.getOrSet(
+      cacheKey,
+      () => db.getSeasonPlayers(seasonId)
+    )
+    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(players)
   }))
 

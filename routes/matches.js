@@ -19,29 +19,53 @@ export const createMatchRouter = ({
     query('limit').optional().isInt({ min: 1, max: 1000 }).withMessage('Limit must be between 1 and 1000')
   ], handleValidationErrors, asyncHandler(async (req, res) => {
     const limit = req.query.limit ? parseInt(req.query.limit) : null
-    const matches = await db.getMatches(limit)
+    const cacheKey = `matches:list:${limit || 'all'}`
+    const { data: matches, hit: cacheHit } = await rankingsCache.getOrSet(
+      cacheKey,
+      () => db.getMatches(limit)
+    )
+    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(matches)
   }))
 
   router.get('/by-date/:date', checkAuth, asyncHandler(async (req, res) => {
     const { date } = req.params
-    const matches = await db.getMatchesByPlayDate(date)
+    const cacheKey = `matches:date:${date}`
+    const { data: matches, hit: cacheHit } = await rankingsCache.getOrSet(
+      cacheKey,
+      () => db.getMatchesByPlayDate(date)
+    )
+    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(matches)
   }))
 
   router.get('/by-season/:seasonId', checkAuth, asyncHandler(async (req, res) => {
     const seasonId = parseInt(req.params.seasonId)
-    const matches = await db.getMatchesBySeason(seasonId)
+    const cacheKey = `matches:season:${seasonId}`
+    const { data: matches, hit: cacheHit } = await rankingsCache.getOrSet(
+      cacheKey,
+      () => db.getMatchesBySeason(seasonId)
+    )
+    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(matches)
   }))
 
   router.get('/:id', checkAuth, [param('id').isInt().withMessage('Invalid match ID')], handleValidationErrors, asyncHandler(async (req, res) => {
     const matchId = parseInt(req.params.id)
-    const match = await db.getMatchById(matchId)
-    if (!match) {
+    const cacheKey = `match:${matchId}`
+    const { data: match, hit: cacheHit } = await rankingsCache.getOrSet(
+      cacheKey,
+      async () => {
+        const result = await db.getMatchById(matchId)
+        // Return sentinel value for not-found so we don't cache null
+        return result || { __notFound: true }
+      }
+    )
+    if (!match || match.__notFound) {
       res.status(404).json({ error: 'Match not found' })
       return
     }
+    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(match)
   }))
 
@@ -210,12 +234,20 @@ export const createMatchRouter = ({
   )
 
   router.get('/play-dates/list', checkAuth, asyncHandler(async (req, res) => {
-    const playDates = await db.getPlayDates()
+    const { data: playDates, hit: cacheHit } = await rankingsCache.getOrSet(
+      'playdates',
+      () => db.getPlayDates()
+    )
+    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(playDates)
   }))
 
   router.get('/play-dates/latest', checkAuth, asyncHandler(async (req, res) => {
-    const latestDate = await db.getLatestPlayDate()
+    const { data: latestDate, hit: cacheHit } = await rankingsCache.getOrSet(
+      'playdate:latest',
+      () => db.getLatestPlayDate()
+    )
+    res.set('X-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json({ playDate: latestDate })
   }))
 

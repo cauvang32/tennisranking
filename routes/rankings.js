@@ -15,7 +15,6 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache }) => {
     )
 
     res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
-    res.set('Redis-Cache-Key', cacheKey)
     res.json(rankings)
   }))
 
@@ -31,7 +30,6 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache }) => {
     )
 
     res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
-    res.set('Redis-Cache-Key', cacheKey)
     res.json(rankings)
   }))
 
@@ -59,7 +57,6 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache }) => {
     )
 
     res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
-    res.set('Redis-Cache-Key', cacheKey)
     res.json(rankings)
   }))
 

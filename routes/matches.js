@@ -11,7 +11,8 @@ export const createMatchRouter = ({
   createLimiter,
   deleteLimiter,
   handleValidationErrors,
-  rankingsCache
+  rankingsCache,
+  sanitizeResponse
 }) => {
   const router = Router()
 
@@ -25,7 +26,7 @@ export const createMatchRouter = ({
       () => db.getMatches(limit)
     )
     res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
-    res.json(matches)
+    res.json(sanitizeResponse(matches))
   }))
 
   router.get('/by-date/:date', checkAuth, asyncHandler(async (req, res) => {
@@ -36,7 +37,7 @@ export const createMatchRouter = ({
       () => db.getMatchesByPlayDate(date)
     )
     res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
-    res.json(matches)
+    res.json(sanitizeResponse(matches))
   }))
 
   router.get('/by-season/:seasonId', checkAuth, asyncHandler(async (req, res) => {
@@ -47,7 +48,7 @@ export const createMatchRouter = ({
       () => db.getMatchesBySeason(seasonId)
     )
     res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
-    res.json(matches)
+    res.json(sanitizeResponse(matches))
   }))
 
   router.get('/:id', checkAuth, [param('id').isInt().withMessage('Invalid match ID')], handleValidationErrors, asyncHandler(async (req, res) => {
@@ -66,7 +67,7 @@ export const createMatchRouter = ({
       return
     }
     res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
-    res.json(match)
+    res.json(sanitizeResponse(match))
   }))
 
   // Validation for match payload - player2 and player4 are optional for solo matches

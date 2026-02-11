@@ -442,6 +442,18 @@ body.authenticated .logged-out-only {
   font-weight: 700;
 }
 
+.data-table .col-id {
+  width: 60px;
+}
+
+.data-table .col-date-created {
+  width: 140px;
+}
+
+.data-table .col-actions {
+  width: 100px;
+}
+
 .data-table .col-name {
   font-weight: 600;
   color: var(--text);

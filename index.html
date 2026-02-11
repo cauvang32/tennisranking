@@ -9,7 +9,7 @@
     <!-- Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Open+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Open+Sans:wght@400;500;600&display=swap" rel="stylesheet" crossorigin="anonymous">
     
     <!-- Styles -->
     <link rel="stylesheet" href="./src/style.css">
@@ -442,10 +442,10 @@
                             <table class="data-table" id="playersTable">
                                 <thead>
                                     <tr>
-                                        <th style="width: 60px;">ID</th>
+                                        <th class="col-id">ID</th>
                                         <th>Tên người chơi</th>
-                                        <th style="width: 140px;">Ngày tạo</th>
-                                        <th class="admin-only" style="width: 100px;">Thao tác</th>
+                                        <th class="col-date-created">Ngày tạo</th>
+                                        <th class="admin-only col-actions">Thao tác</th>
                                     </tr>
                                 </thead>
                                 <tbody id="playersTableBody"></tbody>

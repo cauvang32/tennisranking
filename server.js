@@ -90,23 +90,22 @@ function sanitizeResponse(data) {
     if (Array.isArray(data)) {
       return data.map(sanitizeResponse)
     }
-    
-    const sanitized = { ...data }
-    
-    // Convert Unix timestamps to ISO strings
-    if (sanitized.created_at && typeof sanitized.created_at === 'number') {
-      sanitized.created_at = new Date(sanitized.created_at * 1000).toISOString()
+
+    const sanitized = {}
+    for (const [key, value] of Object.entries(data)) {
+      // Convert Unix timestamps to ISO strings
+      if ((key === 'created_at' || key === 'updated_at' || key === 'timestamp') && typeof value === 'number') {
+        sanitized[key] = new Date(value * 1000).toISOString()
+      } else if (typeof value === 'object' && value !== null) {
+        sanitized[key] = sanitizeResponse(value)
+      } else {
+        sanitized[key] = value
+      }
     }
-    if (sanitized.updated_at && typeof sanitized.updated_at === 'number') {
-      sanitized.updated_at = new Date(sanitized.updated_at * 1000).toISOString()
-    }
-    if (sanitized.timestamp && typeof sanitized.timestamp === 'number') {
-      sanitized.timestamp = new Date(sanitized.timestamp * 1000).toISOString()
-    }
-    
+
     return sanitized
   }
-  
+
   return data
 }
 
@@ -283,8 +282,8 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"], // TODO: Remove unsafe-inline by extracting inline styles
-      scriptSrc: ["'self'", "'unsafe-inline'", "https://static.cloudflareinsights.com"], // TODO: Remove unsafe-inline by using nonces
+      styleSrc: ["'self'", "https://fonts.googleapis.com"],
+      scriptSrc: ["'self'", "https://static.cloudflareinsights.com"],
       imgSrc: ["'self'", "data:"],
       connectSrc: ["'self'"],
       objectSrc: ["'none'"],
@@ -1426,7 +1425,8 @@ app.use('/api/seasons', createSeasonRouter({
   createLimiter,
   deleteLimiter,
   handleValidationErrors,
-  rankingsCache
+  rankingsCache,
+  sanitizeResponse
 }))
 
 app.use('/api/matches', createMatchRouter({
@@ -1438,7 +1438,8 @@ app.use('/api/matches', createMatchRouter({
   createLimiter,
   deleteLimiter,
   handleValidationErrors,
-  rankingsCache
+  rankingsCache,
+  sanitizeResponse
 }))
 
 app.use('/api/rankings', createRankingRouter({
@@ -1462,7 +1463,8 @@ app.use('/api/auth', createAuthRouter({
   requireAdmin,
   handleValidationErrors,
   conditionalRateLimit,
-  createLimiter
+  createLimiter,
+  sanitizeResponse
 }))
 
 // Players Routes
@@ -2181,7 +2183,7 @@ app.get('/api/init', checkAuth, async (req, res) => {
       defaultDateMatches = dateMatchesResult.data
     }
 
-    res.json({
+    res.json(sanitizeResponse({
       players,
       seasons,
       playDates,
@@ -2192,7 +2194,7 @@ app.get('/api/init', checkAuth, async (req, res) => {
       defaultDateRankings,
       defaultDateMatches,
       version: rankingsCache.getDataVersion()
-    })
+    }))
   } catch (error) {
     console.error('Error in /api/init:', error)
     res.status(500).json({ error: 'Failed to load initial data' })

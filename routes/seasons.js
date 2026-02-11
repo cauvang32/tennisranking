@@ -12,7 +12,8 @@ export const createSeasonRouter = ({
   createLimiter,
   deleteLimiter,
   handleValidationErrors,
-  rankingsCache
+  rankingsCache,
+  sanitizeResponse
 }) => {
   const router = Router()
 
@@ -22,7 +23,7 @@ export const createSeasonRouter = ({
       () => db.getSeasons()
     )
     res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
-    res.json(seasons)
+    res.json(sanitizeResponse(seasons))
   }))
 
   router.get('/active', checkAuth, asyncHandler(async (req, res) => {
@@ -31,7 +32,7 @@ export const createSeasonRouter = ({
       () => db.getActiveSeasons()
     )
     res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
-    res.json(seasons)
+    res.json(sanitizeResponse(seasons))
   }))
 
   router.get('/active-one', checkAuth, asyncHandler(async (req, res) => {
@@ -40,7 +41,7 @@ export const createSeasonRouter = ({
       () => db.getActiveSeason()
     )
     res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
-    res.json(activeSeason)
+    res.json(sanitizeResponse(activeSeason))
   }))
 
   // Get players assigned to a specific season
@@ -54,7 +55,7 @@ export const createSeasonRouter = ({
       () => db.getSeasonPlayers(seasonId)
     )
     res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
-    res.json(players)
+    res.json(sanitizeResponse(players))
   }))
 
   router.post(

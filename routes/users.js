@@ -9,7 +9,8 @@ export const createAuthRouter = ({
   requireAdmin,
   handleValidationErrors,
   conditionalRateLimit,
-  createLimiter
+  createLimiter,
+  sanitizeResponse
 }) => {
   const router = Router()
   // 2026 security standard: 14 rounds for bcrypt (configurable via env)
@@ -24,7 +25,7 @@ export const createAuthRouter = ({
       const users = await db.getUsers()
       // Remove password_hash from response
       const safeUsers = users.map(({ password_hash, ...user }) => user)
-      res.json(safeUsers)
+      res.json(sanitizeResponse(safeUsers))
     })
   )
 
@@ -43,7 +44,7 @@ export const createAuthRouter = ({
       }
       // Remove password_hash from response
       const { password_hash, ...safeUser } = user
-      res.json(safeUser)
+      res.json(sanitizeResponse(safeUser))
     })
   )
 
@@ -112,11 +113,11 @@ export const createAuthRouter = ({
         notes || null
       )
       
-      res.status(201).json({
+      res.status(201).json(sanitizeResponse({
         success: true,
         message: 'User created successfully',
         user
-      })
+      }))
     })
   )
 
@@ -173,11 +174,11 @@ export const createAuthRouter = ({
         notes
       })
       
-      res.json({
+      res.json(sanitizeResponse({
         success: true,
         message: 'User updated successfully',
         user: updatedUser
-      })
+      }))
     })
   )
 

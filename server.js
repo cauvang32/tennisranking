@@ -124,38 +124,49 @@ function generateSessionId() {
   return crypto.randomBytes(32).toString('base64url')
 }
 
-// JWT token encryption/decryption for secure cookie storage
+// Pre-compute scrypt key once at startup (scrypt is intentionally slow ~100ms per call)
+const jwtEncryptionKey = crypto.scryptSync(JWT_SECRET, 'jwt-salt', 32)
+
+// JWT token encryption/decryption for secure cookie storage (AES-256-GCM authenticated encryption)
 function encryptJWT(token) {
-  const algorithm = 'aes-256-cbc'
-  const key = crypto.scryptSync(JWT_SECRET, 'jwt-salt', 32)
-  const iv = crypto.randomBytes(16)
-  const cipher = crypto.createCipheriv(algorithm, key, iv)
-  
+  const iv = crypto.randomBytes(12) // 96-bit IV for GCM
+  const cipher = crypto.createCipheriv('aes-256-gcm', jwtEncryptionKey, iv)
+
   let encrypted = cipher.update(token, 'utf8', 'hex')
   encrypted += cipher.final('hex')
-  
-  // Combine iv + encrypted data
-  return iv.toString('hex') + ':' + encrypted
+  const authTag = cipher.getAuthTag().toString('hex')
+
+  // Combine iv + encrypted data + auth tag
+  return `${iv.toString('hex')}:${encrypted}:${authTag}`
 }
 
 function decryptJWT(encryptedToken) {
   try {
-    const algorithm = 'aes-256-cbc'
-    const key = crypto.scryptSync(JWT_SECRET, 'jwt-salt', 32)
     const parts = encryptedToken.split(':')
-    
-    if (parts.length !== 2) {
+
+    if (parts.length === 2) {
+      // Legacy CBC format (iv:encrypted) — backward compatibility
+      const [ivHex, encrypted] = parts
+      if (!ivHex || !encrypted) throw new Error('Invalid token format')
+      const decipher = crypto.createDecipheriv('aes-256-cbc', jwtEncryptionKey, Buffer.from(ivHex, 'hex'))
+      let decrypted = decipher.update(encrypted, 'hex', 'utf8')
+      decrypted += decipher.final('utf8')
+      return decrypted
+    }
+
+    if (parts.length !== 3) {
       throw new Error('Invalid encrypted token format')
     }
-    
-    const iv = Buffer.from(parts[0], 'hex')
-    const encrypted = parts[1]
-    
-    const decipher = crypto.createDecipheriv(algorithm, key, iv)
-    
+
+    const [ivHex, encrypted, authTagHex] = parts
+    if (!ivHex || !encrypted || !authTagHex) throw new Error('Invalid token format')
+
+    const decipher = crypto.createDecipheriv('aes-256-gcm', jwtEncryptionKey, Buffer.from(ivHex, 'hex'))
+    decipher.setAuthTag(Buffer.from(authTagHex, 'hex'))
+
     let decrypted = decipher.update(encrypted, 'hex', 'utf8')
     decrypted += decipher.final('utf8')
-    
+
     return decrypted
   } catch (error) {
     console.error('JWT decryption failed:', error)
@@ -810,7 +821,6 @@ if (isDevelopment) {
       // Security headers for static files
       res.setHeader('X-Content-Type-Options', 'nosniff')
       res.setHeader('X-Frame-Options', 'DENY')
-      res.setHeader('X-XSS-Protection', '1; mode=block')
 
       const lowerPath = path.toLowerCase()
       const isHTML = lowerPath.endsWith('.html')
@@ -1850,7 +1860,7 @@ app.post('/api/restore',
       console.log('✅ Restore completed successfully')
     } catch (error) {
       console.error('Error restoring data:', error)
-      res.status(500).json({ error: 'Failed to restore data: ' + error.message })
+      res.status(500).json({ error: 'Failed to restore data' })
     }
   }
 )
@@ -2634,8 +2644,8 @@ app.get('/health', async (req, res) => {
   })
 })
 
-// API Health endpoint with proxy information (for testing)
-app.get('/api/health', async (req, res) => {
+// API Health endpoint with proxy information (requires auth - contains sensitive info)
+app.get('/api/health', authenticateToken, async (req, res) => {
   const dbHealth = await checkDatabaseHealth()
   const cacheStats = rankingsCache.getStats()
   

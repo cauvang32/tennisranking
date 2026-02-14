@@ -73,6 +73,14 @@
   /* Font families */
   --font-display: 'Poppins', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-body: 'Open Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+
+  /* Aliases for backup/cache sections */
+  --bg-secondary: var(--surface-hover);
+  --bg-tertiary: var(--bg);
+  --text-primary: var(--text);
+  --danger: var(--error);
+  --danger-rgb: 239, 68, 68;
   
   /* Container */
   --container-max: 1280px;
@@ -590,23 +598,6 @@ body.authenticated .logged-out-only {
 
 .data-table .btn-danger svg {
   flex-shrink: 0;
-}
-
-/* Badge styles */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 0.25rem 0.75rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  border-radius: var(--radius-full);
-  background: var(--surface-hover);
-  color: var(--text-secondary);
-}
-
-.badge-primary {
-  background: var(--primary-light);
-  color: var(--primary);
 }
 
 /* Player count badge */
@@ -1889,6 +1880,8 @@ body.match-mode-solo .duo-only {
   font-weight: 600;
   border-radius: var(--radius-full);
   text-transform: uppercase;
+  background: var(--surface-hover);
+  color: var(--text-secondary);
 }
 
 .badge-success {

@@ -3,11 +3,11 @@ import { defineConfig } from 'vite'
 export default defineConfig(({ mode }) => {
   // Get base path from environment or default
   const basePath = process.env.BASE_PATH || '/tennis/'
-  
+
   return {
     // Set base path for subpath deployment - use environment variable
     base: mode === 'production' ? basePath : '/',
-    
+
     // Build configuration
     build: {
       outDir: 'dist',
@@ -16,6 +16,14 @@ export default defineConfig(({ mode }) => {
       sourcemap: false,
       // Minification target for modern browsers
       target: 'es2020',
+      // Use terser for smaller production bundles
+      minify: 'terser',
+      terserOptions: {
+        compress: {
+          drop_console: mode === 'production',
+          drop_debugger: true
+        }
+      },
       // CSS code splitting
       cssCodeSplit: true,
       rollupOptions: {
@@ -31,11 +39,11 @@ export default defineConfig(({ mode }) => {
         }
       }
     },
-    
+
     // Development server configuration
     server: {
       port: 5173,
-      host: true, // Allow external connections
+      host: '127.0.0.1', // Restrict to localhost for security
       // Proxy API requests to the backend during development
       proxy: {
         '/api': {
@@ -46,7 +54,7 @@ export default defineConfig(({ mode }) => {
         }
       }
     },
-    
+
     // Preview server configuration (for production build testing)
     preview: {
       port: 4173,

@@ -124,10 +124,8 @@ function generateSessionId() {
   return crypto.randomBytes(32).toString('base64url')
 }
 
-// Pre-compute scrypt key once at startup (scrypt is intentionally slow ~100ms per call)
-const jwtEncryptionKey = crypto.scryptSync(JWT_SECRET, 'jwt-salt', 32)
-
 // JWT token encryption/decryption for secure cookie storage (AES-256-GCM authenticated encryption)
+// Note: jwtEncryptionKey is initialized after env variable validation below
 function encryptJWT(token) {
   const iv = crypto.randomBytes(12) // 96-bit IV for GCM
   const cipher = crypto.createCipheriv('aes-256-gcm', jwtEncryptionKey, iv)
@@ -214,6 +212,9 @@ if (!CSRF_SECRET) {
   console.error('❌ CSRF_SECRET environment variable is required')
   process.exit(1)
 }
+
+// Pre-compute scrypt key once at startup (scrypt is intentionally slow ~100ms per call)
+let jwtEncryptionKey = crypto.scryptSync(JWT_SECRET, 'jwt-salt', 32)
 
 // Hash the passwords on startup (2026 security: 14 rounds minimum)
 const BCRYPT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS) || 14

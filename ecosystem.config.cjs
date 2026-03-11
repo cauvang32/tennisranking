@@ -16,7 +16,7 @@
 module.exports = {
   apps: [
     {
-      name: 'tennis-ranking',
+      name: 'tennis',
       script: 'server.js',
 
       // Cluster mode: one worker per CPU core (change to a number like 2 if preferred)

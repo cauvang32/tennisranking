@@ -4,6 +4,8 @@ import { dirname, join } from 'path'
 import cors from 'cors'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
+import { RedisStore } from 'rate-limit-redis'
+import IORedis from 'ioredis'
 import { body, param, query, validationResult } from 'express-validator'
 import jwt from 'jsonwebtoken'
 import bcrypt from 'bcryptjs'
@@ -444,7 +446,25 @@ const getRateLimitDynamicMultiplier = () => {
   return clampNumber(multiplier, rateLimitDynamicMinScale, 1)
 }
 
-const createProxyAwareRateLimiter = (options) => {
+// Dedicated Redis client for distributed rate limiting across PM2 cluster workers.
+// Uses a separate connection from the cache client so a cache failure can't
+// take down rate limiting and vice versa.
+// enableOfflineQueue:false ensures fast-fail (no command queuing) if Redis is down;
+// passOnStoreError:true (set per-limiter below) lets requests through on failure.
+const rateLimitRedis = new IORedis(process.env.REDIS_URL || 'redis://localhost:6379', {
+  maxRetriesPerRequest: 1,
+  enableOfflineQueue: false,
+})
+rateLimitRedis.on('error', () => {
+  // Errors suppressed here — passOnStoreError:true in each limiter handles graceful degradation
+})
+
+const createRedisRateLimitStore = (suffix) => new RedisStore({
+  sendCommand: (...args) => rateLimitRedis.call(...args),
+  prefix: `rate-limit-redis-tennis:${suffix}:`,
+})
+
+const createProxyAwareRateLimiter = ({ storePrefix, ...options }) => {
   // Check if rate limiting is disabled
   if (isRateLimitingDisabled()) {
     console.log('🚫 Rate limiting is disabled via environment variable');
@@ -462,12 +482,17 @@ const createProxyAwareRateLimiter = (options) => {
     return computed > 0 ? computed : 1
   }
 
+  const store = storePrefix ? createRedisRateLimitStore(storePrefix) : undefined
+
   return rateLimit({
     ...options,
     standardHeaders: 'draft-8', // Use the latest IETF draft standard
     legacyHeaders: false,
     // Always compute limit at request-time so dynamic scaling can apply.
     limit: dynamicLimit,
+    store,
+    // Pass requests through if the Redis store errors (graceful degradation)
+    passOnStoreError: true,
     // Enhanced key generator using our comprehensive IP detection
     keyGenerator: (req) => {
       const clientIP = getRealClientIP(req);
@@ -527,56 +552,65 @@ if (rateLimitDynamicEnabled) {
 const generalLimiter = createProxyAwareRateLimiter({
   windowMs: rateLimitWindowMs,
   limit: rateLimitMaxRequests,
+  storePrefix: 'general',
   message: { error: 'Too many requests from this IP, please try again later.' }
 });
 
 const apiLimiter = createProxyAwareRateLimiter({
-  windowMs: rateLimitWindowMs, // Use same window as general limiter
+  windowMs: rateLimitWindowMs,
   limit: rateLimitApiMax,
+  storePrefix: 'api',
   message: { error: 'Too many API requests from this IP, please try again later.' }
 });
 
 const authLimiter = createProxyAwareRateLimiter({
-  windowMs: rateLimitWindowMs, // Use same window as general limiter
-  limit: 5, // Keep strict limit for auth attempts
+  windowMs: rateLimitWindowMs,
+  limit: 5,
+  storePrefix: 'auth',
   message: { error: 'Too many login attempts from this IP, please try again later.' }
 });
 
 // Additional specialized rate limiters for enhanced security
 const deleteLimiter = createProxyAwareRateLimiter({
-  windowMs: rateLimitWindowMs, // Use same window as general limiter
-  limit: 50, // More lenient for delete operations
+  windowMs: rateLimitWindowMs,
+  limit: 50,
+  storePrefix: 'delete',
   message: { error: 'Too many delete requests from this IP, please try again later.' }
 });
 
 const createLimiter = createProxyAwareRateLimiter({
-  windowMs: rateLimitWindowMs, // Use same window as general limiter
-  limit: 200, // More lenient for create operations
+  windowMs: rateLimitWindowMs,
+  limit: 200,
+  storePrefix: 'create',
   message: { error: 'Too many create requests from this IP, please try again later.' }
 });
 
 const exportLimiter = createProxyAwareRateLimiter({
-  windowMs: rateLimitWindowMs, // Use same window as general limiter
-  limit: 150, // More lenient for export operations
+  windowMs: rateLimitWindowMs,
+  limit: 150,
+  storePrefix: 'export',
   message: { error: 'Too many export requests from this IP, please try again later.' }
 });
 
 const criticalLimiter = createProxyAwareRateLimiter({
-  windowMs: 60 * 60 * 1000, // 1 hour for critical operations
-  limit: 10, // More lenient for critical operations
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  storePrefix: 'critical',
   message: { error: 'Critical operation limit exceeded. Please wait 1 hour before trying again.' }
 });
 
 const restoreLimiter = createProxyAwareRateLimiter({
-  windowMs: 60 * 60 * 1000, // 1 hour for restore operations
-  limit: 50, // More lenient for restore operations
+  windowMs: 60 * 60 * 1000,
+  limit: 50,
+  storePrefix: 'restore',
   message: { error: 'Too many restore requests from this IP, please try again later.' }
 });
 
 // User-aware rate limiting (different limits for authenticated users)
-const createUserAwareRateLimiter = (anonymousLimit, authenticatedLimit, windowMs = 15 * 60 * 1000) => {
+const createUserAwareRateLimiter = (anonymousLimit, authenticatedLimit, windowMs = 15 * 60 * 1000, storePrefix = 'smart-api') => {
   return createProxyAwareRateLimiter({
     windowMs: windowMs,
+    storePrefix,
     limit: (req) => {
       // Check if user is authenticated and return different limits
       if (req.user && req.user.role === 'admin') {

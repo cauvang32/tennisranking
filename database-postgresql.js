@@ -45,6 +45,15 @@ function buildSSLConfig() {
   return sslConfig
 }
 
+// ── Shared query fragments (DRY) ────────────────────────────────────────────
+const SEASON_SELECT_COLS = `
+  id, name,
+  TO_CHAR(start_date, 'YYYY-MM-DD') as start_date,
+  CASE WHEN end_date IS NOT NULL THEN TO_CHAR(end_date, 'YYYY-MM-DD') ELSE NULL END as end_date,
+  is_active, auto_end, description,
+  COALESCE(lose_money_per_loss, 20000) as lose_money_per_loss,
+  created_at, ended_at, ended_by`
+
 class TennisDatabasePostgreSQL {
   constructor() {
     this.config = {
@@ -54,7 +63,7 @@ class TennisDatabasePostgreSQL {
       user: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
       ssl: buildSSLConfig(),
-      max: 20, // Maximum pool size
+      max: parseInt(process.env.DB_POOL_MAX) || 20,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,
     }
@@ -233,13 +242,7 @@ class TennisDatabasePostgreSQL {
   }
 
   async query(text, params = []) {
-    const client = await this.pool.connect()
-    try {
-      const result = await client.query(text, params)
-      return result
-    } finally {
-      client.release()
-    }
+    return this.pool.query(text, params)
   }
 
   // Players CRUD operations
@@ -278,57 +281,17 @@ class TennisDatabasePostgreSQL {
 
   // Seasons CRUD operations
   async getSeasons() {
-    const result = await this.query(`
-      SELECT id, name, 
-        TO_CHAR(start_date, 'YYYY-MM-DD') as start_date,
-        CASE 
-          WHEN end_date IS NOT NULL THEN TO_CHAR(end_date, 'YYYY-MM-DD')
-          ELSE NULL 
-        END as end_date,
-        is_active, auto_end, description, 
-        COALESCE(lose_money_per_loss, 20000) as lose_money_per_loss,
-        created_at, ended_at, ended_by
-      FROM seasons 
-      ORDER BY is_active DESC, start_date DESC
-    `)
+    const result = await this.query(`SELECT ${SEASON_SELECT_COLS} FROM seasons ORDER BY is_active DESC, start_date DESC`)
     return result.rows
   }
 
   async getActiveSeasons() {
-    const result = await this.query(`
-      SELECT id, name, 
-        TO_CHAR(start_date, 'YYYY-MM-DD') as start_date,
-        CASE 
-          WHEN end_date IS NOT NULL THEN TO_CHAR(end_date, 'YYYY-MM-DD')
-          ELSE NULL 
-        END as end_date,
-        is_active, auto_end, description,
-        COALESCE(lose_money_per_loss, 20000) as lose_money_per_loss,
-        created_at, ended_at, ended_by
-      FROM seasons 
-      WHERE is_active = true
-      ORDER BY start_date DESC
-    `)
+    const result = await this.query(`SELECT ${SEASON_SELECT_COLS} FROM seasons WHERE is_active = true ORDER BY start_date DESC`)
     return result.rows
   }
 
   async getActiveSeason() {
-    // Get the first active season (for backward compatibility)
-    const result = await this.query(`
-      SELECT id, name, 
-        TO_CHAR(start_date, 'YYYY-MM-DD') as start_date,
-        CASE 
-          WHEN end_date IS NOT NULL THEN TO_CHAR(end_date, 'YYYY-MM-DD')
-          ELSE NULL 
-        END as end_date,
-        is_active, auto_end, description,
-        COALESCE(lose_money_per_loss, 20000) as lose_money_per_loss,
-        created_at, ended_at, ended_by
-      FROM seasons 
-      WHERE is_active = true
-      ORDER BY start_date DESC
-      LIMIT 1
-    `)
+    const result = await this.query(`SELECT ${SEASON_SELECT_COLS} FROM seasons WHERE is_active = true ORDER BY start_date DESC LIMIT 1`)
     return result.rows[0] || null
   }
 
@@ -412,19 +375,7 @@ class TennisDatabasePostgreSQL {
   }
 
   async getSeasonById(seasonId) {
-    const result = await this.query(`
-      SELECT id, name, 
-        TO_CHAR(start_date, 'YYYY-MM-DD') as start_date,
-        CASE 
-          WHEN end_date IS NOT NULL THEN TO_CHAR(end_date, 'YYYY-MM-DD')
-          ELSE NULL 
-        END as end_date,
-        is_active, auto_end, description,
-        COALESCE(lose_money_per_loss, 20000) as lose_money_per_loss,
-        created_at, ended_at, ended_by
-      FROM seasons 
-      WHERE id = $1
-    `, [seasonId])
+    const result = await this.query(`SELECT ${SEASON_SELECT_COLS} FROM seasons WHERE id = $1`, [seasonId])
     return result.rows[0] || null
   }
 
@@ -583,7 +534,7 @@ class TennisDatabasePostgreSQL {
       LEFT JOIN players p2 ON m.player2_id = p2.id
       JOIN players p3 ON m.player3_id = p3.id
       LEFT JOIN players p4 ON m.player4_id = p4.id
-      WHERE DATE(m.play_date) = $1
+      WHERE m.play_date = $1
       ORDER BY m.created_at DESC
     `, [playDate])
     return result.rows
@@ -626,7 +577,7 @@ class TennisDatabasePostgreSQL {
       LEFT JOIN players p2 ON m.player2_id = p2.id
       JOIN players p3 ON m.player3_id = p3.id
       LEFT JOIN players p4 ON m.player4_id = p4.id
-      WHERE DATE(m.play_date) = $1
+      WHERE m.play_date = $1
       ORDER BY m.created_at DESC
     `, [date])
     return result.rows
@@ -669,18 +620,18 @@ class TennisDatabasePostgreSQL {
 
   async getPlayDates() {
     const result = await this.query(`
-      SELECT DISTINCT TO_CHAR(DATE(play_date), 'YYYY-MM-DD') as play_date 
-      FROM matches 
-      ORDER BY TO_CHAR(DATE(play_date), 'YYYY-MM-DD') DESC
+      SELECT DISTINCT TO_CHAR(play_date, 'YYYY-MM-DD') as play_date
+      FROM matches
+      ORDER BY play_date DESC
     `)
     return result.rows
   }
 
   async getLatestPlayDate() {
     const result = await this.query(`
-      SELECT TO_CHAR(DATE(play_date), 'YYYY-MM-DD') as play_date 
-      FROM matches 
-      ORDER BY TO_CHAR(DATE(play_date), 'YYYY-MM-DD') DESC 
+      SELECT TO_CHAR(play_date, 'YYYY-MM-DD') as play_date
+      FROM matches
+      ORDER BY play_date DESC
       LIMIT 1
     `)
     return result.rows[0]?.play_date || null
@@ -777,7 +728,7 @@ class TennisDatabasePostgreSQL {
           COALESCE(s.lose_money_per_loss, 20000) as lose_money
         FROM matches m
         JOIN seasons s ON m.season_id = s.id
-        WHERE DATE(m.play_date) <= $1
+        WHERE m.play_date <= $1
       ),
       player_stats AS (
         SELECT 
@@ -820,7 +771,7 @@ class TennisDatabasePostgreSQL {
           COALESCE(s.lose_money_per_loss, 20000) as lose_money
         FROM matches m
         JOIN seasons s ON m.season_id = s.id
-        WHERE DATE(m.play_date) = $1
+        WHERE m.play_date = $1
       ),
       player_stats AS (
         SELECT 
@@ -899,7 +850,7 @@ class TennisDatabasePostgreSQL {
         TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date
       FROM matches m
       WHERE (m.player1_id = $1 OR m.player2_id = $1 OR m.player3_id = $1 OR m.player4_id = $1)
-        AND DATE(m.play_date) <= $2
+        AND m.play_date <= $2
       ORDER BY m.play_date DESC, m.created_at DESC
       LIMIT $3
     `, [playerId, date, limit])
@@ -917,7 +868,7 @@ class TennisDatabasePostgreSQL {
         m.play_date
       FROM matches m
       WHERE (m.player1_id = $1 OR m.player2_id = $1 OR m.player3_id = $1 OR m.player4_id = $1)
-        AND DATE(m.play_date) = $2
+        AND m.play_date = $2
       ORDER BY m.created_at DESC
       LIMIT $3
     `, [playerId, date, limit])
@@ -935,7 +886,7 @@ class TennisDatabasePostgreSQL {
         TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date
       FROM matches m
       WHERE (m.player1_id = $1 OR m.player2_id = $1 OR m.player3_id = $1 OR m.player4_id = $1)
-        AND DATE(m.play_date) = $2
+        AND m.play_date = $2
       ORDER BY m.play_date DESC, m.created_at DESC
       LIMIT $3
     `, [playerId, date, limit])
@@ -1065,7 +1016,7 @@ class TennisDatabasePostgreSQL {
         INNER JOIN matches m ON 
           (m.player1_id = p.id OR m.player2_id = p.id OR 
            m.player3_id = p.id OR m.player4_id = p.id)
-          AND DATE(m.play_date) = $2
+          AND m.play_date = $2
       )
       SELECT player_id, result, play_date
       FROM player_matches

@@ -16,13 +16,17 @@
     "preview:subpath": "npm run build:subpath && vite preview",
     "deploy:subpath": "BASE_PATH=/tennis/ NODE_ENV=production npm run build && NODE_ENV=production npm run server",
     "deploy:subdomain": "BASE_PATH=/ NODE_ENV=production npm run build && NODE_ENV=production npm run server",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run tests/unit",
     "test:cors": "curl -H \"Origin: https://mydomain.com\" -I http://localhost:3001/api/auth/status",
     "health-check": "curl -I http://localhost:3001/health || echo 'Health check endpoint not available'"
   },
   "devDependencies": {
     "concurrently": "^9.2.1",
     "terser": "^5.46.0",
-    "vite": "^7.2.7"
+    "vite": "^7.2.7",
+    "vitest": "^4.1.2"
   },
   "dependencies": {
     "bcryptjs": "^3.0.2",
@@ -40,6 +44,7 @@
     "ioredis": "^5.9.2",
     "jsonwebtoken": "^9.0.3",
     "pg": "^8.12.0",
+    "pm2": "^6.0.14",
     "rate-limit-redis": "^4.3.1",
     "rotating-file-stream": "^3.2.7",
     "ua-parser-js": "^2.0.7",

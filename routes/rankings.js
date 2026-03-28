@@ -1,7 +1,8 @@
 import { Router } from 'express'
+import { param } from 'express-validator'
 import { asyncHandler } from '../utils/async-handler.js'
 
-export const createRankingRouter = ({ db, checkAuth, rankingsCache }) => {
+export const createRankingRouter = ({ db, checkAuth, rankingsCache, handleValidationErrors }) => {
   const router = Router()
 
   router.get('/lifetime', checkAuth, asyncHandler(async (req, res) => {
@@ -18,7 +19,9 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache }) => {
     res.json(rankings)
   }))
 
-  router.get('/season/:seasonId', checkAuth, asyncHandler(async (req, res) => {
+  router.get('/season/:seasonId', checkAuth, [
+    param('seasonId').isInt({ min: 1 }).withMessage('Invalid season ID')
+  ], handleValidationErrors, asyncHandler(async (req, res) => {
     const seasonId = parseInt(req.params.seasonId)
     const cacheKey = `rankings:season:${seasonId}`
 
@@ -33,7 +36,9 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache }) => {
     res.json(rankings)
   }))
 
-  router.get('/date/:date', checkAuth, asyncHandler(async (req, res) => {
+  router.get('/date/:date', checkAuth, [
+    param('date').isISO8601().withMessage('Valid date required (YYYY-MM-DD)')
+  ], handleValidationErrors, asyncHandler(async (req, res) => {
     const { date } = req.params
     const cacheKey = `rankings:date:${date}`
 

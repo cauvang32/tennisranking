@@ -20,7 +20,7 @@ module.exports = {
       script: 'server.js',
 
       // Cluster mode: one worker per CPU core (change to a number like 2 if preferred)
-      instances: '2',
+      instances: process.env.PM2_INSTANCES || '2',
       exec_mode: 'cluster',
 
       // Restart worker automatically if it crashes

@@ -1,16 +1,40 @@
-version: '3.8'
-
 services:
-  # PostgreSQL Database
+  # ── Node.js Application (PM2 cluster inside container) ───────────────────────
+  app:
+    build: .
+    container_name: tennis-app
+    ports:
+      - "3001:3001"
+    env_file: .env
+    environment:
+      DB_HOST: postgres                 # override to use Docker internal DNS
+      REDIS_URL: redis://redis:6379
+      NODE_ENV: production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    networks:
+      - tennis-network
+
+  # ── PostgreSQL Database ─────────────────────────────────────────────────────
   postgres:
     image: postgres:15-alpine
     container_name: tennis-postgres
+    ports:
+      - "5432:5432"
     environment:
       POSTGRES_DB: ${DB_NAME:-tennis_ranking}
       POSTGRES_USER: ${DB_USER:-tennis_user}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-tennis_password}
-    ports:
-      - "${DB_PORT:-5432}:5432"
     volumes:
       - ./data/postgres-data:/var/lib/postgresql/data
       - ./data/postgres-init:/docker-entrypoint-initdb.d
@@ -23,15 +47,15 @@ services:
     networks:
       - tennis-network
 
-  # Redis Cache
+  # ── Redis Cache ─────────────────────────────────────────────────────────────
   redis:
-    image: redis:latest
+    image: redis:7-alpine
     container_name: tennis-redis
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "6379:6379"
+    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
     volumes:
-      - ./data/redis-data:/data
+      - redis-data:/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -44,3 +68,6 @@ services:
 networks:
   tennis-network:
     driver: bridge
+
+volumes:
+  redis-data:

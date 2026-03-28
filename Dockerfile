@@ -1,47 +1,57 @@
-# Use the official Node.js runtime as the base image (LTS version for security)
-FROM node:18-alpine
+# ── Stage 1: Build ────────────────────────────────────────────────────────────
+FROM node:20-alpine AS build
 
-# Install security updates and dumb-init
-RUN apk update && apk upgrade && apk add --no-cache dumb-init
-
-# Set the working directory in the container
 WORKDIR /app
 
-# Create non-root user with specific UID/GID
+# Install all dependencies (including devDependencies for vite build)
+COPY package*.json ./
+RUN npm ci
+
+# Copy source and build frontend
+COPY . .
+RUN npm run build
+
+# ── Stage 2: Production ──────────────────────────────────────────────────────
+FROM node:20-alpine
+
+# dumb-init for proper PID 1 signal handling in containers
+RUN apk add --no-cache dumb-init
+
+WORKDIR /app
+
+# Non-root user
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S tennisapp -u 1001 -G nodejs
 
-# Copy package files first for better caching
+# Install production dependencies only
 COPY package*.json ./
+RUN npm ci --omit=dev && npm cache clean --force
 
-# Install dependencies and clean up
-RUN npm ci --only=production && \
-    npm cache clean --force
+# Copy built frontend from build stage
+COPY --from=build /app/dist ./dist
 
-# Copy the rest of the application code with proper ownership
-COPY --chown=tennisapp:nodejs . .
+# Copy server-side source
+COPY server.js database-postgresql.js database.js database-factory.js access-logger.js ./
+COPY ecosystem.config.cjs ./
+COPY config/ ./config/
+COPY lib/ ./lib/
+COPY middleware/ ./middleware/
+COPY routes/ ./routes/
+COPY utils/ ./utils/
+COPY migrations/ ./migrations/
+COPY data/postgres-init/ ./data/postgres-init/
+COPY public/ ./public/
 
-# Build the application
-RUN npm run build
+# Create logs directory
+RUN mkdir -p /app/logs && chown -R tennisapp:nodejs /app
 
-# Create data directory with proper permissions
-RUN mkdir -p /app/data && \
-    chown -R tennisapp:nodejs /app/data && \
-    chmod 755 /app/data
-
-# Remove unnecessary files for security
-RUN rm -rf .git .gitignore *.md && \
-    chown -R tennisapp:nodejs /app && \
-    chmod -R 755 /app
-
-# Switch to non-root user
 USER tennisapp
 
-# Expose the port the app runs on
 EXPOSE 3001
 
-# Use dumb-init to handle signals properly
-ENTRYPOINT ["dumb-init", "--"]
+# Container health check — used by Docker and orchestrators
+HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
+  CMD node -e "fetch('http://localhost:3001/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"
 
-# Command to run the application
-CMD ["npm", "run", "server"]
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["npx", "pm2-runtime", "ecosystem.config.cjs", "--env", "production"]

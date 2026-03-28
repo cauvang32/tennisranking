@@ -1,128 +1,162 @@
 # Tennis Doubles Ranking System
 
-A web-based tennis doubles ranking system built with vanilla JavaScript and Vite. This application allows you to manage players, record matches, track rankings, and export data to Excel.
+A full-stack web application for managing tennis doubles matches, rankings, and seasons. Built with vanilla JavaScript (Vite), Express, PostgreSQL, and Redis.
 
 ## Features
 
 ### 🎾 Player Management
 - Add and remove players dynamically
-- Support for around 8 players (flexible)
-- Simple player management interface
+- Per-season player rosters
 
 ### 🏆 Match Recording
-- **Doubles format**: 2 vs 2 matches
-- **Manual partner selection**: Players can choose their own partners
-- **Score tracking**: Record match scores
-- **Winner selection**: Mark winning team
+- **Doubles & Singles**: 2v2 or 1v1 matches
+- **Manual partner selection**: Players choose their own partners
+- **Score tracking** with winner selection
 
 ### 📊 Ranking System
 - **Point-based ranking**: Winners get 4 points, losers get 1 point
-- **Comprehensive statistics**: Wins, losses, win rate
-- **Money tracking**: Losers pay 20,000 VND each
-- **Real-time updates**: Rankings update automatically
+- **Multi-season support**: Track rankings per season, by date, and lifetime
+- **Form tracking**: Recent win/loss streaks (phong độ)
+- **Money tracking**: Configurable loss penalty (default 20,000 VND)
+- **Real-time updates**: Rankings update via SSE push
 
-### 📋 Match History
-- Complete match history with dates
-- Team compositions and scores
-- Winner identification
-- Chronological order (newest first)
+### 📅 Season Management
+- Multiple concurrent active seasons
+- Auto-end by date, manual end/reactivate
+- Per-season player rosters and configurable loss penalty
 
-### 📁 Excel File Storage
-- **Primary storage**: Local .xlsx files
-- **Auto-save**: Automatically saves to Excel after changes
-- **Load data**: Import existing Excel files
-- **Backup**: Browser localStorage as fallback
-- **Portable**: Take your data files anywhere
+### 📁 Export & Backup
+- **Excel export**: Rankings, matches, and statistics to `.xlsx`
+- **JSON backup/restore**: Full database backup including users
+- **Date/season/lifetime** export modes
 
-### 📁 Export Functionality
-- **Excel export**: Export rankings and match history to .xlsx file
-- **Multiple sheets**: Players, Matches, and Rankings data
-- **Formatted data**: Ready for printing or sharing
-- **File management**: Load and save data files easily
+### 🔒 Security
+- JWT authentication with AES-256-GCM encrypted httpOnly cookies
+- CSRF protection (HMAC-derived secrets)
+- bcrypt password hashing (14 rounds)
+- Role-based access (admin / editor)
+- Helmet security headers, rate limiting
 
-## Installation & Setup
+---
 
-1. **Clone or download** the project files
-2. **Install dependencies**:
-   ```bash
-   npm install
-   ```
+## Quick Start
 
-3. **Run development server**:
-   ```bash
-   npm run dev
-   ```
+### Option 1: Docker (Recommended)
 
-4. **Build for production**:
-   ```bash
-   npm run build
-   ```
+```bash
+cp .env.example .env    # Configure environment variables
+docker compose up -d    # Start app + PostgreSQL + Redis
+```
 
-## Usage
+The app will be available at `http://localhost:3001`.
 
-### Adding Players
-1. Go to the "Quản lý người chơi" (Player Management) tab
-2. Enter player name and click "Thêm" (Add)
-3. Players will appear in the list below
+### Option 2: Local Development
 
-### Recording Matches
-1. Go to the "Trận đấu" (Matches) tab
-2. Select 4 different players (2 for each team)
-3. Enter match scores (optional)
-4. Select the winning team
-5. Click "Ghi nhận trận đấu" (Record Match)
+```bash
+# Start database services
+docker compose up -d postgres redis
 
-### Viewing Rankings
-1. Go to the "Xếp hạng" (Rankings) tab
-2. See players ranked by points
-3. View detailed statistics including money lost
-4. Click "Xuất Excel" (Export Excel) to download data
+# Install dependencies
+npm install
 
-### Match History
-1. Go to the "Lịch sử" (History) tab
-2. View all recorded matches
-3. See team compositions, scores, and winners
+# Configure environment
+cp .env.example .env
 
-### File Management
-1. **Load Data**: Click "Tải dữ liệu từ Excel" to import existing Excel file
-2. **Save Data**: Click "Lưu dữ liệu ra Excel" to export current data
-3. **Auto-save**: Data automatically saves after each match/player change
-4. **Reset**: Click "Xóa toàn bộ dữ liệu" to clear all data (Excel files remain safe)
+# Start dev servers (Vite + Express concurrently)
+npm run dev-full
+```
 
-## Scoring System
+Frontend: `http://localhost:5173` | API: `http://localhost:3001`
 
-- **Winners**: Each player gets **4 points**
-- **Losers**: Each player gets **1 point**
-- **Money penalty**: Each loser pays **20,000 VND**
+### Option 3: PM2 (Production)
 
-## Technical Details
+```bash
+npm run build
+pm2 start ecosystem.config.cjs --env production
+```
 
-- **Frontend**: Vanilla JavaScript (ES6+)
-- **Build Tool**: Vite
-- **Styling**: Modern CSS with responsive design
-- **Storage**: Browser localStorage for data persistence
-- **Export**: XLSX library for Excel file generation
-- **Languages**: Vietnamese interface with English code
+---
 
-## Browser Support
+## Project Structure
 
-- Modern browsers with ES6+ support
-- Chrome, Firefox, Safari, Edge (latest versions)
-- Mobile responsive design
+```
+├── config/              # Environment & cookie configuration
+├── lib/                 # Core libraries (Redis cache, JWT encryption)
+├── middleware/           # Express middleware (auth, CSRF, compression, rate-limit)
+├── routes/              # API route modules
+├── migrations/          # SQL migrations
+├── tests/               # Vitest test suite
+├── src/                 # Frontend (Vite SPA)
+├── server.js            # Express app entry point (~340 lines)
+├── database-postgresql.js  # Database schema & queries
+├── ecosystem.config.cjs # PM2 cluster configuration
+├── Dockerfile           # Multi-stage Docker build
+└── docker-compose.yml   # Full-stack deployment
+```
 
-## Data Storage
+For detailed architecture documentation, see [docs/architecture.md](docs/architecture.md).
 
-- **Primary storage**: Local Excel (.xlsx) files
-- **Auto-save**: Data automatically saves to Excel files
-- **Backup storage**: Browser localStorage for fallback
-- **File management**: Load existing data from Excel files
-- **Portable**: Data files can be shared and moved between computers
-- **No server required**: Works completely offline
+---
 
-## Contributing
+## Deployment
 
-This is a custom project for tennis tournament management. Feel free to modify and extend based on your needs.
+| Mode | Command | Notes |
+|------|---------|-------|
+| **Docker** | `docker compose up -d` | Full stack, recommended |
+| **PM2** | `pm2 start ecosystem.config.cjs` | Cluster mode, requires external PG + Redis |
+| **Bare metal** | `NODE_ENV=production node server.js` | Single process |
+| **Development** | `npm run dev-full` | Vite HMR + Express |
+
+### Environment Variables
+
+See [`.env.example`](.env.example) for all available configuration options.
+
+Key variables:
+- `DB_HOST`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` — PostgreSQL connection
+- `REDIS_URL` — Redis connection
+- `JWT_SECRET`, `CSRF_SECRET` — Security secrets (required)
+- `ADMIN_USERNAME`, `ADMIN_PASSWORD` — System admin credentials (required)
+- `EDITOR_USERNAME`, `EDITOR_PASSWORD` — System editor credentials (required)
+
+---
+
+## API Endpoints
+
+| Endpoint | Auth | Description |
+|----------|------|-------------|
+| `GET /health` | No | Health check (Docker HEALTHCHECK) |
+| `GET /api/init` | Optional | Bootstrap data for frontend |
+| `POST /api/auth/login` | No | Login, returns httpOnly cookies |
+| `GET /api/players` | Optional | List players |
+| `GET /api/seasons` | Optional | List seasons |
+| `GET /api/matches` | Optional | List matches |
+| `GET /api/rankings/lifetime` | Optional | Lifetime rankings |
+| `GET /api/export-excel` | Auth | Export to Excel |
+| `GET /api/backup` | Admin | Full JSON backup |
+| `POST /api/restore` | Admin | Restore from backup |
+| `GET /api/events` | Optional | SSE real-time updates |
+
+---
+
+## Testing
+
+```bash
+npm test              # Run all tests
+npm run test:unit     # Unit tests only
+npm run test:watch    # Watch mode
+```
+
+---
+
+## Tech Stack
+
+- **Frontend**: Vanilla JS (ES6+), Vite, CSS custom properties
+- **Backend**: Node.js, Express
+- **Database**: PostgreSQL 15
+- **Cache**: Redis 7 (with stampede protection)
+- **Auth**: JWT + bcrypt + AES-256-GCM
+- **Deploy**: Docker, PM2, or bare metal
 
 ## License
 
-This project is created for personal/commercial use as requested.
+This project is created for personal/commercial use.

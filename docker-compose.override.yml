@@ -1,0 +1,16 @@
+# Development overrides — exposes DB/Redis ports to host
+# so you can run the app outside Docker (npm run dev-full)
+# while keeping PostgreSQL and Redis in containers.
+#
+# This file is auto-loaded by `docker compose up`.
+# For full containerized deployment, use:
+#   docker compose -f docker-compose.yml up -d
+
+services:
+  postgres:
+    ports:
+      - "${DB_PORT:-5432}:5432"
+
+  redis:
+    ports:
+      - "${REDIS_PORT:-6379}:6379"

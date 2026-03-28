@@ -45,3 +45,32 @@ data/*.xlsx
 # Temporary files
 tmp/
 temp/
+
+# Local data volumes (managed by Docker volumes in production)
+data/postgres-data/
+data/redis-data/
+data/tennis.db
+
+# CI/CD and tooling
+.github/
+.gitlab-ci.yml
+.claude/
+.gemini/
+
+# Test & docs (not needed in production image)
+tests/
+docs/
+.eslintrc.json
+.prettierrc
+
+# Docker files (not needed inside the image)
+docker-compose*.yml
+Dockerfile
+.dockerignore
+
+# Scripts not needed in container
+deploy-production.sh
+setup-docker-postgres.sh
+setup-postgresql.sh
+apply-*.sh
+nginx-example.conf

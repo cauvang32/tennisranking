@@ -29,7 +29,9 @@ export const createMatchRouter = ({
     res.json(sanitizeResponse(matches))
   }))
 
-  router.get('/by-date/:date', checkAuth, asyncHandler(async (req, res) => {
+  router.get('/by-date/:date', checkAuth, [
+    param('date').isISO8601().withMessage('Valid date required (YYYY-MM-DD)')
+  ], handleValidationErrors, asyncHandler(async (req, res) => {
     const { date } = req.params
     const cacheKey = `matches:date:${date}`
     const { data: matches, hit: cacheHit } = await rankingsCache.getOrSet(
@@ -40,7 +42,9 @@ export const createMatchRouter = ({
     res.json(sanitizeResponse(matches))
   }))
 
-  router.get('/by-season/:seasonId', checkAuth, asyncHandler(async (req, res) => {
+  router.get('/by-season/:seasonId', checkAuth, [
+    param('seasonId').isInt({ min: 1 }).withMessage('Invalid season ID')
+  ], handleValidationErrors, asyncHandler(async (req, res) => {
     const seasonId = parseInt(req.params.seasonId)
     const cacheKey = `matches:season:${seasonId}`
     const { data: matches, hit: cacheHit } = await rankingsCache.getOrSet(

@@ -25,5 +25,7 @@ dist-ssr
 .github/copilot-instructions.md
 .env
 data/tennis.db
+data/postgres/
+data/postgres-data/
 data/postgres-init/01-init.sql
 data/redis-data/dump.rdb

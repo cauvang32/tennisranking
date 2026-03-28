@@ -28,6 +28,10 @@ export const buildAuthMiddleware = ({
         }
         return res.status(403).json({ error: 'Invalid or expired token' })
       }
+      // Reject refresh tokens used as access tokens
+      if (user.type && user.type !== 'access') {
+        return res.status(401).json({ error: 'Invalid token type' })
+      }
       req.user = user
       req.isAuthenticated = true
       next()
@@ -77,11 +81,7 @@ export const buildAuthMiddleware = ({
       const rolesArray = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles]
 
       if (!rolesArray.includes(userRole)) {
-        return res.status(403).json({
-          error: 'Insufficient permissions',
-          required: rolesArray,
-          current: userRole
-        })
+        return res.status(403).json({ error: 'Insufficient permissions' })
       }
 
       next()

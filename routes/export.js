@@ -29,7 +29,7 @@ export const createExportRouter = ({
     
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename="tennis-rankings-${new Date().toISOString().split('T')[0]}.xlsx"`)
-    res.send(Buffer.from(buffer))
+    res.send(buffer)
   }))
 
   // Export by date
@@ -48,7 +48,7 @@ export const createExportRouter = ({
     
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename="tennis-rankings-${sanitizedDate}.xlsx"`)
-    res.send(Buffer.from(buffer))
+    res.send(buffer)
   }))
 
   // Export by season
@@ -74,7 +74,7 @@ export const createExportRouter = ({
     
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename="tennis-rankings-season-${sanitizedSeasonId}.xlsx"`)
-    res.send(Buffer.from(buffer))
+    res.send(buffer)
   }))
 
   // Export lifetime
@@ -90,7 +90,7 @@ export const createExportRouter = ({
     
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', 'attachment; filename="tennis-rankings-lifetime.xlsx"')
-    res.send(Buffer.from(buffer))
+    res.send(buffer)
   }))
 
   return router

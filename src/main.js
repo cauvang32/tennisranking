@@ -3930,6 +3930,16 @@ class TennisRankingSystem {
     const container = document.querySelector('#accountsTable tbody')
     if (!container) return
     
+    // Safe date formatter — handles null, undefined, {}, Invalid Date
+    const formatDate = (val) => {
+      if (!val || typeof val === 'object') return null
+      try {
+        const d = new Date(val)
+        if (isNaN(d.getTime())) return null
+        return d.toLocaleString('vi-VN')
+      } catch { return null }
+    }
+
     try {
       const response = await fetch(`${this.apiBase}/auth/users`, {
         credentials: 'include'
@@ -3940,7 +3950,8 @@ class TennisRankingSystem {
         return
       }
       
-      const accounts = await response.json()
+      const raw = await response.json()
+      const accounts = Array.isArray(raw) ? raw : (raw.users || raw.data || [])
       
       if (accounts.length === 0) {
         container.innerHTML = '<tr><td colspan="8" class="text-center">Chưa có tài khoản nào</td></tr>'
@@ -3950,7 +3961,7 @@ class TennisRankingSystem {
       container.innerHTML = accounts.map(account => {
         const roleClass = account.role === 'admin' ? 'role-admin' : (account.role === 'editor' ? 'role-editor' : 'role-viewer')
         const statusClass = account.is_active ? 'status-active' : 'status-inactive'
-        const lastLogin = account.last_login ? new Date(account.last_login).toLocaleString('vi-VN') : 'Chưa đăng nhập'
+        const lastLogin = formatDate(account.last_login) || 'Chưa đăng nhập'
         const isSelf = this.user && this.user.username === account.username
         
         return `
@@ -3959,13 +3970,13 @@ class TennisRankingSystem {
             <td><strong>${this.escapeHtml(account.username)}</strong>${isSelf ? ' <span class="badge role-viewer">Bạn</span>' : ''}</td>
             <td>${this.escapeHtml(account.display_name) || '-'}</td>
             <td>${this.escapeHtml(account.email) || '-'}</td>
-            <td><span class="badge ${roleClass}">${this.escapeHtml(account.role).toUpperCase()}</span></td>
+            <td><span class="badge ${roleClass}">${this.escapeHtml(account.role || 'viewer').toUpperCase()}</span></td>
             <td><span class="${statusClass}">${account.is_active ? '✅ Hoạt động' : '❌ Vô hiệu'}</span></td>
             <td>${this.escapeHtml(lastLogin)}</td>
             <td>
               <div class="action-btns">
-                <button class="edit-btn" data-account-id="${this.escapeHtml(account.id)}" title="Chỉnh sửa">✏️</button>
-                <button class="delete-btn" data-account-id="${this.escapeHtml(account.id)}" ${isSelf ? 'disabled title="Không thể xóa tài khoản của chính mình"' : 'title="Xóa"'}>🗑️</button>
+                <button class="edit-btn" data-account-id="${account.id}" title="Chỉnh sửa">✏️</button>
+                <button class="delete-btn" data-account-id="${account.id}" ${isSelf ? 'disabled title="Không thể xóa tài khoản của chính mình"' : 'title="Xóa"'}>🗑️</button>
               </div>
             </td>
           </tr>

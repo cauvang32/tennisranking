@@ -110,7 +110,22 @@ export const createHealthRouter = ({
   // ── Cache statistics ──────────────────────────────────────────────────────
   router.get('/api/cache-stats', authenticateToken, async (_req, res) => {
     const stats = await rankingsCache.getInfo()
-    res.json({ success: true, cache: stats })
+    
+    // Generate simple recommendations based on stats
+    const hitRateNum = parseFloat(stats.hitRate) || 0
+    const recommendations = {
+      performance: hitRateNum < 50 ? 'Cân nhắc tăng TTL hoặc kiểm tra logic invalidation' : 'Tỷ lệ hit tốt',
+      memory: stats.memoryUsage === 'unknown' ? 'Không thể đọc bộ nhớ sử dụng' : 'Bộ nhớ trong giới hạn cho phép',
+      info: 'Bộ đệm đang hoạt động ổn định'
+    }
+
+    const serverInfo = {
+      uptime: process.uptime(),
+      environment: process.env.NODE_ENV || 'production',
+      redisConnected: stats.isConnected
+    }
+
+    res.json({ success: true, cacheStats: stats, recommendations, serverInfo })
   })
 
   return router

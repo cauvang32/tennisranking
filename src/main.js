@@ -301,7 +301,8 @@ class TennisRankingSystem {
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;')
+      .replace(/'/g, '&#39;')
+      .replace(/`/g, '&#96;')
   }
 
   // Loading overlay control
@@ -3779,19 +3780,6 @@ class TennisRankingSystem {
   }
 
   // ========== Toast Notifications ==========
-  // Escape HTML special characters in user-supplied/content strings
-  escapeHtml(str) {
-    return str.replace(/[&<>"'`]/g, function (c) {
-      return ({
-        '&': '&amp;',
-        '<': '&lt;',
-        '>': '&gt;',
-        '"': '&quot;',
-        "'": '&#39;',
-        '`': '&#96;',
-      })[c];
-    });
-  }
 
   showToast(message, type = 'success') {
     const container = document.getElementById('toastContainer')

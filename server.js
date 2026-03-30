@@ -120,11 +120,15 @@ function formatSecureTimestamp(date = new Date()) {
 
 function sanitizeResponse(data) {
   if (typeof data === 'object' && data !== null) {
+    // Handle Date objects from PostgreSQL — convert to ISO string
+    if (data instanceof Date) return data.toISOString()
     if (Array.isArray(data)) return data.map(sanitizeResponse)
     const sanitized = {}
     for (const [key, value] of Object.entries(data)) {
       if ((key === 'created_at' || key === 'updated_at' || key === 'timestamp') && typeof value === 'number') {
         sanitized[key] = new Date(value * 1000).toISOString()
+      } else if (value instanceof Date) {
+        sanitized[key] = value.toISOString()
       } else if (typeof value === 'object' && value !== null) {
         sanitized[key] = sanitizeResponse(value)
       } else {

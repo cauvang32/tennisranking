@@ -66,6 +66,7 @@ export const createSystemRouter = ({
       const initData = {
         rankings: sanitizeResponse(rankings),
         players: sanitizeResponse(players),
+        seasons: sanitizeResponse(seasons),
         activeSeasons: sanitizeResponse(activeSeasons),
         playDates,
         activeSeason,
@@ -86,7 +87,7 @@ export const createSystemRouter = ({
       }
 
       const hitCount = [rankingsHit, playersHit, seasonsHit, activeSeasonsHit, playDatesHit, activeSeasonHit].filter(Boolean).length
-      res.set('Redis-Cache', `${hitCount}/6`)
+      res.set('Redis-Cache', `${hitCount}/7`)
       res.json(initData)
     } catch (error) {
       console.error('Error in init endpoint:', error)

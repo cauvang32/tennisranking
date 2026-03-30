@@ -47,6 +47,7 @@ tmp/
 temp/
 
 # Local data volumes (managed by Docker volumes in production)
+data/postgres/
 data/postgres-data/
 data/redis-data/
 data/tennis.db

@@ -70,7 +70,10 @@ const hashedEditorPassword = await bcrypt.hash(config.editor.password, config.bc
 // ── Database & Cache ────────────────────────────────────────────────────────
 
 const db = new TennisDatabase()
-await db.init()
+const dbReady = await db.init()
+if (!dbReady) {
+  console.warn('⚠️  PostgreSQL unavailable at startup - server will keep retrying in the background')
+}
 
 const rankingsCache = new RedisCache({
   redisUrl: config.redisUrl,

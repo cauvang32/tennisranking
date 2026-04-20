@@ -19,7 +19,11 @@ export const createHealthRouter = ({
   async function checkDatabaseHealth() {
     try {
       const startTime = Date.now()
-      await db.pool.query('SELECT 1')
+      if (!db?.query) {
+        return { status: 'unhealthy', error: 'Database connection unavailable' }
+      }
+
+      await db.query('SELECT 1')
       return { status: 'healthy', responseTimeMs: Date.now() - startTime }
     } catch (error) {
       console.error('Database health check failed:', error.message)
@@ -33,6 +37,7 @@ export const createHealthRouter = ({
     const cacheStats = rankingsCache.getStats()
     const mem = process.memoryUsage()
     const isHealthy = dbHealth.status === 'healthy'
+    const cacheStatus = cacheStats.isConnected ? 'healthy' : 'degraded'
 
     res.status(isHealthy ? 200 : 503).json({
       status: isHealthy ? 'healthy' : 'degraded',
@@ -44,7 +49,7 @@ export const createHealthRouter = ({
       uptime: process.uptime(),
       checks: {
         database: dbHealth,
-        cache: { status: 'healthy', entries: cacheStats.currentEntries, hitRate: cacheStats.hitRate },
+        cache: { status: cacheStatus, entries: cacheStats.currentEntries || 0, hitRate: cacheStats.hitRate },
         memory: {
           heapUsedMB: Math.round(mem.heapUsed / 1024 / 1024),
           heapTotalMB: Math.round(mem.heapTotal / 1024 / 1024),
@@ -73,7 +78,7 @@ export const createHealthRouter = ({
       uptime: process.uptime(),
       checks: {
         database: dbHealth,
-        cache: { entries: cacheStats.currentEntries, hitRate: cacheStats.hitRate, hits: cacheStats.hits, misses: cacheStats.misses }
+        cache: { status: cacheStats.isConnected ? 'healthy' : 'degraded', entries: cacheStats.currentEntries || 0, hitRate: cacheStats.hitRate, hits: cacheStats.hits, misses: cacheStats.misses }
       }
     }
 

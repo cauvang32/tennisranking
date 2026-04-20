@@ -67,6 +67,12 @@ class TennisDatabasePostgreSQL {
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,
     }
+    this.pool = null
+    this.isConnected = false
+    this.initPromise = null
+    this.reconnectTimer = null
+    this.retryAttempt = 0
+    this.maxReconnectDelayMs = 60000
     
     // Validate required database configuration
     if (!this.config.database) {
@@ -86,9 +92,30 @@ class TennisDatabasePostgreSQL {
   }
 
   async init() {
+    if (this.initPromise) {
+      return this.initPromise
+    }
+
+    this.initPromise = this._initOnce()
+
     try {
-      // Create connection pool
-      this.pool = new Pool(this.config)
+      return await this.initPromise
+    } finally {
+      this.initPromise = null
+    }
+  }
+
+  async _initOnce() {
+    try {
+      if (!this.pool) {
+        // Create connection pool once and reuse it for retries
+        this.pool = new Pool(this.config)
+        this.pool.on('error', (error) => {
+          this.isConnected = false
+          console.error('❌ PostgreSQL pool error:', error.message)
+          this.scheduleReconnect()
+        })
+      }
 
       // Test connection
       const client = await this.pool.connect()
@@ -98,11 +125,42 @@ class TennisDatabasePostgreSQL {
       // Create tables
       await this.createTables()
       
+      this.isConnected = true
+      this.retryAttempt = 0
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer)
+        this.reconnectTimer = null
+      }
+
       console.log('✅ PostgreSQL database initialized successfully')
+      return true
     } catch (error) {
+      this.isConnected = false
       console.error('❌ PostgreSQL connection failed:', error.message)
-      throw error
+      this.scheduleReconnect()
+      return false
     }
+  }
+
+  scheduleReconnect() {
+    if (this.reconnectTimer) {
+      return
+    }
+
+    const delayMs = Math.min(5000 * (2 ** this.retryAttempt), this.maxReconnectDelayMs)
+    this.retryAttempt += 1
+
+    this.reconnectTimer = setTimeout(async () => {
+      this.reconnectTimer = null
+      try {
+        await this.init()
+      } catch (error) {
+        console.error('❌ PostgreSQL reconnect attempt failed:', error.message)
+      }
+    }, delayMs)
+
+    this.reconnectTimer.unref?.()
+    console.warn(`⚠️ PostgreSQL unavailable, retrying connection in ${Math.round(delayMs / 1000)}s`)
   }
 
   async createTables() {

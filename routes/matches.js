@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { body, param, query } from 'express-validator'
 import { asyncHandler } from '../utils/async-handler.js'
+import { streamJsonResponse } from '../utils/stream-helper.js'
 
 export const createMatchRouter = ({
   db,
@@ -16,17 +17,53 @@ export const createMatchRouter = ({
 }) => {
   const router = Router()
 
+  // SQL for match listing (shared between cached and streamed paths)
+  const MATCHES_LIST_SQL = `
+    SELECT m.id, m.season_id, TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date,
+      m.player1_id, m.player2_id, m.player3_id, m.player4_id,
+      m.team1_score, m.team2_score, m.winning_team, 
+      COALESCE(m.match_type, 'duo') as match_type,
+      m.created_at,
+      s.name as season_name,
+      COALESCE(s.lose_money_per_loss, 20000) as lose_money_per_loss,
+      p1.name as player1_name, COALESCE(p2.name, '') as player2_name, 
+      p3.name as player3_name, COALESCE(p4.name, '') as player4_name
+    FROM matches m
+    JOIN seasons s ON m.season_id = s.id
+    JOIN players p1 ON m.player1_id = p1.id
+    LEFT JOIN players p2 ON m.player2_id = p2.id
+    JOIN players p3 ON m.player3_id = p3.id
+    LEFT JOIN players p4 ON m.player4_id = p4.id
+    ORDER BY m.play_date DESC, m.created_at DESC
+  `
+
   router.get('/', checkAuth, [
     query('limit').optional().isInt({ min: 1, max: 1000 }).withMessage('Limit must be between 1 and 1000')
   ], handleValidationErrors, asyncHandler(async (req, res) => {
     const limit = req.query.limit ? parseInt(req.query.limit) : null
-    const cacheKey = `matches:list:${limit || 'all'}`
-    const { data: matches, hit: cacheHit } = await rankingsCache.getOrSet(
-      cacheKey,
-      () => db.getMatches(limit)
-    )
-    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
-    res.json(sanitizeResponse(matches))
+
+    // For bounded requests (with limit), use the cached path
+    if (limit) {
+      const cacheKey = `matches:list:${limit}`
+      const { data: matches, hit: cacheHit } = await rankingsCache.getOrSet(
+        cacheKey,
+        () => db.getMatches(limit)
+      )
+      res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+      return res.json(sanitizeResponse(matches))
+    }
+
+    // For unbounded requests (no limit), try cache first, then stream
+    const cacheKey = 'matches:list:all'
+    const cached = await rankingsCache.get(cacheKey)
+    if (cached) {
+      res.set('Redis-Cache', 'HIT')
+      return res.json(sanitizeResponse(cached))
+    }
+
+    // Stream directly from DB → HTTP response (constant memory)
+    res.set('Redis-Cache', 'MISS')
+    await streamJsonResponse(db.pool, MATCHES_LIST_SQL, [], res, { sanitize: sanitizeResponse })
   }))
 
   router.get('/by-date/:date', checkAuth, [

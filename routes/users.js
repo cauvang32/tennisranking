@@ -25,6 +25,7 @@ export const createAuthRouter = ({
       const users = await db.getUsers()
       // Remove password_hash from response
       const safeUsers = users.map(({ password_hash, ...user }) => user)
+      res.setHeader('Cache-Control', 'no-store')
       res.json(sanitizeResponse(safeUsers))
     })
   )

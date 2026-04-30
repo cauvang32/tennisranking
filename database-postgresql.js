@@ -698,83 +698,51 @@ class TennisDatabasePostgreSQL {
     return result.rows[0]?.play_date || null
   }
 
-  // Statistics and rankings
-  // For lifetime stats, we use a weighted average of lose_money_per_loss from all seasons
-  // or default to 20000 if no season data is available
+  // Statistics and rankings — reads from pre-computed summary tables
+  // Summary tables are updated automatically via PostgreSQL trigger on matches
   async getPlayerStatsLifetime() {
     const result = await this.query(`
-      WITH match_money AS (
-        SELECT 
-          m.id as match_id,
-          m.player1_id, m.player2_id, m.player3_id, m.player4_id,
-          m.winning_team,
-          COALESCE(s.lose_money_per_loss, 20000) as lose_money
-        FROM matches m
-        JOIN seasons s ON m.season_id = s.id
-      ),
-      player_stats AS (
-        SELECT 
-          p.id,
-          p.name,
-          COUNT(CASE WHEN 
-            (mm.winning_team = 1 AND (mm.player1_id = p.id OR mm.player2_id = p.id)) OR 
-            (mm.winning_team = 2 AND (mm.player3_id = p.id OR mm.player4_id = p.id))
-            THEN 1 END) as wins,
-          COUNT(CASE WHEN 
-            (mm.winning_team = 2 AND (mm.player1_id = p.id OR mm.player2_id = p.id)) OR 
-            (mm.winning_team = 1 AND (mm.player3_id = p.id OR mm.player4_id = p.id))
-            THEN 1 END) as losses,
-          COUNT(CASE WHEN mm.match_id IS NOT NULL THEN 1 END) as total_matches,
-          COALESCE(SUM(CASE WHEN 
-            (mm.winning_team = 2 AND (mm.player1_id = p.id OR mm.player2_id = p.id)) OR 
-            (mm.winning_team = 1 AND (mm.player3_id = p.id OR mm.player4_id = p.id))
-            THEN mm.lose_money ELSE 0 END), 0) as money_lost
-        FROM players p
-        LEFT JOIN match_money mm ON (mm.player1_id = p.id OR mm.player2_id = p.id OR mm.player3_id = p.id OR mm.player4_id = p.id)
-        GROUP BY p.id, p.name
-      )
       SELECT 
-        id, name, wins, losses, total_matches, money_lost,
-        (wins * 4 + losses * 1) as points,
-        CASE WHEN (wins + losses) > 0 THEN ROUND((wins * 100.0) / (wins + losses), 1) ELSE 0 END as win_percentage
-      FROM player_stats
-      ORDER BY points DESC, win_percentage DESC, name ASC
+        p.id, p.name,
+        COALESCE(pls.wins, 0)::int as wins,
+        COALESCE(pls.losses, 0)::int as losses,
+        COALESCE(pls.total_matches, 0)::int as total_matches,
+        COALESCE(pls.money_lost, 0)::bigint as money_lost,
+        COALESCE(pls.points, 0)::int as points,
+        CASE WHEN COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0) > 0
+             THEN ROUND((COALESCE(pls.wins, 0) * 100.0) / (COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0)), 1)
+             ELSE 0 END as win_percentage
+      FROM players p
+      LEFT JOIN player_lifetime_stats pls ON pls.player_id = p.id
+      ORDER BY COALESCE(pls.points, 0) DESC,
+               CASE WHEN COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0) > 0
+                    THEN ROUND((COALESCE(pls.wins, 0) * 100.0) / (COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0)), 1)
+                    ELSE 0 END DESC,
+               p.name ASC
     `)
     return result.rows
   }
 
   async getPlayerStatsBySeason(seasonId) {
-    // Get the lose_money_per_loss for this specific season
     const result = await this.query(`
-      WITH season_config AS (
-        SELECT COALESCE(lose_money_per_loss, 20000) as lose_money FROM seasons WHERE id = $1
-      ),
-      player_stats AS (
-        SELECT 
-          p.id,
-          p.name,
-          COUNT(CASE WHEN 
-            (m.winning_team = 1 AND (m.player1_id = p.id OR m.player2_id = p.id)) OR 
-            (m.winning_team = 2 AND (m.player3_id = p.id OR m.player4_id = p.id))
-            THEN 1 END) as wins,
-          COUNT(CASE WHEN 
-            (m.winning_team = 2 AND (m.player1_id = p.id OR m.player2_id = p.id)) OR 
-            (m.winning_team = 1 AND (m.player3_id = p.id OR m.player4_id = p.id))
-            THEN 1 END) as losses,
-          COUNT(CASE WHEN m.id IS NOT NULL THEN 1 END) as total_matches
-        FROM players p
-        INNER JOIN season_players sp ON sp.player_id = p.id AND sp.season_id = $1
-        LEFT JOIN matches m ON (m.player1_id = p.id OR m.player2_id = p.id OR m.player3_id = p.id OR m.player4_id = p.id)
-          AND m.season_id = $1
-        GROUP BY p.id, p.name
-      )
       SELECT 
-        ps.id, ps.name, ps.wins, ps.losses, ps.total_matches,
-        (ps.wins * 4 + ps.losses * 1) as points,
-        CASE WHEN (ps.wins + ps.losses) > 0 THEN ROUND((ps.wins * 100.0) / (ps.wins + ps.losses), 1) ELSE 0 END as win_percentage,
-        ps.losses * sc.lose_money as money_lost
-      FROM player_stats ps, season_config sc
-      ORDER BY points DESC, win_percentage DESC, ps.name ASC
+        p.id, p.name,
+        COALESCE(pss.wins, 0)::int as wins,
+        COALESCE(pss.losses, 0)::int as losses,
+        COALESCE(pss.total_matches, 0)::int as total_matches,
+        COALESCE(pss.points, 0)::int as points,
+        CASE WHEN COALESCE(pss.wins, 0) + COALESCE(pss.losses, 0) > 0
+             THEN ROUND((COALESCE(pss.wins, 0) * 100.0) / (COALESCE(pss.wins, 0) + COALESCE(pss.losses, 0)), 1)
+             ELSE 0 END as win_percentage,
+        COALESCE(pss.money_lost, 0)::bigint as money_lost
+      FROM players p
+      INNER JOIN season_players sp ON sp.player_id = p.id AND sp.season_id = $1
+      LEFT JOIN player_season_stats pss ON pss.player_id = p.id AND pss.season_id = $1
+      ORDER BY COALESCE(pss.points, 0) DESC,
+               CASE WHEN COALESCE(pss.wins, 0) + COALESCE(pss.losses, 0) > 0
+                    THEN ROUND((COALESCE(pss.wins, 0) * 100.0) / (COALESCE(pss.wins, 0) + COALESCE(pss.losses, 0)), 1)
+                    ELSE 0 END DESC,
+               p.name ASC
     `, [seasonId])
     return result.rows
   }
@@ -1116,17 +1084,33 @@ class TennisDatabasePostgreSQL {
 
   /**
    * Get player stats with forms in a single query (lifetime)
+   * Uses recent_form from player_lifetime_stats summary table
    */
   async getPlayerStatsWithFormsLifetime(formLimit = 5) {
-    const rankings = await this.getPlayerStatsLifetime()
-    if (rankings.length === 0) return rankings
-
-    const playerIds = rankings.map(p => p.id)
-    const formsMap = await this.getPlayerFormsInBatch(playerIds, formLimit)
-
-    return rankings.map(player => ({
-      ...player,
-      form: formsMap.get(player.id) || []
+    const result = await this.query(`
+      SELECT 
+        p.id, p.name,
+        COALESCE(pls.wins, 0)::int as wins,
+        COALESCE(pls.losses, 0)::int as losses,
+        COALESCE(pls.total_matches, 0)::int as total_matches,
+        COALESCE(pls.money_lost, 0)::bigint as money_lost,
+        COALESCE(pls.points, 0)::int as points,
+        CASE WHEN COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0) > 0
+             THEN ROUND((COALESCE(pls.wins, 0) * 100.0) / (COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0)), 1)
+             ELSE 0 END as win_percentage,
+        COALESCE(pls.recent_form, '[]'::jsonb) as recent_form
+      FROM players p
+      LEFT JOIN player_lifetime_stats pls ON pls.player_id = p.id
+      ORDER BY COALESCE(pls.points, 0) DESC,
+               CASE WHEN COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0) > 0
+                    THEN ROUND((COALESCE(pls.wins, 0) * 100.0) / (COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0)), 1)
+                    ELSE 0 END DESC,
+               p.name ASC
+    `)
+    return result.rows.map(row => ({
+      ...row,
+      form: (row.recent_form || []).slice(0, formLimit),
+      recent_form: undefined // don't expose raw JSONB field
     }))
   }
 

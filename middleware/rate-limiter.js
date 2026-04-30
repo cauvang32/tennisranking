@@ -32,7 +32,23 @@ rateLimitRedis.on('error', () => {
 })
 
 const createRedisRateLimitStore = (suffix) => new RedisStore({
-  sendCommand: (...args) => rateLimitRedis.call(...args),
+  sendCommand: async (...args) => {
+    try {
+      // If Redis is offline, ioredis throws immediately because offlineQueue is false.
+      // rate-limit-redis calls 'SCRIPT LOAD' on startup. If this throws, the app crashes.
+      if (rateLimitRedis.status !== 'ready' && args[0] === 'SCRIPT' && args[1] === 'LOAD') {
+        // Return a dummy SHA to satisfy the library during startup
+        return 'dummy_sha_to_prevent_startup_crash'
+      }
+      return await rateLimitRedis.call(...args)
+    } catch (err) {
+      if (err.message && err.message.includes('enableOfflineQueue')) {
+        // For EVALSHA or other commands when offline, just throw an error that rate-limit-redis will catch and fail-open
+        throw new Error('Redis offline')
+      }
+      throw err
+    }
+  },
   prefix: `rate-limit-redis-tennis:${suffix}:`,
 })
 

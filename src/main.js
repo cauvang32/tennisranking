@@ -3941,7 +3941,7 @@ class TennisRankingSystem {
     }
 
     try {
-      const response = await fetch(`${this.apiBase}/auth/users`, {
+      const response = await fetch(`${this.apiBase}/auth/users?t=${Date.now()}`, {
         credentials: 'include'
       })
       

@@ -9,15 +9,15 @@ import {
 
 export const createExportRouter = ({
   db,
-  checkAuth,
   authenticateToken,
+  requireEditor,
   conditionalRateLimit,
   exportLimiter
 }) => {
   const router = Router()
 
   // Full export (all data)
-  router.get('/', checkAuth, conditionalRateLimit(exportLimiter), asyncHandler(async (req, res) => {
+  router.get('/', authenticateToken, requireEditor, conditionalRateLimit(exportLimiter), asyncHandler(async (req, res) => {
     const [players, seasons, matches, rankings] = await Promise.all([
       db.getPlayers(),
       db.getSeasons(),
@@ -33,7 +33,7 @@ export const createExportRouter = ({
   }))
 
   // Export by date
-  router.get('/date/:date', checkAuth, conditionalRateLimit(exportLimiter), asyncHandler(async (req, res) => {
+  router.get('/date/:date', authenticateToken, requireEditor, conditionalRateLimit(exportLimiter), asyncHandler(async (req, res) => {
     const { date } = req.params
     
     const [rankings, matches] = await Promise.all([
@@ -52,7 +52,7 @@ export const createExportRouter = ({
   }))
 
   // Export by season
-  router.get('/season/:seasonId', checkAuth, conditionalRateLimit(exportLimiter), asyncHandler(async (req, res) => {
+  router.get('/season/:seasonId', authenticateToken, requireEditor, conditionalRateLimit(exportLimiter), asyncHandler(async (req, res) => {
     const { seasonId } = req.params
     
     // XSS Protection: Validate seasonId is numeric (sanitization)
@@ -78,7 +78,7 @@ export const createExportRouter = ({
   }))
 
   // Export lifetime
-  router.get('/lifetime', checkAuth, conditionalRateLimit(exportLimiter), asyncHandler(async (req, res) => {
+  router.get('/lifetime', authenticateToken, requireEditor, conditionalRateLimit(exportLimiter), asyncHandler(async (req, res) => {
     const [players, seasons, matches, rankings] = await Promise.all([
       db.getPlayers(),
       db.getSeasons(),

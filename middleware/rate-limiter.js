@@ -17,11 +17,12 @@ import { getRealClientIP, logError } from '../access-logger.js'
 
 // ── Dedicated Redis client for rate limiting ────────────────────────────────
 // Separate from cache client so failures are isolated.
-// enableOfflineQueue: true — commands queue until Redis is available; passOnStoreError
-// on each limiter handles the case when Redis is genuinely down.
+// enableOfflineQueue: false — when Redis is down, commands fail immediately
+// instead of accumulating in memory. passOnStoreError on each limiter
+// handles graceful degradation (fail-open).
 const rateLimitRedis = new IORedis(config.redisUrl, {
   maxRetriesPerRequest: 1,
-  enableOfflineQueue: true,
+  enableOfflineQueue: false,
   retryStrategy(times) {
     return Math.min(times * 200, 5000) // reconnect with backoff
   }

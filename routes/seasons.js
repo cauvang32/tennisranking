@@ -72,7 +72,7 @@ export const createSeasonRouter = ({
       body('startDate').isISO8601().withMessage('Valid start date is required'),
       body('endDate').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('Valid end date is required'),
       body('autoEnd').optional().isBoolean().withMessage('autoEnd must be boolean'),
-      body('description').optional({ nullable: true, checkFalsy: true }).isString().withMessage('Description must be string'),
+      body('description').optional({ nullable: true, checkFalsy: true }).isString().escape().withMessage('Description must be string'),
       body('loseMoneyPerLoss').optional().isInt({ min: 0 }).withMessage('Lose money must be a non-negative integer'),
       body('playerIds').optional().isArray().withMessage('Player IDs must be an array'),
       body('playerIds.*').optional().isInt().withMessage('Player ID must be an integer')
@@ -110,7 +110,7 @@ export const createSeasonRouter = ({
       body('startDate').isISO8601().withMessage('Valid start date is required'),
       body('endDate').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('Valid end date is required'),
       body('autoEnd').optional().isBoolean().withMessage('autoEnd must be boolean'),
-      body('description').optional({ nullable: true, checkFalsy: true }).isString().withMessage('Description must be string'),
+      body('description').optional({ nullable: true, checkFalsy: true }).isString().escape().withMessage('Description must be string'),
       body('loseMoneyPerLoss').optional().isInt({ min: 0 }).withMessage('Lose money must be a non-negative integer')
     ],
     handleValidationErrors,

@@ -35,26 +35,17 @@ export const createHealthRouter = ({
   router.get('/health', async (_req, res) => {
     const dbHealth = await checkDatabaseHealth()
     const cacheStats = rankingsCache.getStats()
-    const mem = process.memoryUsage()
     const isHealthy = dbHealth.status === 'healthy'
     const cacheStatus = cacheStats.isConnected ? 'healthy' : 'degraded'
 
+    // Public health: minimal info only (no environment, domain, memory details)
     res.status(isHealthy ? 200 : 503).json({
       status: isHealthy ? 'healthy' : 'degraded',
       timestamp: new Date().toISOString(),
-      version: process.env.npm_package_version || '1.0.0',
-      environment: process.env.NODE_ENV || 'development',
-      domain: process.env.PUBLIC_DOMAIN || 'localhost',
-      basePath: process.env.BASE_PATH || '/',
       uptime: process.uptime(),
       checks: {
-        database: dbHealth,
-        cache: { status: cacheStatus, entries: cacheStats.currentEntries || 0, hitRate: cacheStats.hitRate },
-        memory: {
-          heapUsedMB: Math.round(mem.heapUsed / 1024 / 1024),
-          heapTotalMB: Math.round(mem.heapTotal / 1024 / 1024),
-          rssMB: Math.round(mem.rss / 1024 / 1024)
-        }
+        database: { status: dbHealth.status },
+        cache: { status: cacheStatus }
       }
     })
   })

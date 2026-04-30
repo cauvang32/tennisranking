@@ -1,5 +1,5 @@
 import pg from 'pg'
-import { dirname, join } from 'path'
+import { dirname, join, normalize, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs/promises'
 import { readFileSync } from 'fs'
@@ -21,13 +21,12 @@ function buildSSLConfig() {
   // Support custom CA certificate for self-signed certs
   if (process.env.DB_SSL_CA) {
     try {
-      const path = require('path')
       // Path traversal protection: Normalize and validate certificate path
-      const certPath = path.normalize(process.env.DB_SSL_CA)
-      const resolvedPath = path.resolve(certPath)
+      const certPath = normalize(process.env.DB_SSL_CA)
+      const resolvedPath = resolve(certPath)
       
       // Ensure path doesn't contain traversal attempts
-      if (certPath.includes('..') || !resolvedPath.startsWith(path.resolve('.'))) {
+      if (certPath.includes('..') || !resolvedPath.startsWith(resolve('.'))) {
         console.warn('⚠️ Invalid DB_SSL_CA path: path traversal detected')
       } else {
         sslConfig.ca = readFileSync(resolvedPath, 'utf8')
@@ -216,7 +215,7 @@ class TennisDatabasePostgreSQL {
           season_id INTEGER NOT NULL REFERENCES seasons(id),
           play_date DATE NOT NULL,
           player1_id INTEGER NOT NULL REFERENCES players(id),
-          player2_id INTEGER NOT NULL REFERENCES players(id),
+          player2_id INTEGER REFERENCES players(id),
           player3_id INTEGER REFERENCES players(id),
           player4_id INTEGER REFERENCES players(id),
           team1_score INTEGER NOT NULL,
@@ -224,7 +223,11 @@ class TennisDatabasePostgreSQL {
           winning_team INTEGER NOT NULL,
           match_type VARCHAR(10) DEFAULT 'duo',
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          CONSTRAINT check_match_type CHECK (match_type IN ('solo', 'duo'))
+          CONSTRAINT check_match_type CHECK (match_type IN ('solo', 'duo')),
+          CONSTRAINT check_match_players CHECK (
+            (match_type = 'duo' AND player2_id IS NOT NULL AND player4_id IS NOT NULL) OR
+            (match_type = 'solo' AND player2_id IS NULL AND player4_id IS NULL)
+          )
         )
       `)
 
@@ -1181,7 +1184,8 @@ class TennisDatabasePostgreSQL {
   async getUserByUsername(username) {
     const result = await this.query(`
       SELECT id, username, email, password_hash, role, display_name, is_active, 
-             created_at, updated_at, last_login, created_by, notes
+             created_at, updated_at, last_login, created_by, notes,
+             COALESCE(token_version, 0) as token_version
       FROM users 
       WHERE username = $1 AND is_active = true
     `, [username])
@@ -1233,9 +1237,33 @@ class TennisDatabasePostgreSQL {
   }
 
   async updateUserPassword(userId, passwordHash) {
+    // Increment token_version to invalidate all existing tokens for this user
     await this.query(`
-      UPDATE users SET password_hash = $2 WHERE id = $1
+      UPDATE users SET password_hash = $2, token_version = COALESCE(token_version, 0) + 1 WHERE id = $1
     `, [userId, passwordHash])
+  }
+
+  /**
+   * Increment token_version to invalidate all existing JWTs for this user.
+   * Called on logout, disable, or other security-sensitive operations.
+   * @returns {number} The new token_version
+   */
+  async incrementTokenVersion(userId) {
+    const result = await this.query(`
+      UPDATE users SET token_version = COALESCE(token_version, 0) + 1 WHERE id = $1
+      RETURNING token_version
+    `, [userId])
+    return result.rows[0]?.token_version ?? 0
+  }
+
+  /**
+   * Get current token_version for a user (used by auth middleware).
+   */
+  async getTokenVersion(userId) {
+    const result = await this.query(`
+      SELECT COALESCE(token_version, 0) as token_version FROM users WHERE id = $1
+    `, [userId])
+    return result.rows[0]?.token_version ?? 0
   }
 
   async updateUserLastLogin(userId) {

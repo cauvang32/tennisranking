@@ -74,11 +74,13 @@ export const createAuthRouter = ({
       body('displayName')
         .optional()
         .trim()
+        .escape()
         .isLength({ max: 100 })
         .withMessage('Display name must be under 100 characters'),
       body('notes')
         .optional()
         .trim()
+        .escape()
     ],
     handleValidationErrors,
     asyncHandler(async (req, res) => {
@@ -139,6 +141,7 @@ export const createAuthRouter = ({
       body('displayName')
         .optional()
         .trim()
+        .escape()
         .isLength({ max: 100 }),
       body('isActive')
         .optional()
@@ -146,6 +149,7 @@ export const createAuthRouter = ({
       body('notes')
         .optional()
         .trim()
+        .escape()
     ],
     handleValidationErrors,
     asyncHandler(async (req, res) => {

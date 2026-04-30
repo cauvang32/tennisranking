@@ -11,19 +11,26 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 // Enhanced IP detection utility
+// SECURITY: Prioritizes req.ip which respects Express's 'trust proxy' setting.
+// Raw proxy headers are only used as fallback and logged separately for audit.
 export function getRealClientIP(req) {
-  // Priority order for IP detection (most reliable first)
-  const ipSources = [
-    req.get('CF-Connecting-IP'),        // Cloudflare
+  // req.ip is the safest source — it respects app.set('trust proxy', ...) and
+  // strips untrusted hops from X-Forwarded-For automatically.
+  if (req.ip && isValidIP(req.ip)) {
+    return req.ip
+  }
+
+  // Fallback sources (only reached if req.ip is unavailable/invalid)
+  const fallbackSources = [
+    req.get('CF-Connecting-IP'),        // Cloudflare (if behind CF)
     req.get('X-Real-IP'),               // Nginx
     req.get('X-Forwarded-For'),         // Standard proxy header
-    req.ip,                             // Express.js detected IP
-    req.connection.remoteAddress,       // Direct connection
-    req.socket.remoteAddress,           // Socket connection
+    req.connection?.remoteAddress,      // Direct connection
+    req.socket?.remoteAddress,          // Socket connection
     'unknown'
   ]
 
-  for (const ip of ipSources) {
+  for (const ip of fallbackSources) {
     if (ip && ip !== 'unknown') {
       // Handle X-Forwarded-For which can contain multiple IPs
       if (ip.includes(',')) {
@@ -111,13 +118,23 @@ const logger = winston.createLogger({
 export function createAccessLogEntry(req, res, responseTime, user = null) {
   const realIP = getRealClientIP(req)
   const userAgent = req.get('User-Agent') || 'unknown'
-  const parser = new UAParser(userAgent)
-  const parsedUA = parser.getResult()
+  const requestPath = req.path || req.url || ''
   
-  // Get geographic information (optional - can be disabled for privacy)
+  // Performance: skip expensive UA parsing and geoIP for static files and health checks
+  const isStaticOrHealth = /\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|map|webp|avif)$/.test(requestPath)
+    || requestPath === '/health'
+    || requestPath.startsWith('/health')
+  
+  let parsedUA = null
+  if (!isStaticOrHealth) {
+    const parser = new UAParser(userAgent)
+    parsedUA = parser.getResult()
+  }
+  
+  // Get geographic information (skip for static/health and local IPs)
   let geoInfo = null
   try {
-    if (realIP && realIP !== 'unknown' && !isLocalIP(realIP)) {
+    if (!isStaticOrHealth && realIP && realIP !== 'unknown' && !isLocalIP(realIP)) {
       const geo = geoip.lookup(realIP)
       if (geo) {
         geoInfo = {

@@ -11,6 +11,7 @@ export const createSystemRouter = ({
   app,
   checkAuth,
   authenticateToken,
+  requireAdmin,
   rankingsCache,
   sseClients,
   formatSecureTimestamp,
@@ -101,6 +102,10 @@ export const createSystemRouter = ({
       return res.status(503).json({ error: 'Too many SSE connections' })
     }
 
+    // Disable request timeout for SSE (otherwise middleware timeout kills it)
+    if (req.setTimeout) req.setTimeout(0)
+    if (res.setTimeout) res.setTimeout(0)
+
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Connection', 'keep-alive')
@@ -112,7 +117,8 @@ export const createSystemRouter = ({
 
     sseClients.add(res)
 
-    const keepAlive = setInterval(() => { res.write(': keepalive\n\n') }, 30000)
+    // Keepalive every 20s (must be less than any proxy idle timeout, typically 30-60s)
+    const keepAlive = setInterval(() => { res.write(': keepalive\n\n') }, 20000)
 
     req.on('close', () => {
       clearInterval(keepAlive)
@@ -129,8 +135,8 @@ export const createSystemRouter = ({
     res.status(204).end()
   })
 
-  // ── Debug config (subpath / proxy debugging) ──────────────────────────────
-  router.get('/api/debug/config', checkAuth, (req, res) => {
+  // ── Debug config (subpath / proxy debugging) — admin only ─────────────────
+  router.get('/api/debug/config', authenticateToken, requireAdmin, (req, res) => {
     const currentIP = getRealClientIP(req)
     res.json({
       success: true,

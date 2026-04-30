@@ -156,6 +156,7 @@ const { authenticateToken, checkAuth, requireAdmin, requireEditor } = buildAuthM
   jwt,
   security: securityForAuth,
   tokens,
+  db,
   cookiePaths
 })
 
@@ -391,7 +392,7 @@ app.post('/api/auth/login',
         const dbUser = await db.getUserByUsername(username)
         if (dbUser && dbUser.is_active) {
           if (await bcrypt.compare(password, dbUser.password_hash)) {
-            user = { id: dbUser.id, username: dbUser.username, email: dbUser.email, role: dbUser.role, displayName: dbUser.display_name }
+            user = { id: dbUser.id, username: dbUser.username, email: dbUser.email, role: dbUser.role, displayName: dbUser.display_name, tokenVersion: dbUser.token_version || 0 }
             isDbUser = true
             await db.updateUserLastLogin(dbUser.id)
           }
@@ -434,13 +435,17 @@ app.post('/api/auth/login',
 )
 
 // Logout
-app.post('/api/auth/logout', checkAuth, (req, res) => {
+app.post('/api/auth/logout', checkAuth, async (req, res) => {
   try {
     if (res.headersSent) return
     if (req.isAuthenticated) {
       const token = req.get('X-CSRF-Token') || req.body._csrf
       if (!token || !tokens.verify(req.csrfSecret, token)) {
         return res.status(403).json({ error: 'Invalid CSRF token', csrfRequired: true })
+      }
+      // Increment token_version for DB users to revoke all existing tokens
+      if (req.user?.id && typeof db.incrementTokenVersion === 'function') {
+        try { await db.incrementTokenVersion(req.user.id) } catch { /* best-effort */ }
       }
     }
     clearCookieAllPaths(res, 'authToken')

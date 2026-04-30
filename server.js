@@ -286,9 +286,10 @@ if (SUBPATH !== '/' && !isDevelopment) {
 }
 
 // API cache headers (ETag based on data version)
+// Skip auth routes — they must always return fresh authentication state
 const apiCachePaths = ['/api', ...(SUBPATH !== '/' && !isDevelopment ? [`${SUBPATH}/api`] : [])]
 app.use(apiCachePaths, (req, res, next) => {
-  if (req.method === 'GET') {
+  if (req.method === 'GET' && !req.path.startsWith('/auth/')) {
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Pragma', 'no-cache')
     const dv = rankingsCache.getDataVersion()
@@ -448,6 +449,8 @@ app.post('/api/auth/logout', checkAuth, async (req, res) => {
         try { await db.incrementTokenVersion(req.user.id) } catch { /* best-effort */ }
       }
     }
+    // Nuclear option: force browser to destroy all cookies for this site
+    res.setHeader('Clear-Site-Data', '"cookies"')
     clearCookieAllPaths(res, 'authToken')
     clearCookieAllPaths(res, 'refreshToken')
     clearCookieAllPaths(res, 'csrfSessionId')

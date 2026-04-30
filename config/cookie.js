@@ -43,15 +43,16 @@ export const getCookiePathsToClear = () => {
 /**
  * Clear a named cookie on all known paths (subpath + root).
  * This is needed because browsers treat path-scoped cookies separately.
+ * Uses withCookieDefaults() to ensure Domain/Secure/SameSite match creation.
  */
 export const clearCookieAllPaths = (res, name, extraOptions = {}) => {
   const paths = getCookiePathsToClear()
   paths.forEach((path) => {
-    res.clearCookie(name, {
-      ...sharedCookieDefaults,
+    res.clearCookie(name, withCookieDefaults({
       httpOnly: true,
       path,
+      maxAge: 0,
       ...extraOptions
-    })
+    }))
   })
 }

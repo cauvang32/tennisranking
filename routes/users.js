@@ -170,13 +170,19 @@ export const createAuthRouter = ({
           return res.status(400).json({ error: 'Email already in use by another user' })
         }
       }
+
+      // Only bump token version if role or active status actually changed
+      const roleChanged = role !== undefined && role !== existingUser.role
+      const activeChanged = isActive !== undefined && isActive !== existingUser.is_active
+      const bumpTokenVersion = roleChanged || activeChanged
       
       const updatedUser = await db.updateUser(userId, {
         email,
         role,
         displayName,
         isActive,
-        notes
+        notes,
+        bumpTokenVersion
       })
       
       res.json(sanitizeResponse({

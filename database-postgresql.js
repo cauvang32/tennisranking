@@ -1206,9 +1206,7 @@ class TennisDatabasePostgreSQL {
   }
 
   async updateUser(userId, updates) {
-    const { email, role, displayName, isActive, notes } = updates
-    // Bump token_version when role or is_active changes to instantly revoke old tokens
-    const bumpVersion = (role !== undefined || isActive !== undefined)
+    const { email, role, displayName, isActive, notes, bumpTokenVersion } = updates
     const result = await this.query(`
       UPDATE users 
       SET email = COALESCE($2, email),
@@ -1216,7 +1214,7 @@ class TennisDatabasePostgreSQL {
           display_name = COALESCE($4, display_name),
           is_active = COALESCE($5, is_active),
           notes = COALESCE($6, notes)
-          ${bumpVersion ? ', token_version = COALESCE(token_version, 0) + 1' : ''}
+          ${bumpTokenVersion ? ', token_version = COALESCE(token_version, 0) + 1' : ''}
       WHERE id = $1
       RETURNING id, username, email, role, display_name, is_active, updated_at
     `, [userId, email, role, displayName, isActive, notes])

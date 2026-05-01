@@ -485,7 +485,21 @@ app.post('/api/auth/refresh', async (req, res) => {
       if (decoded.type !== 'refresh') return res.status(401).json({ error: 'Invalid token type' })
     } catch { return res.status(401).json({ error: 'Invalid refresh token' }) }
 
-    const user = { username: decoded.username, role: decoded.role }
+    // Server-side token revocation check for database users
+    if (decoded.id && db && typeof db.getTokenVersion === 'function') {
+      try {
+        const currentVersion = await db.getTokenVersion(decoded.id)
+        if (typeof decoded.tokenVersion === 'number' && decoded.tokenVersion !== currentVersion) {
+          clearCookieAllPaths(res, 'authToken')
+          clearCookieAllPaths(res, 'refreshToken')
+          return res.status(401).json({ error: 'Token has been revoked' })
+        }
+      } catch {
+        // If DB check fails, allow through (fail-open for availability)
+      }
+    }
+
+    const user = { id: decoded.id, username: decoded.username, role: decoded.role, tokenVersion: decoded.tokenVersion }
     res.cookie('authToken', encryptJWT(generateToken(user)), withCookieDefaults({ httpOnly: true, maxAge: 15 * 60 * 1000 }))
     const sessionId = req.cookies?.csrfSessionId || ensureCSRFCookie(req, res)
     res.json({ success: true, csrfToken: tokens.create(deriveCSRFSecret(sessionId)), user })

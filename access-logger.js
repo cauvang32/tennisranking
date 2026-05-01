@@ -1,6 +1,6 @@
 import winston from 'winston'
 import { createStream } from 'rotating-file-stream'
-import geoip from 'geoip-country'
+
 import { UAParser } from 'ua-parser-js'
 import fs from 'fs'
 import path from 'path'
@@ -131,23 +131,7 @@ export function createAccessLogEntry(req, res, responseTime, user = null) {
     parsedUA = parser.getResult()
   }
   
-  // Get geographic information (skip for static/health and local IPs)
-  let geoInfo = null
-  try {
-    if (!isStaticOrHealth && realIP && realIP !== 'unknown' && !isLocalIP(realIP)) {
-      const geo = geoip.lookup(realIP)
-      if (geo) {
-        geoInfo = {
-          country: geo.country,
-          countryName: geo.name,
-          continent: geo.continent,
-          continentName: geo.continent_name
-        }
-      }
-    }
-  } catch (error) {
-    // Silently fail geo lookup to avoid breaking requests
-  }
+
 
   const logEntry = {
     timestamp: new Date().toISOString(),
@@ -187,21 +171,18 @@ export function createAccessLogEntry(req, res, responseTime, user = null) {
     
     // Browser and device information
     userAgent: userAgent,
-    browser: parsedUA.browser ? {
+    browser: parsedUA?.browser ? {
       name: parsedUA.browser.name,
       version: parsedUA.browser.version
     } : undefined,
-    os: parsedUA.os ? {
+    os: parsedUA?.os ? {
       name: parsedUA.os.name,
       version: parsedUA.os.version
     } : undefined,
-    device: parsedUA.device ? {
+    device: parsedUA?.device ? {
       type: parsedUA.device.type,
       model: parsedUA.device.model
     } : undefined,
-    
-    // Geographic information (optional)
-    geo: geoInfo,
     
     // Request metadata
     referer: req.get('Referer'),
@@ -238,21 +219,7 @@ export function createAccessLogEntry(req, res, responseTime, user = null) {
   return logEntry
 }
 
-// Check if IP is local/private
-function isLocalIP(ip) {
-  if (!ip || ip === 'unknown') return false
-  
-  const localPatterns = [
-    /^127\./,           // 127.x.x.x (localhost)
-    /^192\.168\./,      // 192.168.x.x (private)
-    /^10\./,            // 10.x.x.x (private)
-    /^172\.(1[6-9]|2\d|3[01])\./,  // 172.16.x.x - 172.31.x.x (private)
-    /^::1$/,            // IPv6 localhost
-    /^::ffff:127\./     // IPv4-mapped IPv6 localhost
-  ]
-  
-  return localPatterns.some(pattern => pattern.test(ip))
-}
+
 
 // Format IP for human-readable display
 function formatIPForDisplay(ip) {

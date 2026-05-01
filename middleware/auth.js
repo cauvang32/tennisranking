@@ -33,16 +33,17 @@ export const buildAuthMiddleware = ({
       // Server-side token revocation check for database users
       // System users (env-based admin/editor) don't have a DB id, skip this check
       if (user.id && db && typeof db.getTokenVersion === 'function') {
-        try {
-          const currentVersion = await db.getTokenVersion(user.id)
-          if (typeof user.tokenVersion === 'number' && user.tokenVersion !== currentVersion) {
-            if (req.cookies.authToken) {
-              clearCookieAllPaths(res, 'authToken')
-            }
-            return res.status(401).json({ error: 'Token has been revoked' })
-          }
-        } catch {
-          // If DB check fails, allow through (fail-open for availability)
+        const currentVersion = await db.getTokenVersion(user.id)
+        // null = user deleted from DB
+        if (currentVersion === null) {
+          clearCookieAllPaths(res, 'authToken')
+          clearCookieAllPaths(res, 'refreshToken')
+          return res.status(401).json({ error: 'User no longer exists' })
+        }
+        if (typeof user.tokenVersion === 'number' && user.tokenVersion !== currentVersion) {
+          clearCookieAllPaths(res, 'authToken')
+          clearCookieAllPaths(res, 'refreshToken')
+          return res.status(401).json({ error: 'Token has been revoked' })
         }
       }
 
@@ -78,18 +79,16 @@ export const buildAuthMiddleware = ({
 
         // Server-side token revocation check (same as authenticateToken)
         if (user.id && db && typeof db.getTokenVersion === 'function') {
-          try {
-            const currentVersion = await db.getTokenVersion(user.id)
-            if (typeof user.tokenVersion === 'number' && user.tokenVersion !== currentVersion) {
-              if (req.cookies.authToken && !res.headersSent) {
-                clearCookieAllPaths(res, 'authToken')
-              }
-              req.isAuthenticated = false
-              req.csrfSecret = deriveCSRFSecret(ensureCSRFCookie(req, res))
-              return next()
+          const currentVersion = await db.getTokenVersion(user.id)
+          // null = user deleted from DB
+          if (currentVersion === null || (typeof user.tokenVersion === 'number' && user.tokenVersion !== currentVersion)) {
+            if (!res.headersSent) {
+              clearCookieAllPaths(res, 'authToken')
+              clearCookieAllPaths(res, 'refreshToken')
             }
-          } catch {
-            // If DB check fails, allow through (fail-open for availability)
+            req.isAuthenticated = false
+            req.csrfSecret = deriveCSRFSecret(ensureCSRFCookie(req, res))
+            return next()
           }
         }
 

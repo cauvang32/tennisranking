@@ -87,12 +87,19 @@ export const createExportRouter = ({
     res.send(buffer)
   }))
 
-  // Export lifetime — streams matches via cursor
+  // Export lifetime — rankings only (single sheet)
   router.get('/lifetime', authenticateToken, requireEditor, conditionalRateLimit(exportLimiter), asyncHandler(async (req, res) => {
-    await streamExcelResponse(db.pool, MATCHES_EXPORT_SQL, [], res, {
-      columns: MATCHES_FULL_COLUMNS,
-      filename: 'tennis-rankings-lifetime.xlsx'
-    })
+    const rankings = await db.getPlayerStatsWithFormsLifetime(5)
+    const { processRankingsData, RANKINGS_COLUMNS, writeExcelBuffer } = await import('../utils/excel-helper.js')
+    const processedRankings = processRankingsData(rankings)
+
+    const buffer = await writeExcelBuffer([
+      { name: 'Bảng xếp hạng tổng', data: processedRankings, columns: RANKINGS_COLUMNS }
+    ])
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', 'attachment; filename="tennis-rankings-lifetime.xlsx"')
+    res.send(Buffer.from(buffer))
   }))
 
   return router

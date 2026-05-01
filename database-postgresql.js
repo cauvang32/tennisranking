@@ -1207,6 +1207,8 @@ class TennisDatabasePostgreSQL {
 
   async updateUser(userId, updates) {
     const { email, role, displayName, isActive, notes } = updates
+    // Bump token_version when role or is_active changes to instantly revoke old tokens
+    const bumpVersion = (role !== undefined || isActive !== undefined)
     const result = await this.query(`
       UPDATE users 
       SET email = COALESCE($2, email),
@@ -1214,6 +1216,7 @@ class TennisDatabasePostgreSQL {
           display_name = COALESCE($4, display_name),
           is_active = COALESCE($5, is_active),
           notes = COALESCE($6, notes)
+          ${bumpVersion ? ', token_version = COALESCE(token_version, 0) + 1' : ''}
       WHERE id = $1
       RETURNING id, username, email, role, display_name, is_active, updated_at
     `, [userId, email, role, displayName, isActive, notes])
@@ -1242,12 +1245,14 @@ class TennisDatabasePostgreSQL {
 
   /**
    * Get current token_version for a user (used by auth middleware).
+   * Returns null if user not found (deleted), allowing middleware to revoke.
    */
   async getTokenVersion(userId) {
     const result = await this.query(`
       SELECT COALESCE(token_version, 0) as token_version FROM users WHERE id = $1
     `, [userId])
-    return result.rows[0]?.token_version ?? 0
+    if (result.rows.length === 0) return null
+    return result.rows[0].token_version
   }
 
   async updateUserLastLogin(userId) {

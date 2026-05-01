@@ -487,15 +487,16 @@ app.post('/api/auth/refresh', async (req, res) => {
 
     // Server-side token revocation check for database users
     if (decoded.id && db && typeof db.getTokenVersion === 'function') {
-      try {
-        const currentVersion = await db.getTokenVersion(decoded.id)
-        if (typeof decoded.tokenVersion === 'number' && decoded.tokenVersion !== currentVersion) {
-          clearCookieAllPaths(res, 'authToken')
-          clearCookieAllPaths(res, 'refreshToken')
-          return res.status(401).json({ error: 'Token has been revoked' })
-        }
-      } catch {
-        // If DB check fails, allow through (fail-open for availability)
+      const currentVersion = await db.getTokenVersion(decoded.id)
+      if (currentVersion === null) {
+        clearCookieAllPaths(res, 'authToken')
+        clearCookieAllPaths(res, 'refreshToken')
+        return res.status(401).json({ error: 'User no longer exists' })
+      }
+      if (typeof decoded.tokenVersion === 'number' && decoded.tokenVersion !== currentVersion) {
+        clearCookieAllPaths(res, 'authToken')
+        clearCookieAllPaths(res, 'refreshToken')
+        return res.status(401).json({ error: 'Token has been revoked' })
       }
     }
 

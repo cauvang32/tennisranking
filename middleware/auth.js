@@ -57,7 +57,7 @@ export const buildAuthMiddleware = ({
     }
   }
 
-  const checkAuth = (req, res, next) => {
+  const checkAuth = async (req, res, next) => {
     let token = req.cookies.authToken || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1])
 
     if (token) {
@@ -73,14 +73,33 @@ export const buildAuthMiddleware = ({
         }
       }
 
-      jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] }, (err, user) => {
-        if (!err) {
-          req.user = user
-          req.isAuthenticated = true
-        } else if (req.cookies.authToken && !res.headersSent) {
+      try {
+        const user = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] })
+
+        // Server-side token revocation check (same as authenticateToken)
+        if (user.id && db && typeof db.getTokenVersion === 'function') {
+          try {
+            const currentVersion = await db.getTokenVersion(user.id)
+            if (typeof user.tokenVersion === 'number' && user.tokenVersion !== currentVersion) {
+              if (req.cookies.authToken && !res.headersSent) {
+                clearCookieAllPaths(res, 'authToken')
+              }
+              req.isAuthenticated = false
+              req.csrfSecret = deriveCSRFSecret(ensureCSRFCookie(req, res))
+              return next()
+            }
+          } catch {
+            // If DB check fails, allow through (fail-open for availability)
+          }
+        }
+
+        req.user = user
+        req.isAuthenticated = true
+      } catch {
+        if (req.cookies.authToken && !res.headersSent) {
           clearCookieAllPaths(res, 'authToken')
         }
-      })
+      }
     }
 
     req.isAuthenticated = req.isAuthenticated || false

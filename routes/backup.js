@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import express from 'express'
 import { body } from 'express-validator'
+
 import { asyncHandler } from '../utils/async-handler.js'
 
 /**
@@ -34,15 +35,9 @@ export const createBackupRouter = ({
         const sp = await db.getSeasonPlayers(s.id)
         return { ...s, players: sp.map(p => p.player_id || p.id) }
       }))
-      // Security: exclude password_hash from backup to prevent offline cracking if file leaks
-      const usersForBackup = users.map(u => ({
-        id: u.id, username: u.username, email: u.email,
-        role: u.role, display_name: u.display_name, is_active: u.is_active,
-        created_at: u.created_at, notes: u.notes
-      }))
       res.json({
-        version: '2.1', timestamp: new Date().toISOString(), exportedBy: req.user.username,
-        players, seasons: seasonsWithPlayers, matches, users: usersForBackup
+        version: '2.2', timestamp: new Date().toISOString(), exportedBy: req.user.username,
+        players, seasons: seasonsWithPlayers, matches, users
       })
       console.log('✅ Backup created successfully (including users)')
     })
@@ -156,6 +151,10 @@ export const createBackupRouter = ({
               if (parseInt(existsEmail.rows[0].count) > 0) { usersSkipped++; continue }
             }
             try {
+              if (!user.password_hash) {
+                console.warn(`⚠️ Skipping user "${user.username}": no password_hash in backup`)
+                usersSkipped++; continue
+              }
               await client.query(
                 `INSERT INTO users (username, email, password_hash, role, display_name, is_active, created_by, notes)
                  VALUES ($1, $2, $3, $4, $5, $6, 'backup_restore', $7)`,
@@ -214,53 +213,84 @@ export const createBackupRouter = ({
       if (!backupData.data?.players || !backupData.data?.seasons || !backupData.data?.matches) {
         return res.status(400).json({ error: 'Invalid backup file structure' })
       }
-      if (clearExisting) await db.clearAllData()
       const { players, seasons, matches } = backupData.data
       const results = { playersImported: 0, seasonsImported: 0, matchesImported: 0, errors: [] }
 
-      for (const player of players) {
-        try { await db.addPlayer(player.name); results.playersImported++ } catch (e) {
-          if (!e.message.includes('UNIQUE constraint failed')) results.errors.push(`Player ${player.name}: ${e.message}`)
+      // Wrap in a transaction for all-or-nothing semantics
+      const client = await db.pool.connect()
+      try {
+        await client.query('BEGIN')
+
+        if (clearExisting) {
+          await client.query('DELETE FROM matches')
+          await client.query('DELETE FROM season_players')
+          await client.query('DELETE FROM seasons')
+          await client.query('DELETE FROM players')
         }
-      }
-      const seasonMapping = new Map()
-      for (const season of seasons) {
-        try {
-          const sid = await db.createSeason(season.name, season.start_date)
-          seasonMapping.set(season.name, sid)
-          if (season.end_date) await db.endSeason(sid, season.end_date)
-          results.seasonsImported++
-        } catch (e) { results.errors.push(`Season ${season.name}: ${e.message}`) }
-      }
-      await db.query('UPDATE seasons SET is_active = false', [])
-      for (const season of seasons) {
-        if (season.is_active) {
-          const sid = seasonMapping.get(season.name)
-          if (sid) {
-            await db.query('UPDATE seasons SET is_active = $1 WHERE id = $2', [true, sid])
-            if (season.end_date) await db.query('UPDATE seasons SET end_date = NULL WHERE id = $1', [sid])
+
+        for (const player of players) {
+          try {
+            await client.query('INSERT INTO players (name) VALUES ($1) ON CONFLICT DO NOTHING', [player.name])
+            results.playersImported++
+          } catch (e) {
+            results.errors.push(`Player ${player.name}: ${e.message}`)
           }
         }
-      }
-      const currentPlayers = await db.getPlayers()
-      for (const match of matches) {
-        try {
-          const p1 = currentPlayers.find(p => p.name === match.player1_name)
-          const p2 = currentPlayers.find(p => p.name === match.player2_name)
-          const p3 = currentPlayers.find(p => p.name === match.player3_name)
-          const p4 = currentPlayers.find(p => p.name === match.player4_name)
-          const sid = seasonMapping.get(match.season_name)
-          if (p1 && p2 && p3 && p4 && sid) {
-            await db.addMatch(sid, match.play_date, p1.id, p2.id, p3.id, p4.id, match.team1_score, match.team2_score, match.winning_team)
-            results.matchesImported++
-          } else { results.errors.push(`Match ${match.id}: Missing players or season`) }
-        } catch (e) { results.errors.push(`Match ${match.id}: ${e.message}`) }
+
+        const seasonMapping = new Map()
+        for (const season of seasons) {
+          try {
+            const result = await client.query(
+              `INSERT INTO seasons (name, start_date, end_date, is_active, auto_end, description, lose_money_per_loss)
+               VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+              [season.name, season.start_date, season.end_date || null,
+               season.is_active !== false, season.auto_end || false,
+               season.description || '', season.lose_money_per_loss || 20000]
+            )
+            seasonMapping.set(season.name, result.rows[0].id)
+            results.seasonsImported++
+          } catch (e) { results.errors.push(`Season ${season.name}: ${e.message}`) }
+        }
+
+        // Fetch players from DB (within transaction) for name→id mapping
+        const playersResult = await client.query('SELECT id, name FROM players')
+        const currentPlayers = playersResult.rows
+
+        for (const match of matches) {
+          try {
+            const p1 = currentPlayers.find(p => p.name === match.player1_name)
+            const p2 = match.player2_name ? currentPlayers.find(p => p.name === match.player2_name) : null
+            const p3 = currentPlayers.find(p => p.name === match.player3_name)
+            const p4 = match.player4_name ? currentPlayers.find(p => p.name === match.player4_name) : null
+            const sid = seasonMapping.get(match.season_name)
+            const matchType = match.match_type || 'duo'
+
+            if (p1 && p3 && sid) {
+              await client.query(
+                `INSERT INTO matches (season_id, play_date, player1_id, player2_id, player3_id, player4_id,
+                   team1_score, team2_score, winning_team, match_type)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+                [sid, match.play_date, p1.id, p2?.id || null, p3.id, p4?.id || null,
+                 match.team1_score, match.team2_score, match.winning_team, matchType]
+              )
+              results.matchesImported++
+            } else { results.errors.push(`Match ${match.id}: Missing players or season`) }
+          } catch (e) { results.errors.push(`Match ${match.id}: ${e.message}`) }
+        }
+
+        await client.query('COMMIT')
+      } catch (error) {
+        await client.query('ROLLBACK')
+        console.error('❌ Restore-data failed, transaction rolled back:', error.message)
+        throw error
+      } finally {
+        client.release()
       }
 
       await rankingsCache.clear()
       res.json({ success: true, message: 'Data restored successfully', results, timestamp: formatSecureTimestamp() })
-    })
-  )
+    }))
+
 
   // ── Clear all data ────────────────────────────────────────────────────────
   router.delete('/clear-all-data',

@@ -247,8 +247,12 @@ const [brotliMiddleware, gzipMiddleware] = createCompressionMiddleware()
 app.use(brotliMiddleware)
 app.use(gzipMiddleware)
 
-// Request timeout
-app.use('/api', createTimeoutMiddleware(config.requestTimeoutMs))
+// Request timeout (skip SSE — it's a long-lived connection)
+const _timeoutMw = createTimeoutMiddleware(config.requestTimeoutMs)
+app.use('/api', (req, res, next) => {
+  if (req.path === '/events') return next()
+  _timeoutMw(req, res, next)
+})
 
 // Body parsing
 app.use(express.json({ limit: '1mb' }))

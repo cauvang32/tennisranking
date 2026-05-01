@@ -26,7 +26,7 @@ function buildSSLConfig() {
       const resolvedPath = resolve(certPath)
       
       // Ensure path doesn't contain traversal attempts
-      if (certPath.includes('..') || !resolvedPath.startsWith(resolve('.'))) {
+      if (certPath.includes('..')) {
         console.warn('⚠️ Invalid DB_SSL_CA path: path traversal detected')
       } else {
         sslConfig.ca = readFileSync(resolvedPath, 'utf8')

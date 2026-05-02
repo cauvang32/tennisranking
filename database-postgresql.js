@@ -452,6 +452,21 @@ class TennisDatabasePostgreSQL {
     return result.rows
   }
 
+  /**
+   * Get ALL season-player mappings in one query (eliminates N+1 in backup).
+   * Returns a Map: seasonId -> [playerId, ...]
+   */
+  async getAllSeasonPlayers() {
+    const result = await this.query('SELECT season_id, player_id FROM season_players')
+    const map = new Map()
+    for (const row of result.rows) {
+      const sid = row.season_id
+      if (!map.has(sid)) map.set(sid, [])
+      map.get(sid).push(row.player_id)
+    }
+    return map
+  }
+
   async addPlayerToSeason(seasonId, playerId, addedBy = 'admin') {
     const result = await this.query(`
       INSERT INTO season_players (season_id, player_id, added_by)
@@ -749,38 +764,32 @@ class TennisDatabasePostgreSQL {
 
   async getPlayerStatsByPlayDate(playDate) {
     const result = await this.query(`
-      WITH match_money AS (
-        SELECT 
-          m.id as match_id,
-          m.player1_id, m.player2_id, m.player3_id, m.player4_id,
-          m.winning_team, m.play_date,
-          COALESCE(s.lose_money_per_loss, 20000) as lose_money
-        FROM matches m
-        JOIN seasons s ON m.season_id = s.id
-        WHERE m.play_date <= $1
+      WITH match_participants AS (
+        -- Unpivot: one row per player per match (index-friendly = joins)
+        SELECT m.id as match_id, m.player1_id as player_id, 1 as team, m.winning_team, COALESCE(s.lose_money_per_loss, 20000) as lose_money
+        FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date <= $1
+        UNION ALL
+        SELECT m.id, m.player2_id, 1, m.winning_team, COALESCE(s.lose_money_per_loss, 20000)
+        FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date <= $1 AND m.player2_id IS NOT NULL
+        UNION ALL
+        SELECT m.id, m.player3_id, 2, m.winning_team, COALESCE(s.lose_money_per_loss, 20000)
+        FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date <= $1
+        UNION ALL
+        SELECT m.id, m.player4_id, 2, m.winning_team, COALESCE(s.lose_money_per_loss, 20000)
+        FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date <= $1 AND m.player4_id IS NOT NULL
       ),
       player_stats AS (
-        SELECT 
-          p.id,
-          p.name,
-          COUNT(CASE WHEN 
-            (mm.winning_team = 1 AND (mm.player1_id = p.id OR mm.player2_id = p.id)) OR 
-            (mm.winning_team = 2 AND (mm.player3_id = p.id OR mm.player4_id = p.id))
-            THEN 1 END) as wins,
-          COUNT(CASE WHEN 
-            (mm.winning_team = 2 AND (mm.player1_id = p.id OR mm.player2_id = p.id)) OR 
-            (mm.winning_team = 1 AND (mm.player3_id = p.id OR mm.player4_id = p.id))
-            THEN 1 END) as losses,
-          COUNT(CASE WHEN mm.match_id IS NOT NULL THEN 1 END) as total_matches,
-          COALESCE(SUM(CASE WHEN 
-            (mm.winning_team = 2 AND (mm.player1_id = p.id OR mm.player2_id = p.id)) OR 
-            (mm.winning_team = 1 AND (mm.player3_id = p.id OR mm.player4_id = p.id))
-            THEN mm.lose_money ELSE 0 END), 0) as money_lost
+        SELECT
+          p.id, p.name,
+          COUNT(CASE WHEN mp.team = mp.winning_team THEN 1 END) as wins,
+          COUNT(CASE WHEN mp.team != mp.winning_team THEN 1 END) as losses,
+          COUNT(mp.match_id) as total_matches,
+          COALESCE(SUM(CASE WHEN mp.team != mp.winning_team THEN mp.lose_money ELSE 0 END), 0) as money_lost
         FROM players p
-        LEFT JOIN match_money mm ON (mm.player1_id = p.id OR mm.player2_id = p.id OR mm.player3_id = p.id OR mm.player4_id = p.id)
+        LEFT JOIN match_participants mp ON mp.player_id = p.id
         GROUP BY p.id, p.name
       )
-      SELECT 
+      SELECT
         id, name, wins, losses, total_matches, money_lost,
         (wins * 4 + losses * 1) as points,
         CASE WHEN (wins + losses) > 0 THEN ROUND((wins * 100.0) / (wins + losses), 1) ELSE 0 END as win_percentage
@@ -792,38 +801,31 @@ class TennisDatabasePostgreSQL {
 
   async getPlayerStatsBySpecificDate(playDate) {
     const result = await this.query(`
-      WITH match_money AS (
-        SELECT 
-          m.id as match_id,
-          m.player1_id, m.player2_id, m.player3_id, m.player4_id,
-          m.winning_team,
-          COALESCE(s.lose_money_per_loss, 20000) as lose_money
-        FROM matches m
-        JOIN seasons s ON m.season_id = s.id
-        WHERE m.play_date = $1
+      WITH match_participants AS (
+        SELECT m.id as match_id, m.player1_id as player_id, 1 as team, m.winning_team, COALESCE(s.lose_money_per_loss, 20000) as lose_money
+        FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date = $1
+        UNION ALL
+        SELECT m.id, m.player2_id, 1, m.winning_team, COALESCE(s.lose_money_per_loss, 20000)
+        FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date = $1 AND m.player2_id IS NOT NULL
+        UNION ALL
+        SELECT m.id, m.player3_id, 2, m.winning_team, COALESCE(s.lose_money_per_loss, 20000)
+        FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date = $1
+        UNION ALL
+        SELECT m.id, m.player4_id, 2, m.winning_team, COALESCE(s.lose_money_per_loss, 20000)
+        FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date = $1 AND m.player4_id IS NOT NULL
       ),
       player_stats AS (
-        SELECT 
-          p.id,
-          p.name,
-          COUNT(CASE WHEN 
-            (mm.winning_team = 1 AND (mm.player1_id = p.id OR mm.player2_id = p.id)) OR 
-            (mm.winning_team = 2 AND (mm.player3_id = p.id OR mm.player4_id = p.id))
-            THEN 1 END) as wins,
-          COUNT(CASE WHEN 
-            (mm.winning_team = 2 AND (mm.player1_id = p.id OR mm.player2_id = p.id)) OR 
-            (mm.winning_team = 1 AND (mm.player3_id = p.id OR mm.player4_id = p.id))
-            THEN 1 END) as losses,
-          COUNT(CASE WHEN mm.match_id IS NOT NULL THEN 1 END) as total_matches,
-          COALESCE(SUM(CASE WHEN 
-            (mm.winning_team = 2 AND (mm.player1_id = p.id OR mm.player2_id = p.id)) OR 
-            (mm.winning_team = 1 AND (mm.player3_id = p.id OR mm.player4_id = p.id))
-            THEN mm.lose_money ELSE 0 END), 0) as money_lost
+        SELECT
+          p.id, p.name,
+          COUNT(CASE WHEN mp.team = mp.winning_team THEN 1 END) as wins,
+          COUNT(CASE WHEN mp.team != mp.winning_team THEN 1 END) as losses,
+          COUNT(mp.match_id) as total_matches,
+          COALESCE(SUM(CASE WHEN mp.team != mp.winning_team THEN mp.lose_money ELSE 0 END), 0) as money_lost
         FROM players p
-        LEFT JOIN match_money mm ON (mm.player1_id = p.id OR mm.player2_id = p.id OR mm.player3_id = p.id OR mm.player4_id = p.id)
+        LEFT JOIN match_participants mp ON mp.player_id = p.id
         GROUP BY p.id, p.name
       )
-      SELECT 
+      SELECT
         id, name, wins, losses, total_matches, money_lost,
         (wins * 4 + losses * 1) as points,
         CASE WHEN (wins + losses) > 0 THEN ROUND((wins * 100.0) / (wins + losses), 1) ELSE 0 END as win_percentage

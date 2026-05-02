@@ -12,14 +12,14 @@ import { getRealClientIP, logError } from '../access-logger.js'
  * - Redis-backed distributed rate limiting (cluster/PM2 safe)
  * - Dynamic scaling based on CPU/RAM pressure
  * - User-aware limits (admin > authenticated > anonymous)
- * - Graceful degradation if Redis is down (passOnStoreError)
+ * - Graceful degradation if Redis is down (fail-closed: requests are blocked)
  */
 
 // ── Dedicated Redis client for rate limiting ────────────────────────────────
 // Separate from cache client so failures are isolated.
 // enableOfflineQueue: false — when Redis is down, commands fail immediately
-// instead of accumulating in memory. passOnStoreError on each limiter
-// handles graceful degradation (fail-open).
+// instead of accumulating in memory. passOnStoreError: false on each limiter
+// ensures rate limiting stays enforced even when Redis is down (fail-closed).
 const rateLimitRedis = new IORedis(config.redisUrl, {
   maxRetriesPerRequest: 1,
   enableOfflineQueue: false,
@@ -28,7 +28,7 @@ const rateLimitRedis = new IORedis(config.redisUrl, {
   }
 })
 rateLimitRedis.on('error', () => {
-  // Suppressed — passOnStoreError in each limiter handles degradation
+  // Suppressed — passOnStoreError: false ensures requests are blocked when Redis is down
 })
 
 const createRedisRateLimitStore = (suffix) => new RedisStore({
@@ -114,7 +114,7 @@ const createProxyAwareRateLimiter = ({ storePrefix, ...options }) => {
     legacyHeaders: false,
     limit: dynamicLimit,
     store,
-    passOnStoreError: true,
+    passOnStoreError: false,
     keyGenerator: (req) => getRealClientIP(req),
     skip: (req) =>
       req.path === '/api/health' ||

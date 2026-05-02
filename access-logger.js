@@ -114,6 +114,23 @@ const logger = winston.createLogger({
   ]
 })
 
+// LRU cache for parsed User-Agent strings (avoids re-parsing the same UA on every request)
+const UA_CACHE_MAX = 500
+const uaCache = new Map()
+
+function parseCachedUA(userAgent) {
+  if (uaCache.has(userAgent)) return uaCache.get(userAgent)
+  const parser = new UAParser(userAgent)
+  const result = parser.getResult()
+  // Evict oldest entry when cache is full
+  if (uaCache.size >= UA_CACHE_MAX) {
+    const oldest = uaCache.keys().next().value
+    uaCache.delete(oldest)
+  }
+  uaCache.set(userAgent, result)
+  return result
+}
+
 // Access log entry creator
 export function createAccessLogEntry(req, res, responseTime, user = null) {
   const realIP = getRealClientIP(req)
@@ -127,8 +144,7 @@ export function createAccessLogEntry(req, res, responseTime, user = null) {
   
   let parsedUA = null
   if (!isStaticOrHealth) {
-    const parser = new UAParser(userAgent)
-    parsedUA = parser.getResult()
+    parsedUA = parseCachedUA(userAgent)
   }
   
 

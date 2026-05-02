@@ -77,6 +77,13 @@ export const buildAuthMiddleware = ({
       try {
         const user = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] })
 
+        // Reject refresh tokens used as access tokens (same as authenticateToken)
+        if (user.type && user.type !== 'access') {
+          req.isAuthenticated = false
+          req.csrfSecret = deriveCSRFSecret(ensureCSRFCookie(req, res))
+          return next()
+        }
+
         // Server-side token revocation check (same as authenticateToken)
         if (user.id && db && typeof db.getTokenVersion === 'function') {
           const currentVersion = await db.getTokenVersion(user.id)

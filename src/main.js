@@ -1888,13 +1888,13 @@ class TennisRankingSystem {
             ? this.formatDate(season.end_date)
             : '<span class="season-text-muted">Không có ngày kết thúc</span>'
           const autoEndInfo = season.auto_end && hasEndDate ? ` <span class="season-auto-end">(Tự động kết thúc)</span>` : ''
-          const descriptionInfo = season.description ? `<p class="season-description">📝 ${season.description}</p>` : ''
+          const descriptionInfo = season.description ? `<p class="season-description">📝 ${this.escapeHtml(season.description)}</p>` : ''
           const loseMoneyInfo = `<p>💰 Tiền thua: ${this.formatMoney(season.lose_money_per_loss || 20000)}/trận</p>`
           
           html += `
             <div class="season-card active-season">
               <div class="season-header">
-                <h4>${season.name}</h4>
+                <h4>${this.escapeHtml(season.name)}</h4>
                 <span class="season-status active">Đang hoạt động</span>
               </div>
               <div class="season-info">
@@ -1928,15 +1928,15 @@ class TennisRankingSystem {
           const endDateDisplay = hasEndDate 
             ? this.formatDate(season.end_date)
             : '<span class="season-text-muted">Không có ngày kết thúc</span>'
-          const descriptionInfo = season.description ? `<p class="season-description">📝 ${season.description}</p>` : ''
+          const descriptionInfo = season.description ? `<p class="season-description">📝 ${this.escapeHtml(season.description)}</p>` : ''
           const endedAtInfo = season.ended_at ? `<p>⏰ Kết thúc lúc: ${new Date(season.ended_at).toLocaleString('vi-VN')}</p>` : ''
-          const endedByInfo = season.ended_by ? `<p>👤 Kết thúc bởi: ${season.ended_by}</p>` : ''
+          const endedByInfo = season.ended_by ? `<p>👤 Kết thúc bởi: ${this.escapeHtml(season.ended_by)}</p>` : ''
           const loseMoneyInfo = `<p>💰 Tiền thua: ${this.formatMoney(season.lose_money_per_loss || 20000)}/trận</p>`
           
           html += `
             <div class="season-card ended-season">
               <div class="season-header">
-                <h4>${season.name}</h4>
+                <h4>${this.escapeHtml(season.name)}</h4>
                 <span class="season-status ended">Đã kết thúc</span>
               </div>
               <div class="season-info">
@@ -3234,9 +3234,9 @@ class TennisRankingSystem {
         <div class="backup-info">
           <p><strong>Thông tin bản sao lưu:</strong></p>
           <ul>
-            <li>Phiên bản: ${backupData.version}</li>
-            <li>Ngày tạo: ${new Date(backupData.timestamp).toLocaleString('vi-VN')}</li>
-            <li>Người tạo: ${backupData.exportedBy || 'Không rõ'}</li>
+            <li>Phiên bản: ${this.escapeHtml(String(backupData.version || ''))}</li>
+            <li>Ngày tạo: ${this.escapeHtml(new Date(backupData.timestamp).toLocaleString('vi-VN'))}</li>
+            <li>Người tạo: ${this.escapeHtml(backupData.exportedBy || 'Không rõ')}</li>
             <li>Số người chơi: ${backupData.metadata?.playersCount || 0}</li>
             <li>Số mùa giải: ${backupData.metadata?.seasonsCount || 0}</li>
             <li>Số trận đấu: ${backupData.metadata?.matchesCount || 0}</li>
@@ -3463,7 +3463,7 @@ class TennisRankingSystem {
               </label>
               <select id="editSeasonId" required>
                 ${this.seasons.map(season => 
-                  `<option value="${season.id}" ${season.id === match.season_id ? 'selected' : ''}>${season.name}</option>`
+                  `<option value="${season.id}" ${season.id === match.season_id ? 'selected' : ''}>${this.escapeHtml(season.name)}</option>`
                 ).join('')}
               </select>
             </div>

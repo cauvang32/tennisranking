@@ -28,12 +28,11 @@ export const createBackupRouter = ({
     authenticateToken, requireAdmin, conditionalRateLimit(criticalLimiter),
     asyncHandler(async (req, res) => {
       console.log(`📦 BACKUP requested by user: ${req.user.username}`)
-      const [players, seasons, matches, users] = await Promise.all([
-        db.getPlayers(), db.getSeasons(), db.getMatches(), db.getUsersForBackup()
+      const [players, seasons, matches, users, seasonPlayersMap] = await Promise.all([
+        db.getPlayers(), db.getSeasons(), db.getMatches(), db.getUsersForBackup(), db.getAllSeasonPlayers()
       ])
-      const seasonsWithPlayers = await Promise.all(seasons.map(async (s) => {
-        const sp = await db.getSeasonPlayers(s.id)
-        return { ...s, players: sp.map(p => p.player_id || p.id) }
+      const seasonsWithPlayers = seasons.map(s => ({
+        ...s, players: seasonPlayersMap.get(s.id) || []
       }))
       res.json({
         version: '2.2', timestamp: new Date().toISOString(), exportedBy: req.user.username,

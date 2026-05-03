@@ -33,19 +33,17 @@ export const createHealthRouter = ({
   }
 
   // ── Public health (load balancer / Docker HEALTHCHECK) ────────────────────
-  router.get('/health', async (_req, res) => {
-    const dbHealth = await checkDatabaseHealth()
+  // Lightweight liveness probe — no DB query to prevent spam-induced DB load.
+  // For full diagnostics (DB, cache, proxy info), use admin-only /api/health.
+  router.get('/health', (_req, res) => {
     const cacheStats = rankingsCache.getStats()
-    const isHealthy = dbHealth.status === 'healthy'
     const cacheStatus = cacheStats.isConnected ? 'healthy' : 'degraded'
 
-    // Public health: minimal info only (no environment, domain, memory details)
-    res.status(isHealthy ? 200 : 503).json({
-      status: isHealthy ? 'healthy' : 'degraded',
+    res.status(200).json({
+      status: 'healthy',
       timestamp: new Date().toISOString(),
       uptime: process.uptime(),
       checks: {
-        database: { status: dbHealth.status },
         cache: { status: cacheStatus }
       }
     })

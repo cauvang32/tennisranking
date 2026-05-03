@@ -201,7 +201,7 @@ export const createBackupRouter = ({
 
   // ── Simple data restore ───────────────────────────────────────────────────
   router.post('/restore-data',
-    largeBodyParser, authenticateToken, requireAdmin, conditionalRateLimit(restoreLimiter),
+    authenticateToken, requireAdmin, largeBodyParser, conditionalRateLimit(restoreLimiter),
     [
       body('backupData').isObject(), body('clearExisting').optional().isBoolean(),
       body('backupData.version').exists(), body('backupData.data').isObject()

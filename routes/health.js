@@ -4,14 +4,15 @@ import { Router } from 'express'
  * Health check and performance monitoring routes.
  *
  * - GET /health          — unauthenticated (for load balancers / Docker HEALTHCHECK)
- * - GET /api/health      — authenticated (includes proxy/internal info)
- * - GET /api/performance — authenticated (process & OS metrics)
- * - GET /api/cache-stats — authenticated (Redis cache statistics)
+ * - GET /api/health      — admin only (includes proxy/internal info)
+ * - GET /api/performance — admin only (process & OS metrics)
+ * - GET /api/cache-stats — admin only (Redis cache statistics)
  */
 export const createHealthRouter = ({
   db,
   app,
   authenticateToken,
+  requireAdmin,
   rankingsCache
 }) => {
   const router = Router()
@@ -50,8 +51,8 @@ export const createHealthRouter = ({
     })
   })
 
-  // ── Authenticated health (includes proxy headers) ─────────────────────────
-  router.get('/api/health', authenticateToken, async (req, res) => {
+  // ── Admin-only health (includes proxy headers & internal info) ─────────────
+  router.get('/api/health', authenticateToken, requireAdmin, async (req, res) => {
     const dbHealth = await checkDatabaseHealth()
     const cacheStats = rankingsCache.getStats()
 
@@ -84,7 +85,7 @@ export const createHealthRouter = ({
   })
 
   // ── Performance metrics ───────────────────────────────────────────────────
-  router.get('/api/performance', authenticateToken, (_req, res) => {
+  router.get('/api/performance', authenticateToken, requireAdmin, (_req, res) => {
     const mem = process.memoryUsage()
     const cpuUsage = process.cpuUsage()
     res.json({
@@ -104,7 +105,7 @@ export const createHealthRouter = ({
   })
 
   // ── Cache statistics ──────────────────────────────────────────────────────
-  router.get('/api/cache-stats', authenticateToken, async (_req, res) => {
+  router.get('/api/cache-stats', authenticateToken, requireAdmin, async (_req, res) => {
     const stats = await rankingsCache.getInfo()
     
     // Generate simple recommendations based on stats

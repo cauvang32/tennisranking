@@ -1474,7 +1474,7 @@ class TennisRankingSystem {
           const playerCount = seasonPlayers.length !== this.players.length 
             ? `${seasonPlayers.length} người chơi được phép` 
             : 'Tất cả người chơi'
-          const loseMoneyAmount = selectedSeason.lose_money_per_loss || 20000
+          const loseMoneyAmount = selectedSeason.lose_money_per_loss ?? 20000
           seasonInfoEl.innerHTML = `
             <div class="season-info-badge">
               <span class="badge-item">💰 ${this.formatMoney(loseMoneyAmount)}/trận thua</span>
@@ -1682,7 +1682,7 @@ class TennisRankingSystem {
     
     // Get lose money from selected season
     const selectedSeason = this.seasons.find(s => s.id === seasonId)
-    const loseMoney = selectedSeason?.lose_money_per_loss || 20000
+    const loseMoney = selectedSeason?.lose_money_per_loss ?? 20000
     const winMoney = loseMoney  // Win = Lose in this system
     
     let player1Id, player2Id, player3Id, player4Id, team1Score, team2Score
@@ -1889,7 +1889,7 @@ class TennisRankingSystem {
             : '<span class="season-text-muted">Không có ngày kết thúc</span>'
           const autoEndInfo = season.auto_end && hasEndDate ? ` <span class="season-auto-end">(Tự động kết thúc)</span>` : ''
           const descriptionInfo = season.description ? `<p class="season-description">📝 ${this.escapeHtml(season.description)}</p>` : ''
-          const loseMoneyInfo = `<p>💰 Tiền thua: ${this.formatMoney(season.lose_money_per_loss || 20000)}/trận</p>`
+          const loseMoneyInfo = `<p>💰 Tiền thua: ${this.formatMoney(season.lose_money_per_loss ?? 20000)}/trận</p>`
           
           html += `
             <div class="season-card active-season">
@@ -1931,7 +1931,7 @@ class TennisRankingSystem {
           const descriptionInfo = season.description ? `<p class="season-description">📝 ${this.escapeHtml(season.description)}</p>` : ''
           const endedAtInfo = season.ended_at ? `<p>⏰ Kết thúc lúc: ${new Date(season.ended_at).toLocaleString('vi-VN')}</p>` : ''
           const endedByInfo = season.ended_by ? `<p>👤 Kết thúc bởi: ${this.escapeHtml(season.ended_by)}</p>` : ''
-          const loseMoneyInfo = `<p>💰 Tiền thua: ${this.formatMoney(season.lose_money_per_loss || 20000)}/trận</p>`
+          const loseMoneyInfo = `<p>💰 Tiền thua: ${this.formatMoney(season.lose_money_per_loss ?? 20000)}/trận</p>`
           
           html += `
             <div class="season-card ended-season">
@@ -2306,7 +2306,7 @@ class TennisRankingSystem {
           : 'Tất cả người chơi'
         seasonInfoEl.innerHTML = `
           <div class="season-info-badge">
-            <span>💰 ${this.formatMoney(selectedSeason.lose_money_per_loss || 20000)}/trận thua</span>
+            <span>💰 ${this.formatMoney(selectedSeason.lose_money_per_loss ?? 20000)}/trận thua</span>
             <span>👥 ${playerCount}</span>
           </div>
         `
@@ -2414,7 +2414,7 @@ class TennisRankingSystem {
     // Set form values
     document.getElementById('seasonId').value = seasonId || ''
     document.getElementById('seasonName').value = season ? season.name : ''
-    document.getElementById('seasonLoseMoney').value = season ? (season.lose_money_per_loss || 20000) : 20000
+    document.getElementById('seasonLoseMoney').value = season ? (season.lose_money_per_loss ?? 20000) : 20000
     document.getElementById('seasonStartDate').value = season ? season.start_date : ''
     document.getElementById('seasonEndDate').value = season ? (season.end_date || '') : ''
     document.getElementById('seasonDescription').value = season ? (season.description || '') : ''
@@ -3478,7 +3478,7 @@ class TennisRankingSystem {
                 <label for="editPlayer1">${isSolo ? 'Người chơi' : 'Người chơi 1'}</label>
                 <select id="editPlayer1" required>
                   ${this.players.map(player => 
-                    `<option value="${player.id}" ${player.id === match.player1_id ? 'selected' : ''}>${player.name}</option>`
+                    `<option value="${player.id}" ${player.id === match.player1_id ? 'selected' : ''}>${this.escapeHtml(player.name)}</option>`
                   ).join('')}
                 </select>
               </div>
@@ -3487,7 +3487,7 @@ class TennisRankingSystem {
                 <label for="editPlayer2">Người chơi 2</label>
                 <select id="editPlayer2" required>
                   ${this.players.map(player => 
-                    `<option value="${player.id}" ${player.id === match.player2_id ? 'selected' : ''}>${player.name}</option>`
+                    `<option value="${player.id}" ${player.id === match.player2_id ? 'selected' : ''}>${this.escapeHtml(player.name)}</option>`
                   ).join('')}
                 </select>
               </div>
@@ -3510,7 +3510,7 @@ class TennisRankingSystem {
                 <label for="editPlayer3">${isSolo ? 'Người chơi' : 'Người chơi 3'}</label>
                 <select id="editPlayer3" required>
                   ${this.players.map(player => 
-                    `<option value="${player.id}" ${player.id === match.player3_id ? 'selected' : ''}>${player.name}</option>`
+                    `<option value="${player.id}" ${player.id === match.player3_id ? 'selected' : ''}>${this.escapeHtml(player.name)}</option>`
                   ).join('')}
                 </select>
               </div>
@@ -3519,7 +3519,7 @@ class TennisRankingSystem {
                 <label for="editPlayer4">Người chơi 4</label>
                 <select id="editPlayer4" required>
                   ${this.players.map(player => 
-                    `<option value="${player.id}" ${player.id === match.player4_id ? 'selected' : ''}>${player.name}</option>`
+                    `<option value="${player.id}" ${player.id === match.player4_id ? 'selected' : ''}>${this.escapeHtml(player.name)}</option>`
                   ).join('')}
                 </select>
               </div>

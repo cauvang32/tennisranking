@@ -249,7 +249,12 @@ export const createMatchRouter = ({
         await db.updateMatch(matchId, seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType)
       }
       
+      // Invalidate new date + old date if play_date changed
       await rankingsCache.invalidateOnMatchChange(playDate)
+      const oldDate = existingMatch.play_date?.split?.('T')?.[0] || existingMatch.play_date
+      if (oldDate && oldDate !== playDate) {
+        await rankingsCache.invalidateOnMatchChange(oldDate)
+      }
       res.json({ success: true, message: 'Match updated successfully' })
     })
   )

@@ -293,7 +293,7 @@ if (SUBPATH !== '/' && !isDevelopment) {
 // Skip auth routes — they must always return fresh authentication state
 const apiCachePaths = ['/api', ...(SUBPATH !== '/' && !isDevelopment ? [`${SUBPATH}/api`] : [])]
 app.use(apiCachePaths, (req, res, next) => {
-  if (req.method === 'GET' && !req.path.startsWith('/auth/')) {
+  if (req.method === 'GET' && !req.path.startsWith('/auth/') && req.path !== '/init') {
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Pragma', 'no-cache')
     const dv = rankingsCache.getDataVersion()
@@ -302,6 +302,11 @@ app.use(apiCachePaths, (req, res, next) => {
       res.setHeader('ETag', etag)
       if (req.get('If-None-Match') === etag) return res.status(304).end()
     }
+  } else if (req.path === '/init') {
+    // /api/init contains per-user auth state — never cache
+    res.setHeader('Cache-Control', 'no-store, max-age=0')
+    res.setHeader('Pragma', 'no-cache')
+    res.setHeader('Vary', 'Cookie')
   } else {
     res.setHeader('Cache-Control', 'no-store, max-age=0')
     res.setHeader('Pragma', 'no-cache')

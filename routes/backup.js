@@ -44,7 +44,7 @@ export const createBackupRouter = ({
 
   // ── Full Restore (JSON) ───────────────────────────────────────────────────
   router.post('/restore',
-    largeBodyParser, authenticateToken, requireAdmin, conditionalRateLimit(restoreLimiter),
+    authenticateToken, requireAdmin, largeBodyParser, conditionalRateLimit(restoreLimiter),
     asyncHandler(async (req, res) => {
       const backupData = req.body
       const currentUsername = req.user.username
@@ -93,7 +93,7 @@ export const createBackupRouter = ({
              VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
             [season.name, season.start_date, season.end_date || null,
              season.is_active !== false, season.auto_end !== false,
-             season.description || '', season.lose_money_per_loss || 20000]
+             season.description || '', season.lose_money_per_loss ?? 20000]
           )
           const newId = result.rows[0].id
           seasonIdMap.set(Number(season.id), newId)
@@ -244,7 +244,7 @@ export const createBackupRouter = ({
                VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
               [season.name, season.start_date, season.end_date || null,
                season.is_active !== false, season.auto_end || false,
-               season.description || '', season.lose_money_per_loss || 20000]
+               season.description || '', season.lose_money_per_loss ?? 20000]
             )
             seasonMapping.set(season.name, result.rows[0].id)
             results.seasonsImported++

@@ -64,31 +64,41 @@ export const createSystemRouter = ({
 
       const latestPlayDate = playDates?.[0]?.play_date?.split('T')[0] || null
 
+      // Fetch default date rankings + matches so the frontend doesn't need extra fetches
+      let defaultDateRankings = null
+      let defaultDateMatches = null
+      if (latestPlayDate) {
+        const [ddr, ddm] = await Promise.all([
+          rankingsCache.getOrSet(`rankings:date:${latestPlayDate}`, () => db.getPlayerStatsWithFormsByDate(latestPlayDate, 5)),
+          rankingsCache.getOrSet(`matches:date:${latestPlayDate}`, () => db.getMatchesByPlayDate(latestPlayDate))
+        ])
+        defaultDateRankings = sanitizeResponse(ddr.data)
+        defaultDateMatches = sanitizeResponse(ddm.data)
+      }
+
       const initData = {
-        rankings: sanitizeResponse(rankings),
+        // Field names match what the frontend expects (src/main.js L790-826)
+        lifetimeRankings: sanitizeResponse(rankings),
         players: sanitizeResponse(players),
         seasons: sanitizeResponse(seasons),
         activeSeasons: sanitizeResponse(activeSeasons),
         playDates,
         activeSeason,
-        latestPlayDate,
-        dataVersion: rankingsCache.getDataVersion(),
+        defaultDate: latestPlayDate,
+        defaultDateRankings,
+        defaultDateMatches,
+        version: rankingsCache.getDataVersion(),
         isAuthenticated: req.isAuthenticated || false,
         user: req.user || null,
         timestamp: formatSecureTimestamp()
       }
 
-      // CSP-safe: only set CSRF for authenticated users' cookies
-      if (req.isAuthenticated) {
-        const sessionId = ensureCSRFCookie(req, res)
-        initData.csrfToken = tokens.create(deriveCSRFSecret(sessionId))
-      } else {
-        const sessionId = ensureCSRFCookie(req, res)
-        initData.csrfToken = tokens.create(deriveCSRFSecret(sessionId))
-      }
+      // CSP-safe: set CSRF token for all sessions
+      const sessionId = ensureCSRFCookie(req, res)
+      initData.csrfToken = tokens.create(deriveCSRFSecret(sessionId))
 
       const hitCount = [rankingsHit, playersHit, seasonsHit, activeSeasonsHit, playDatesHit, activeSeasonHit].filter(Boolean).length
-      res.set('Redis-Cache', `${hitCount}/7`)
+      res.set('Redis-Cache', `${hitCount}/6`)
       res.json(initData)
     } catch (error) {
       console.error('Error in init endpoint:', error)

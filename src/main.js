@@ -40,7 +40,7 @@ class TennisRankingSystem {
       players: 10 * 60 * 1000,      // 10 min - rarely changes
       seasons: 10 * 60 * 1000,      // 10 min - rarely changes
       playDates: 5 * 60 * 1000,     // 5 min - changes with new matches
-      versionCheck: 2 * 60 * 1000   // 2 min - check server version (reduced from 30s)
+      versionCheck: 15 * 1000        // 15s - check server version (fast fallback when SSE unavailable)
     }
     
     // Start version polling for cache coherence
@@ -109,7 +109,7 @@ class TennisRankingSystem {
     this.versionPollInterval = setInterval(() => {
       this.checkServerVersion()
     }, this.CACHE_TTL.versionCheck)
-    console.log('🔄 Polling fallback active (every 2 min)')
+    console.log('🔄 Polling fallback active (every 15s)')
   }
 
   stopPollingFallback() {

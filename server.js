@@ -345,7 +345,10 @@ const sseClients = new Set()
 rankingsCache.on('versionChange', (version) => {
   const payload = `data: ${JSON.stringify({ version })}\n\n`
   for (const client of sseClients) {
-    try { client.write(payload) } catch { sseClients.delete(client) }
+    try {
+      client.write(payload)
+      if (typeof client.flush === 'function') client.flush()
+    } catch { sseClients.delete(client) }
   }
 })
 

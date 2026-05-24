@@ -118,18 +118,23 @@ export const createSystemRouter = ({
     if (res.setTimeout) res.setTimeout(0)
 
     res.setHeader('Content-Type', 'text/event-stream')
-    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Cache-Control', 'no-cache, no-transform')
     res.setHeader('Connection', 'keep-alive')
+    res.setHeader('Content-Encoding', 'identity') // Bypass compression buffer
     res.setHeader('X-Accel-Buffering', 'no') // Nginx: don't buffer SSE
     res.flushHeaders()
 
-    // Send initial version
+    // Send initial version — flush immediately so Nginx/proxies see activity
     res.write(`data: ${JSON.stringify({ type: 'version', version: rankingsCache.getDataVersion() })}\n\n`)
+    if (typeof res.flush === 'function') res.flush()
 
     sseClients.add(res)
 
-    // Keepalive every 20s (must be less than any proxy idle timeout, typically 30-60s)
-    const keepAlive = setInterval(() => { res.write(': keepalive\n\n') }, 20000)
+    // Keepalive every 20s — flush so proxies don't consider the connection idle
+    const keepAlive = setInterval(() => {
+      res.write(': keepalive\n\n')
+      if (typeof res.flush === 'function') res.flush()
+    }, 20000)
 
     req.on('close', () => {
       clearInterval(keepAlive)

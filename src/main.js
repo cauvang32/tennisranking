@@ -131,6 +131,20 @@ class TennisRankingSystem {
   // Reload current view data after cache invalidation (called by SSE handler)
   async reloadCurrentView() {
     try {
+      // 1. Reload shared data that ALL tabs depend on (cache was just cleared)
+      await Promise.all([
+        this.loadPlayDates(),
+        this.loadSeasons(),
+        this.loadPlayers()
+      ])
+
+      // 2. Update all cross-tab dropdown selectors with fresh data
+      this.updateDateSelector()        // Rankings date picker + match history date filter
+      this.updateSeasonSelector()      // Rankings season picker
+      this.updatePlayerSelects()       // Matches player dropdowns
+      this.updateSeasonSelect()        // Matches season dropdown
+
+      // 3. Re-render the tab the user is currently viewing
       const activeTabId = document.querySelector('.tab-content.active')?.id
       if (activeTabId === 'rankings-tab') {
         await this.renderRankings()
@@ -138,10 +152,8 @@ class TennisRankingSystem {
       } else if (activeTabId === 'matches-tab') {
         await this.renderMatchHistory()
       } else if (activeTabId === 'players-tab') {
-        await this.loadPlayers()
         this.renderPlayers()
       } else if (activeTabId === 'seasons-tab') {
-        await this.loadSeasons()
         this.renderSeasons()
       } else if (activeTabId === 'accounts-tab') {
         this.renderAccounts()

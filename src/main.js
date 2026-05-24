@@ -138,8 +138,10 @@ class TennisRankingSystem {
       } else if (activeTabId === 'matches-tab') {
         await this.renderMatchHistory()
       } else if (activeTabId === 'players-tab') {
+        await this.loadPlayers()
         this.renderPlayers()
       } else if (activeTabId === 'seasons-tab') {
+        await this.loadSeasons()
         this.renderSeasons()
       } else if (activeTabId === 'accounts-tab') {
         this.renderAccounts()

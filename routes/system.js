@@ -108,7 +108,7 @@ export const createSystemRouter = ({
 
   // ── SSE — Server-Sent Events for real-time updates ────────────────────────
   // Open to all users (authenticated or not) — only broadcasts version numbers
-  router.get('/api/events', checkAuth, (req, res) => {
+  router.get('/api/events', (req, res) => {
     if (sseClients.size >= config.maxSseClients) {
       return res.status(503).json({ error: 'Too many SSE connections' })
     }

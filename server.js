@@ -176,7 +176,7 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "https://fonts.googleapis.com"],
+      styleSrc: ["'self'", "https://fonts.googleapis.com", "'unsafe-inline'"],
       scriptSrc: ["'self'", "https://static.cloudflareinsights.com"],
       imgSrc: ["'self'", "data:"],
       connectSrc: ["'self'"],

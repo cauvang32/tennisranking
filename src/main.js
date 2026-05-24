@@ -131,10 +131,19 @@ class TennisRankingSystem {
   // Reload current view data after cache invalidation (called by SSE handler)
   async reloadCurrentView() {
     try {
-      // Reload data that the user is currently viewing
-      if (document.querySelector('.tab-content.active')?.id === 'rankings-tab') {
+      const activeTabId = document.querySelector('.tab-content.active')?.id
+      if (activeTabId === 'rankings-tab') {
         await this.renderRankings()
         await this.renderMatchHistory()
+      } else if (activeTabId === 'matches-tab') {
+        await this.renderMatchHistory()
+      } else if (activeTabId === 'players-tab') {
+        this.renderPlayers()
+      } else if (activeTabId === 'seasons-tab') {
+        this.renderSeasons()
+      } else if (activeTabId === 'accounts-tab') {
+        this.renderAccounts()
+        if (this.user?.role === 'admin') this.renderCacheStatus()
       }
     } catch (error) {
       console.warn('⚠️ Failed to reload current view:', error)
@@ -154,10 +163,11 @@ class TennisRankingSystem {
         const data = await response.json()
         const newVersion = data.version
         
-        // If version changed, invalidate all client cache
+        // If version changed, invalidate all client cache and reload UI
         if (this.cache.serverVersion !== null && this.cache.serverVersion !== newVersion) {
           console.log(`🔄 Server data changed (${this.cache.serverVersion} → ${newVersion}), clearing cache`)
           this.invalidateCache() // Full clear
+          this.reloadCurrentView() // Update UI immediately
         }
         
         this.cache.serverVersion = newVersion

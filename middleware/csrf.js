@@ -75,6 +75,9 @@ export const globalCSRFProtection = (req, res, next) => {
   // Skip CSRF for public CSRF token endpoint
   if (matchesApiRoute(req, '/api/csrf-token')) return next()
 
+  // Skip CSRF for CSP violation reports (browsers don't send CSRF tokens)
+  if (matchesApiRoute(req, '/api/csp-report')) return next()
+
   // Skip CSRF for non-authenticated users on logout
   if (matchesApiRoute(req, '/api/auth/logout') && !req.cookies.authToken) return next()
 

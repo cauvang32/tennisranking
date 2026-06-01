@@ -1,3 +1,5 @@
+import config from '../config/env.js'
+
 export const buildAuthMiddleware = ({
   jwt,
   security,
@@ -6,6 +8,7 @@ export const buildAuthMiddleware = ({
   roles = ['admin', 'editor']
 }) => {
   const { decryptJWT, clearCookieAllPaths, deriveCSRFSecret, ensureCSRFCookie } = security
+  const { jwtSecret, jwtAlgorithm } = config
 
   const authenticateToken = async (req, res, next) => {
     let token = req.cookies.authToken || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1])
@@ -23,7 +26,7 @@ export const buildAuthMiddleware = ({
     }
 
     try {
-      const user = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] })
+      const user = jwt.verify(token, jwtSecret, { algorithms: [jwtAlgorithm] })
 
       // Reject refresh tokens used as access tokens
       if (user.type && user.type !== 'access') {

@@ -31,7 +31,7 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
 
 # Copy server-side source
-COPY server.js database-postgresql.js database.js database-factory.js access-logger.js ./
+COPY server.js database-postgresql.js access-logger.js ./
 COPY ecosystem.config.cjs ./
 COPY config/ ./config/
 COPY lib/ ./lib/

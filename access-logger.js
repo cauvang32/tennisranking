@@ -1,5 +1,6 @@
 import winston from 'winston'
 import { createStream } from 'rotating-file-stream'
+import crypto from 'crypto'
 
 import { UAParser } from 'ua-parser-js'
 import fs from 'fs'
@@ -114,15 +115,24 @@ const logger = winston.createLogger({
   ]
 })
 
-// LRU cache for parsed User-Agent strings (avoids re-parsing the same UA on every request)
+// LRU cache for parsed User-Agent strings (avoids re-parsing the same UA
+// on every request). Map iteration order is insertion order, so on hit we
+// delete + re-insert to move the entry to the most-recently-used position;
+// eviction then removes the first key (the actual least-recently-used).
 const UA_CACHE_MAX = 500
 const uaCache = new Map()
 
 function parseCachedUA(userAgent) {
-  if (uaCache.has(userAgent)) return uaCache.get(userAgent)
+  if (uaCache.has(userAgent)) {
+    const value = uaCache.get(userAgent)
+    // Promote to most-recently-used
+    uaCache.delete(userAgent)
+    uaCache.set(userAgent, value)
+    return value
+  }
   const parser = new UAParser(userAgent)
   const result = parser.getResult()
-  // Evict oldest entry when cache is full
+  // Evict least-recently-used entry when cache is full
   if (uaCache.size >= UA_CACHE_MAX) {
     const oldest = uaCache.keys().next().value
     uaCache.delete(oldest)
@@ -175,10 +185,14 @@ export function createAccessLogEntry(req, res, responseTime, user = null) {
     cfConnectingIP: req.get('CF-Connecting-IP'),
     
     // User information
+    // SECURITY: PII (email) is gated behind LOG_PII env flag to prevent
+    // accidental PII leakage in rotated log files retained for 30 days.
     user: user ? {
       username: user.username,
       role: user.role,
-      email: user.email
+      ...(process.env.LOG_PII === 'true' && user.email
+        ? { email: user.email }
+        : {})
     } : null,
     
     // Session information
@@ -339,12 +353,8 @@ export function logAccess(req, res, responseTime, user = null) {
     const ipInfo = logEntry.clientIPFormatted || logEntry.clientIP
     console.log(`🌐 ${logEntry.method} ${logEntry.path} | ${ipInfo} (${geoInfo}) | ${userInfo} | ${logEntry.statusCode} | ${responseTime}ms`)
     
-    // Log detailed IP detection info occasionally for debugging
-    // ⚠️ SECURITY NOTE: Math.random() is intentionally used here for NON-CRYPTOGRAPHIC
-    // debug sampling only (10% of requests). This is NOT used for any security-critical
-    // operations like token generation, session IDs, or authentication. For those purposes,
-    // crypto.randomBytes() is used elsewhere in the codebase (see security-helpers.js).
-    if (Math.random() < 0.1) { // 10% of requests
+    // Log detailed IP detection info occasionally for debugging (~10% of requests)
+    if (crypto.randomInt(100) < 10) {
       console.log(`🔍 IP Detection Details:`, {
         detected: logEntry.clientIP,
         sources: logEntry.ipDetectionSources,

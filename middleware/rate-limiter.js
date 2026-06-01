@@ -91,8 +91,8 @@ const getRateLimitDynamicMultiplier = () => {
 
 // ── Limiter factory ─────────────────────────────────────────────────────────
 
-const createProxyAwareRateLimiter = ({ storePrefix, ...options }) => {
-  if (config.rateLimit.disabled) {
+const createProxyAwareRateLimiter = ({ storePrefix, essential = false, ...options }) => {
+  if (config.rateLimit.disabled && !essential) {
     return (_req, _res, next) => next()
   }
 
@@ -147,8 +147,24 @@ export const apiLimiter = createProxyAwareRateLimiter({
 })
 
 export const authLimiter = createProxyAwareRateLimiter({
-  windowMs: wm, limit: 5, storePrefix: 'auth',
+  windowMs: wm, limit: 5, storePrefix: 'auth', essential: true,
   message: { error: 'Too many login attempts from this IP, please try again later.' }
+})
+
+// Refresh-token rotation limiter: 10/hour, always enforced (essential).
+// Prevents logged-in attackers from spamming token-version reads/writes
+// and flooding Redis with rotation events.
+export const refreshLimiter = createProxyAwareRateLimiter({
+  windowMs: 60 * 60 * 1000, limit: 10, storePrefix: 'refresh', essential: true,
+  message: { error: 'Too many token refresh attempts. Please try again later.' }
+})
+
+// Init endpoint limiter: 30/min per IP. /api/init triggers up to 8 cache
+// lookups (now parallelized) and several DB queries on cache miss — generous
+// for normal page reloads, but blocks scrapers and bots.
+export const initLimiter = createProxyAwareRateLimiter({
+  windowMs: 60 * 1000, limit: 30, storePrefix: 'init',
+  message: { error: 'Too many init requests. Please slow down.' }
 })
 
 export const deleteLimiter = createProxyAwareRateLimiter({
@@ -191,11 +207,13 @@ export const smartApiLimiter = createProxyAwareRateLimiter({
 })
 
 /**
- * Conditional rate limiter — bypasses in development mode.
+ * Conditional rate limiter — bypasses only when RATE_LIMIT_BYPASS_IN_DEV=true.
+ * Default behaviour: enforce limits in every environment.
+ * Set RATE_LIMIT_BYPASS_IN_DEV=true to opt into bypass in non-production.
  */
 export const conditionalRateLimit = (limiter) => {
   return (req, res, next) => {
-    if (config.isDevelopment) return next()
+    if (config.rateLimit.bypassInDev && !config.isProduction) return next()
     return limiter(req, res, next)
   }
 }

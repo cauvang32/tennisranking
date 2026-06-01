@@ -63,8 +63,8 @@ export const createAuthRouter = ({
         .matches(/^[a-zA-Z0-9_]+$/)
         .withMessage('Username can only contain letters, numbers, and underscores'),
       body('password')
-        .isLength({ min: 6 })
-        .withMessage('Password must be at least 6 characters'),
+        .isLength({ min: 12 })
+        .withMessage('Password must be at least 12 characters'),
       body('email')
         .optional({ nullable: true, checkFalsy: true })
         .isEmail()
@@ -197,8 +197,8 @@ export const createAuthRouter = ({
     [
       param('id').isInt().withMessage('Invalid user ID'),
       body('password')
-        .isLength({ min: 6 })
-        .withMessage('Password must be at least 6 characters')
+        .isLength({ min: 12 })
+        .withMessage('Password must be at least 12 characters')
     ],
     handleValidationErrors,
     asyncHandler(async (req, res) => {

@@ -104,6 +104,7 @@ const config = {
   // Rate limiting
   rateLimit: {
     disabled: envFlagTrue(process.env.DISABLE_RATE_LIMITING) || envFlagTrue(process.env.DISABLE_RATELIMITING),
+    bypassInDev: envFlagTrue(process.env.RATE_LIMIT_BYPASS_IN_DEV),
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
     maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS) || 1000,
     apiMax: parseInt(process.env.RATE_LIMIT_API_MAX) || 100,

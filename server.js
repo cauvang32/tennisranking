@@ -28,7 +28,7 @@ import { globalCSRFProtection, deriveCSRFSecret, ensureCSRFCookie, tokens } from
 import { createCompressionMiddleware } from './middleware/compression.js'
 import {
   applyGlobalRateLimiting, logRateLimitConfig, disconnectRateLimitRedis,
-  authLimiter, smartApiLimiter, conditionalRateLimit,
+  authLimiter, refreshLimiter, initLimiter, smartApiLimiter, conditionalRateLimit,
   createLimiter, deleteLimiter, exportLimiter, criticalLimiter, restoreLimiter
 } from './middleware/rate-limiter.js'
 import { buildAuthMiddleware } from './middleware/auth.js'
@@ -315,8 +315,20 @@ app.use(apiCachePaths, (req, res, next) => {
   next()
 })
 
-// Access logging
+// Access logging — skip static assets, health checks, and SPA HTML to avoid
+// log spam (an SPA page load can request 10+ assets, each would allocate a
+// 60-property object and write to disk).
+const isLoggablePath = (p) => {
+  if (!p) return false
+  if (p === '/health' || p.startsWith('/health')) return false
+  if (p === '/favicon.ico' || p.endsWith('/favicon.ico')) return false
+  // Normalize SUBPATH prefix for static asset match
+  const stripped = SUBPATH !== '/' && p.startsWith(SUBPATH) ? p.slice(SUBPATH.length) : p
+  return !/\.(js|css|mjs|cjs|map|svg|png|jpg|jpeg|gif|ico|webp|avif|woff|woff2|ttf|mp4|webm)$/i.test(stripped)
+}
+
 app.use((req, res, next) => {
+  if (!isLoggablePath(req.path)) return next()
   const startTime = Date.now()
   const originalEnd = res.end
   res.end = function (...args) {
@@ -344,12 +356,25 @@ const sseClients = new Set()
 
 rankingsCache.on('versionChange', (version) => {
   const payload = `data: ${JSON.stringify({ version })}\n\n`
-  for (const client of sseClients) {
-    try {
-      client.write(payload)
-      if (typeof client.flush === 'function') client.flush()
-    } catch { sseClients.delete(client) }
+  // Snapshot the client set and write in batches via setImmediate.
+  // A synchronous loop over 1000 clients would hold the event loop until
+  // the slowest socket accepts the write; batching yields between groups
+  // so one slow client can't backpressure the entire broadcast.
+  const clients = Array.from(sseClients)
+  const BATCH_SIZE = 50
+  let i = 0
+  const writeBatch = () => {
+    const end = Math.min(i + BATCH_SIZE, clients.length)
+    while (i < end) {
+      const client = clients[i++]
+      try {
+        client.write(payload)
+        if (typeof client.flush === 'function') client.flush()
+      } catch { sseClients.delete(client) }
+    }
+    if (i < clients.length) setImmediate(writeBatch)
   }
+  setImmediate(writeBatch)
 })
 
 // ── Shared context for route factories ──────────────────────────────────────
@@ -358,7 +383,7 @@ const routeCtx = {
   db, app, rankingsCache, sseClients,
   authenticateToken, checkAuth, requireAdmin, requireEditor,
   conditionalRateLimit, smartApiLimiter,
-  authLimiter, createLimiter, deleteLimiter, exportLimiter, criticalLimiter, restoreLimiter,
+  authLimiter, refreshLimiter, initLimiter, createLimiter, deleteLimiter, exportLimiter, criticalLimiter, restoreLimiter,
   handleValidationErrors, sanitizeResponse, formatSecureTimestamp,
   // Auth helpers for inline routes
   hashedAdminPassword, hashedEditorPassword,
@@ -483,7 +508,7 @@ app.get('/api/auth/status', checkAuth, (req, res) => {
 })
 
 // Refresh token
-app.post('/api/auth/refresh', async (req, res) => {
+app.post('/api/auth/refresh', refreshLimiter, async (req, res) => {
   try {
     const enc = req.cookies?.refreshToken
     if (!enc) return res.status(401).json({ error: 'No refresh token provided' })

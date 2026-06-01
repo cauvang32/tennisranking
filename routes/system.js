@@ -12,6 +12,7 @@ export const createSystemRouter = ({
   checkAuth,
   authenticateToken,
   requireAdmin,
+  initLimiter,
   rankingsCache,
   sseClients,
   formatSecureTimestamp,
@@ -41,26 +42,31 @@ export const createSystemRouter = ({
   })
 
   // ── Init endpoint (bootstrap data for frontend) ──────────────────────────
-  router.get('/api/init', checkAuth, async (req, res) => {
+  router.get('/api/init', initLimiter, checkAuth, async (req, res) => {
     try {
-      const { data: rankings, hit: rankingsHit } = await rankingsCache.getOrSet(
-        'rankings:lifetime', () => db.getPlayerStatsWithFormsLifetime(5)
-      )
-      const { data: players, hit: playersHit } = await rankingsCache.getOrSet(
-        'players', () => db.getPlayers()
-      )
-      const { data: seasons, hit: seasonsHit } = await rankingsCache.getOrSet(
-        'seasons', () => db.getSeasons()
-      )
-      const { data: activeSeasons, hit: activeSeasonsHit } = await rankingsCache.getOrSet(
-        'seasons:active', () => db.getActiveSeasons()
-      )
-      const { data: playDates, hit: playDatesHit } = await rankingsCache.getOrSet(
-        'playdates', () => db.getPlayDates()
-      )
-      const { data: activeSeason, hit: activeSeasonHit } = await rankingsCache.getOrSet(
-        'season:active', () => db.getActiveSeason()
-      )
+      // Fetch startup data in parallel — 6 Redis round-trips pipelined
+      // instead of 6 sequential awaits.
+      const [rankingsR, playersR, seasonsR, activeSeasonsR, playDatesR, activeSeasonR] = await Promise.all([
+        rankingsCache.getOrSet('rankings:lifetime', () => db.getPlayerStatsWithFormsLifetime(5)),
+        rankingsCache.getOrSet('players', () => db.getPlayers()),
+        rankingsCache.getOrSet('seasons', () => db.getSeasons()),
+        rankingsCache.getOrSet('seasons:active', () => db.getActiveSeasons()),
+        rankingsCache.getOrSet('playdates', () => db.getPlayDates()),
+        rankingsCache.getOrSet('season:active', () => db.getActiveSeason())
+      ])
+
+      const rankings = rankingsR.data
+      const players = playersR.data
+      const seasons = seasonsR.data
+      const activeSeasons = activeSeasonsR.data
+      const playDates = playDatesR.data
+      const activeSeason = activeSeasonR.data
+      const rankingsHit = rankingsR.hit
+      const playersHit = playersR.hit
+      const seasonsHit = seasonsR.hit
+      const activeSeasonsHit = activeSeasonsR.hit
+      const playDatesHit = playDatesR.hit
+      const activeSeasonHit = activeSeasonR.hit
 
       const latestPlayDate = playDates?.[0]?.play_date?.split('T')[0] || null
 

@@ -29,12 +29,14 @@ import { createCompressionMiddleware } from './middleware/compression.js'
 import {
   applyGlobalRateLimiting, logRateLimitConfig, disconnectRateLimitRedis,
   authLimiter, refreshLimiter, initLimiter, smartApiLimiter, conditionalRateLimit,
-  createLimiter, deleteLimiter, exportLimiter, criticalLimiter, restoreLimiter
+  createLimiter, deleteLimiter, exportLimiter, criticalLimiter, restoreLimiter,
+  deviceRegisterLimiter
 } from './middleware/rate-limiter.js'
 import { buildAuthMiddleware } from './middleware/auth.js'
 import { createTimeoutMiddleware } from './utils/async-handler.js'
 import RedisCache from './lib/redis-cache.js'
 import TennisDatabase from './database-postgresql.js'
+import { createPushSender } from './lib/push-sender.js'
 import { getRealClientIP, logAccess } from './access-logger.js'
 
 // Route factories
@@ -48,6 +50,7 @@ import { createAdminRouter } from './routes/admin.js'
 import { createBackupRouter } from './routes/backup.js'
 import { createHealthRouter } from './routes/health.js'
 import { createSystemRouter } from './routes/system.js'
+import { createDeviceRouter } from './routes/devices.js'
 
 // ── Bootstrap ───────────────────────────────────────────────────────────────
 
@@ -114,6 +117,36 @@ const cacheCheckInterval = setInterval(async () => {
   }
 }, config.cachePreloadInterval)
 cacheCheckInterval.unref()
+
+// ── FCM push notifications ──────────────────────────────────────────────────
+// Disabled/no-op if FIREBASE_SERVICE_ACCOUNT_PATH is unset or unreadable.
+// Wrapped to mirror the redis init pattern above: a real firebase-admin failure
+// (native binding mismatch, malformed service-account JSON, etc.) degrades to
+// a warning rather than crashing startup.
+let pushSender
+try {
+  pushSender = await createPushSender()
+} catch (error) {
+  console.error('📵 FCM init threw unexpectedly, push notifications disabled:', error.message)
+  pushSender = { enabled: false, sendMatch: async () => {}, sendSeason: async () => {} }
+}
+
+// Daily cleanup of FCM tokens not refreshed in 60 days (backend.md §7.3).
+// Run once at startup so freshly-stale tokens from prior deploys are reaped
+// immediately (not after a 24h wait), then schedule the daily cadence.
+// The null-pool guard makes this safe even when DB init failed at boot.
+const runDeviceCleanup = async () => {
+  if (!db.pool) return
+  try {
+    const removed = await db.deleteStaleDevices(60)
+    if (removed > 0) console.log(`🧹 Removed ${removed} stale FCM device token(s)`)
+  } catch (error) {
+    console.error('❌ Stale device cleanup failed:', error.message)
+  }
+}
+runDeviceCleanup()
+const deviceCleanupInterval = setInterval(runDeviceCleanup, 24 * 60 * 60 * 1000)
+deviceCleanupInterval.unref()
 
 // ── Security helpers ────────────────────────────────────────────────────────
 
@@ -380,10 +413,11 @@ rankingsCache.on('versionChange', (version) => {
 // ── Shared context for route factories ──────────────────────────────────────
 
 const routeCtx = {
-  db, app, rankingsCache, sseClients,
+  db, app, rankingsCache, sseClients, pushSender,
   authenticateToken, checkAuth, requireAdmin, requireEditor,
   conditionalRateLimit, smartApiLimiter,
   authLimiter, refreshLimiter, initLimiter, createLimiter, deleteLimiter, exportLimiter, criticalLimiter, restoreLimiter,
+  deviceRegisterLimiter,
   handleValidationErrors, sanitizeResponse, formatSecureTimestamp,
   // Auth helpers for inline routes
   hashedAdminPassword, hashedEditorPassword,
@@ -400,6 +434,7 @@ app.use('/api/matches', createMatchRouter(routeCtx))
 app.use('/api/rankings', createRankingRouter(routeCtx))
 app.use('/api/export-excel', createExportRouter(routeCtx))
 app.use('/api/auth', createAuthRouter(routeCtx))
+app.use('/api/devices', createDeviceRouter(routeCtx))
 
 // System & admin routes (newly extracted)
 app.use('/api/admin', createAdminRouter(routeCtx))
@@ -605,6 +640,7 @@ function gracefulShutdown(signal) {
     for (const client of sseClients) { client.end() }
     sseClients.clear()
     clearInterval(cacheCheckInterval)
+    clearInterval(deviceCleanupInterval)
     try { await rankingsCache.disconnect() } catch { /* ignore */ }
     try { await disconnectRateLimitRedis() } catch { /* ignore */ }
     try { await db.close() } catch { /* ignore */ }

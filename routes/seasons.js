@@ -13,7 +13,8 @@ export const createSeasonRouter = ({
   deleteLimiter,
   handleValidationErrors,
   rankingsCache,
-  sanitizeResponse
+  sanitizeResponse,
+  pushSender
 }) => {
   const router = Router()
 
@@ -94,6 +95,12 @@ export const createSeasonRouter = ({
 
       const seasonId = await db.createSeason(name, startDate, endDate, autoEnd, description, loseMoneyPerLoss, playerIds)
       await rankingsCache.invalidateOnSeasonChange()
+
+      // Push to all subscribers (fire-and-forget; never blocks/fails the response). backend.md §5
+      if (pushSender) {
+        pushSender.sendSeason({ id: seasonId, name })
+          .catch(err => console.warn('FCM sendSeason failed:', err.message))
+      }
 
       res.json({ success: true, id: seasonId, name, startDate, endDate, autoEnd, description, loseMoneyPerLoss, playerIds })
     })

@@ -127,7 +127,14 @@ const config = {
   requestTimeoutMs: parseInt(process.env.REQUEST_TIMEOUT_MS) || 30000,
 
   // SSE
-  maxSseClients: parseInt(process.env.MAX_SSE_CLIENTS) || 1000
+  maxSseClients: parseInt(process.env.MAX_SSE_CLIENTS) || 1000,
+
+  // FCM push notifications. When serviceAccountPath is unset or the file is
+  // missing, the push sender runs in disabled/no-op mode so the server boots
+  // fine without Firebase configured (e.g. local dev).
+  firebase: {
+    serviceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH || null
+  }
 }
 
 export default config

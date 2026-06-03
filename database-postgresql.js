@@ -282,6 +282,26 @@ class TennisDatabasePostgreSQL {
         CREATE INDEX IF NOT EXISTS idx_season_players_composite ON season_players(season_id, player_id);
       `)
 
+      // FCM device registry — self-bootstrapped so a fresh DB doesn't need the
+      // separate migrations/add-devices-table.sh to be run first. See backend.md §2.
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS devices (
+          id          BIGSERIAL PRIMARY KEY,
+          user_id     BIGINT NULL REFERENCES users(id) ON DELETE CASCADE,
+          token       TEXT NOT NULL UNIQUE,
+          platform    VARCHAR(8) NOT NULL CHECK (platform IN ('android', 'ios')),
+          app_version VARCHAR(32) NULL,
+          created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        );
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_devices_user_id ON devices(user_id);
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_devices_updated_at ON devices(updated_at);
+      `)
+
       await client.query('COMMIT')
     } catch (error) {
       await client.query('ROLLBACK')
@@ -1276,12 +1296,58 @@ class TennisDatabasePostgreSQL {
 
   async checkEmailExists(email, excludeUserId = null) {
     if (!email) return false
-    const query = excludeUserId 
+    const query = excludeUserId
       ? 'SELECT COUNT(*) as count FROM users WHERE email = $1 AND id != $2'
       : 'SELECT COUNT(*) as count FROM users WHERE email = $1'
     const params = excludeUserId ? [email, excludeUserId] : [email]
     const result = await this.query(query, params)
     return parseInt(result.rows[0].count) > 0
+  }
+
+  // ── FCM device registry ─────────────────────────────────────────────────
+  // Upsert keyed on the unique token: re-registering the same token (rotation,
+  // reinstall, or a different user signing in on the same device) updates the
+  // existing row instead of inserting a duplicate. See backend.md §1.1.
+  async upsertDevice(userId, token, platform, appVersion = null) {
+    const result = await this.query(`
+      INSERT INTO devices (user_id, token, platform, app_version)
+      VALUES ($1, $2, $3, $4)
+      ON CONFLICT (token) DO UPDATE SET
+        user_id = EXCLUDED.user_id,
+        platform = EXCLUDED.platform,
+        app_version = EXCLUDED.app_version,
+        updated_at = NOW()
+      RETURNING id
+    `, [userId, token, platform, appVersion])
+    return result.rows[0].id
+  }
+
+  // Delete tokens not refreshed within `days` days — the client's onTokenRefresh
+  // would have bumped updated_at otherwise, so these are stale. See backend.md §7.3.
+  async deleteStaleDevices(days = 60) {
+    // Defense in depth: String(NaN) → 'NaN days' (PG syntax error),
+    // String(-1) → '-1 days' (NOW() - (-1 days) is the FUTURE → wipes the table).
+    if (!Number.isFinite(days) || days < 0) {
+      throw new TypeError(`deleteStaleDevices: days must be a non-negative finite number, got ${days}`)
+    }
+    const result = await this.query(
+      `DELETE FROM devices WHERE updated_at < NOW() - ($1 || ' days')::interval`,
+      [String(days)]
+    )
+    return result.rowCount || 0
+  }
+
+  // Fetch the subset of players needed for a notification body. Single query,
+  // no JOIN — the route already has the IDs from req.body. Returns
+  // `[{id, name}]` (empty array for null/empty input).
+  async getPlayersByIds(ids) {
+    const filtered = (ids || []).filter(id => Number.isInteger(id))
+    if (filtered.length === 0) return []
+    const result = await this.query(
+      `SELECT id, name FROM players WHERE id = ANY($1::int[])`,
+      [filtered]
+    )
+    return result.rows
   }
 
   async clearAllData() {

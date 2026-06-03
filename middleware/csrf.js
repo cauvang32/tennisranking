@@ -81,6 +81,13 @@ export const globalCSRFProtection = (req, res, next) => {
   // Skip CSRF for non-authenticated users on logout
   if (matchesApiRoute(req, '/api/auth/logout') && !req.cookies.authToken) return next()
 
+  // Skip CSRF for unauthenticated device registration. A first-launch mobile
+  // client has no session, no csrfSessionId cookie, and no X-CSRF-Token — the
+  // global CSRF middleware would 403 the first FCM-registration call and push
+  // would never be wired up. Logged-in users still pass CSRF normally
+  // (they have a csrfSessionId from /api/csrf-token).
+  if (matchesApiRoute(req, '/api/devices/register') && !req.cookies.authToken) return next()
+
   // Apply CSRF validation for all other state-changing operations
   const token = req.get('X-CSRF-Token') || req.body._csrf
 

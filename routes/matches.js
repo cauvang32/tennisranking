@@ -13,7 +13,8 @@ export const createMatchRouter = ({
   deleteLimiter,
   handleValidationErrors,
   rankingsCache,
-  sanitizeResponse
+  sanitizeResponse,
+  pushSender
 }) => {
   const router = Router()
 
@@ -145,6 +146,33 @@ export const createMatchRouter = ({
     return { valid: true }
   }
 
+  // Fire-and-forget FCM push for a newly created match. Builds the match object
+  // from the request body + a single player-name lookup (run in parallel with
+  // the cache invalidation), so we avoid the extra 5-table JOIN that a
+  // post-hoc getMatchById would have required. Never blocks or fails the
+  // response. backend.md §5 — create only, not PUT/PATCH.
+  const fireMatchPush = (matchId, body, matchType) => {
+    if (!pushSender) return
+    Promise.resolve()
+      .then(async () => {
+        const ids = [body.player1Id, body.player2Id, body.player3Id, body.player4Id]
+        const players = await db.getPlayersByIds(ids)
+        const nameMap = new Map(players.map(p => [p.id, p.name]))
+        const match = {
+          id: matchId,
+          match_type: matchType,
+          player1_name: nameMap.get(body.player1Id) || '',
+          player2_name: nameMap.get(body.player2Id) || '',
+          player3_name: nameMap.get(body.player3Id) || '',
+          player4_name: nameMap.get(body.player4Id) || '',
+          team1_score: body.team1Score,
+          team2_score: body.team2Score
+        }
+        await pushSender.sendMatch(match)
+      })
+      .catch(err => console.warn('FCM sendMatch failed:', err.message))
+  }
+
   router.post(
     '/',
     authenticateToken,
@@ -176,6 +204,7 @@ export const createMatchRouter = ({
         // For solo matches, player2 and player4 are null
         const matchId = await db.addMatch(seasonId, playDate, player1Id, null, player3Id, null, team1Score, team2Score, winningTeam, matchType)
         await rankingsCache.invalidateOnMatchChange(playDate)
+        fireMatchPush(matchId, req.body, matchType)
         res.json({ success: true, id: matchId })
       } else {
         // Duo match validation (existing logic)
@@ -184,16 +213,17 @@ export const createMatchRouter = ({
           res.status(400).json({ error: 'All players must be different' })
           return
         }
-        
+
         // Validate players are in season
         const validation = await validatePlayersInSeason(seasonId, playerIds)
         if (!validation.valid) {
           res.status(400).json({ error: validation.error })
           return
         }
-        
+
         const matchId = await db.addMatch(seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType)
         await rankingsCache.invalidateOnMatchChange(playDate)
+        fireMatchPush(matchId, req.body, matchType)
         res.json({ success: true, id: matchId })
       }
     })

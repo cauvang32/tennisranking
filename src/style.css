@@ -163,17 +163,21 @@ body {
   background: rgba(15, 23, 42, 0.18);
   border-bottom: 1px solid rgba(255, 255, 255, 0.16);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.1);
-  padding: var(--space-md) var(--space-lg);
+  padding: var(--space-sm) 0;
+}
+
+.hero-banner-inner {
+  max-width: var(--container-max);
+  margin: 0 auto;
+  padding: 0 var(--space-lg);
 }
 
 .hero-banner-image {
   display: block;
   width: 100%;
-  max-width: 100%;
   height: auto;
   object-fit: contain;
   object-position: center;
-  margin: 0 auto;
 }
 
 .header-content {

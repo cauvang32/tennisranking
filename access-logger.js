@@ -119,6 +119,9 @@ const logger = winston.createLogger({
 // on every request). Map iteration order is insertion order, so on hit we
 // delete + re-insert to move the entry to the most-recently-used position;
 // eviction then removes the first key (the actual least-recently-used).
+// Guaranteed to never return null/undefined: any UAParser throw (e.g. weird
+// proxy UA strings) or partial-result edge case falls back to {} so callers
+// can safely use `parsedUA?.browser` without crashing the log pipeline.
 const UA_CACHE_MAX = 500
 const uaCache = new Map()
 
@@ -128,10 +131,16 @@ function parseCachedUA(userAgent) {
     // Promote to most-recently-used
     uaCache.delete(userAgent)
     uaCache.set(userAgent, value)
-    return value
+    return value || {}
   }
-  const parser = new UAParser(userAgent)
-  const result = parser.getResult()
+  let result
+  try {
+    result = new UAParser(userAgent || '').getResult() || {}
+  } catch {
+    // Defensive: ua-parser-js can throw on unusual inputs (e.g. binary blobs).
+    // Never let a UA-parse failure kill the request.
+    result = {}
+  }
   // Evict least-recently-used entry when cache is full
   if (uaCache.size >= UA_CACHE_MAX) {
     const oldest = uaCache.keys().next().value

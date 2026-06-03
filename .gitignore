@@ -1,3 +1,4 @@
+
 # Logs
 logs
 *.log
@@ -31,3 +32,4 @@ data/postgres-init/01-init.sql
 data/redis-data/dump.rdb
 backend.md
 docker-compose.yml
+firebase-service-account.json

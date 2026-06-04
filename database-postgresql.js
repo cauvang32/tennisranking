@@ -301,6 +301,14 @@ class TennisDatabasePostgreSQL {
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_devices_updated_at ON devices(updated_at);
       `)
+      // Idempotent column add — captured registration IP, used for the
+      // per-IP cap on guest devices (FCM bloat prevention).
+      await client.query(`
+        ALTER TABLE devices ADD COLUMN IF NOT EXISTS registered_ip VARCHAR(45) NULL;
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_devices_registered_ip ON devices(registered_ip);
+      `)
 
       // Notification preferences on users table (idempotent)
       await client.query(`
@@ -1331,18 +1339,39 @@ class TennisDatabasePostgreSQL {
   // Upsert keyed on the unique token: re-registering the same token (rotation,
   // reinstall, or a different user signing in on the same device) updates the
   // existing row instead of inserting a duplicate. See backend.md §1.1.
-  async upsertDevice(userId, token, platform, appVersion = null) {
+  async upsertDevice(userId, token, platform, appVersion = null, registeredIp = null) {
     const result = await this.query(`
-      INSERT INTO devices (user_id, token, platform, app_version)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO devices (user_id, token, platform, app_version, registered_ip)
+      VALUES ($1, $2, $3, $4, $5)
       ON CONFLICT (token) DO UPDATE SET
         user_id = EXCLUDED.user_id,
         platform = EXCLUDED.platform,
         app_version = EXCLUDED.app_version,
+        registered_ip = COALESCE(EXCLUDED.registered_ip, devices.registered_ip),
         updated_at = NOW()
       RETURNING id
-    `, [userId, token, platform, appVersion])
+    `, [userId, token, platform, appVersion, registeredIp])
     return result.rows[0].id
+  }
+
+  // Per-user device count — used to enforce the device cap in routes/devices.js.
+  async countDevicesByUserId(userId) {
+    const result = await this.query(
+      `SELECT COUNT(*)::int AS count FROM devices WHERE user_id = $1`,
+      [userId]
+    )
+    return result.rows[0].count
+  }
+
+  // Per-IP guest device count — used to enforce the guest cap. A guest device
+  // is any device with user_id IS NULL, narrowed to the registering IP.
+  async countGuestDevicesByIp(ip) {
+    if (!ip) return 0
+    const result = await this.query(
+      `SELECT COUNT(*)::int AS count FROM devices WHERE user_id IS NULL AND registered_ip = $1`,
+      [ip]
+    )
+    return result.rows[0].count
   }
 
   /**

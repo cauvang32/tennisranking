@@ -138,8 +138,8 @@ try {
 const runDeviceCleanup = async () => {
   if (!db.pool) return
   try {
-    const removed = await db.deleteStaleDevices(60)
-    if (removed > 0) console.log(`🧹 Removed ${removed} stale FCM device token(s)`)
+    const removed = await db.deleteStaleDevices(config.fcm.tokenRetentionDays)
+    if (removed > 0) console.log(`🧹 Removed ${removed} stale FCM device token(s) (retention: ${config.fcm.tokenRetentionDays}d)`)
   } catch (error) {
     console.error('❌ Stale device cleanup failed:', error.message)
   }

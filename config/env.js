@@ -134,6 +134,15 @@ const config = {
   // fine without Firebase configured (e.g. local dev).
   firebase: {
     serviceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH || null
+  },
+
+  // FCM device-token retention window. Tokens not refreshed in this many days
+  // are reaped by the daily cleanup. FCM docs recommend 30 ("hasn't connected
+  // for a month"). Lower = less bloat, higher = more forgiving for inactive users.
+  fcm: {
+    tokenRetentionDays: parseInt(process.env.FCM_TOKEN_RETENTION_DAYS) || 30,
+    maxDevicesPerUser: parseInt(process.env.FCM_MAX_DEVICES_PER_USER) || 10,
+    maxGuestDevicesPerIp: parseInt(process.env.FCM_MAX_GUEST_DEVICES_PER_IP) || 5
   }
 }
 

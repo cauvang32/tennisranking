@@ -476,6 +476,54 @@
                         <span>+</span> Tạo Tài Khoản
                     </button>
                 </div>
+
+                <!-- FCM Management Dashboard -->
+                <div class="card fcm-dashboard-card mb-4" id="fcmDashboardPanel">
+                    <div class="card-header flex-between">
+                        <h3 class="card-title">🚀 Quản lý Thông Báo Đẩy (FCM)</h3>
+                        <div class="fcm-controls d-flex gap-2">
+                            <button id="fcmRefreshBtn" class="btn btn-ghost btn-sm" title="Làm mới trạng thái">🔄 Làm mới</button>
+                            <button id="fcmPauseBtn" class="btn btn-warning btn-sm">⏸️ Tạm dừng Hàng đợi</button>
+                            <button id="fcmResumeBtn" class="btn btn-success btn-sm" style="display: none;">▶️ Tiếp tục Hàng đợi</button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="fcm-metrics">
+                            <div class="metric-box">
+                                <span class="metric-value" id="fcmDevicesCount">--</span>
+                                <span class="metric-label">Thiết bị đăng ký</span>
+                            </div>
+                            <div class="metric-box">
+                                <span class="metric-value text-info" id="fcmJobsPending">--</span>
+                                <span class="metric-label">Jobs đang chờ</span>
+                            </div>
+                            <div class="metric-box">
+                                <span class="metric-value text-primary" id="fcmJobsActive">--</span>
+                                <span class="metric-label">Jobs đang chạy</span>
+                            </div>
+                            <div class="metric-box">
+                                <span class="metric-value text-danger" id="fcmJobsFailed">--</span>
+                                <span class="metric-label">Jobs lỗi</span>
+                            </div>
+                        </div>
+
+                        <div class="fcm-custom-broadcast mt-4">
+                            <h4 class="mb-3">📢 Gửi thông báo toàn hệ thống</h4>
+                            <form id="fcmBroadcastForm" class="d-flex gap-3">
+                                <div class="form-group flex-1 mb-0">
+                                    <input type="text" id="fcmBroadcastTitle" class="input-field" placeholder="Tiêu đề thông báo..." required maxlength="100">
+                                </div>
+                                <div class="form-group flex-2 mb-0">
+                                    <input type="text" id="fcmBroadcastBody" class="input-field" placeholder="Nội dung thông báo..." required maxlength="255">
+                                </div>
+                                <button type="submit" class="btn btn-primary shrink-0" id="fcmBroadcastSubmitBtn">
+                                    Gửi Broadcast
+                                </button>
+                            </form>
+                            <small class="form-hint mt-2 d-block">Lưu ý: Thông báo sẽ được gửi đến tất cả người dùng và khách đang hoạt động.</small>
+                        </div>
+                    </div>
+                </div>
                 
                 <div class="card">
                     <div class="card-body">
@@ -696,19 +744,6 @@
                             <span>Kích hoạt tài khoản</span>
                         </label>
                     </div>
-                    <div class="form-group">
-                        <label class="form-section-label">🔔 Cài đặt thông báo đẩy</label>
-                        <div class="notification-prefs">
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="accountMatchNotif" checked>
-                                <span>Nhận thông báo trận đấu mới</span>
-                            </label>
-                            <label class="checkbox-label">
-                                <input type="checkbox" id="accountSeasonNotif" checked>
-                                <span>Nhận thông báo mùa giải mới</span>
-                            </label>
-                        </div>
-                        <small class="form-hint">Quản lý thông báo push cho thiết bị di động đã đăng ký</small>
                     </div>
                     <div class="form-actions">
                         <button type="button" class="btn btn-ghost" data-dismiss="modal">Hủy</button>

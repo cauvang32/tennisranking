@@ -1921,6 +1921,91 @@ body.match-mode-solo .duo-only {
   color: var(--warning);
 }
 
+.badge-notif-off {
+    background: rgba(239, 68, 68, 0.15);
+    color: var(--danger-color);
+}
+
+/* =========================================
+   FCM Management Dashboard
+   ========================================= */
+
+.fcm-dashboard-card {
+    border: 1px solid var(--border-color);
+    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+    background: var(--card-bg);
+}
+
+.fcm-dashboard-card .card-header {
+    background: rgba(255, 255, 255, 0.02);
+    border-bottom: 1px solid var(--border-color);
+    padding: 1.25rem 1.5rem;
+}
+
+.flex-between {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.fcm-metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1.5rem;
+    margin-bottom: 2rem;
+}
+
+.metric-box {
+    background: var(--bg-color);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.metric-box:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+}
+
+.metric-value {
+    font-size: 2.5rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    color: var(--text-color);
+    line-height: 1;
+}
+
+.metric-label {
+    font-size: 0.9rem;
+    color: var(--text-muted);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.fcm-custom-broadcast {
+    border-top: 1px dashed var(--border-color);
+    padding-top: 1.5rem;
+}
+
+/* Utility layout classes for the broadcast form */
+.d-flex { display: flex; }
+.gap-2 { gap: 0.5rem; }
+.gap-3 { gap: 1rem; }
+.flex-1 { flex: 1; }
+.flex-2 { flex: 2; }
+.shrink-0 { flex-shrink: 0; }
+.mb-0 { margin-bottom: 0 !important; }
+.mt-4 { margin-top: 1.5rem !important; }
+.mb-3 { margin-bottom: 1rem !important; }
+.d-block { display: block; }
+.align-items-end { align-items: flex-end; }
+
 .badge-primary {
   background: rgba(37, 99, 235, 0.1);
   color: var(--primary);

@@ -6,13 +6,16 @@ import { getRealClientIP, logError, getLogStats } from '../access-logger.js'
  * Admin analytics routes (admin-only).
  * Extracted from server.js for modularity.
  */
-export const createAdminRouter = ({
-  authenticateToken,
-  requireAdmin,
-  smartApiLimiter,
-  handleValidationErrors,
-  formatSecureTimestamp
-}) => {
+export const createAdminRouter = (routeCtx) => {
+  const {
+    authenticateToken,
+    requireAdmin,
+    smartApiLimiter,
+    handleValidationErrors,
+    formatSecureTimestamp,
+    pushSender,
+    db
+  } = routeCtx
   const router = Router()
 
   // Helper for local IP detection
@@ -173,6 +176,82 @@ export const createAdminRouter = ({
       } catch (error) {
         console.error('Error getting security dashboard:', error)
         res.status(500).json({ error: 'Failed to get security dashboard' })
+      }
+    }
+  )
+
+  // FCM Management - Status
+  router.get('/fcm/status',
+    authenticateToken, requireAdmin, smartApiLimiter,
+    async (req, res) => {
+      try {
+        if (!pushSender || !pushSender.getStatus) {
+          return res.status(503).json({ error: 'FCM push sender is not initialized or doesn\'t support metrics' })
+        }
+        
+        const [metrics, deviceCount] = await Promise.all([
+          pushSender.getStatus(),
+          db ? db.getDeviceCount() : 0
+        ])
+        
+        res.json({
+          success: true,
+          status: metrics,
+          deviceCount,
+          timestamp: formatSecureTimestamp()
+        })
+      } catch (error) {
+        console.error('Error getting FCM status:', error)
+        res.status(500).json({ error: 'Failed to get FCM status' })
+      }
+    }
+  )
+
+  // FCM Management - Pause
+  router.post('/fcm/pause',
+    authenticateToken, requireAdmin, smartApiLimiter,
+    async (req, res) => {
+      try {
+        if (!pushSender || !pushSender.pause) return res.status(503).json({ error: 'FCM unavailable' })
+        await pushSender.pause()
+        res.json({ success: true, message: 'Queues paused successfully' })
+      } catch (error) {
+        console.error('Error pausing FCM queues:', error)
+        res.status(500).json({ error: 'Failed to pause queues' })
+      }
+    }
+  )
+
+  // FCM Management - Resume
+  router.post('/fcm/resume',
+    authenticateToken, requireAdmin, smartApiLimiter,
+    async (req, res) => {
+      try {
+        if (!pushSender || !pushSender.resume) return res.status(503).json({ error: 'FCM unavailable' })
+        await pushSender.resume()
+        res.json({ success: true, message: 'Queues resumed successfully' })
+      } catch (error) {
+        console.error('Error resuming FCM queues:', error)
+        res.status(500).json({ error: 'Failed to resume queues' })
+      }
+    }
+  )
+
+  // FCM Management - Send Custom
+  router.post('/fcm/send',
+    authenticateToken, requireAdmin, smartApiLimiter,
+    async (req, res) => {
+      try {
+        const { title, body } = req.body
+        if (!title || !body) return res.status(400).json({ error: 'Title and body are required' })
+
+        if (!pushSender || !pushSender.sendCustom) return res.status(503).json({ error: 'FCM unavailable' })
+        
+        await pushSender.sendCustom(title, body)
+        res.json({ success: true, message: 'Notification dispatch job enqueued' })
+      } catch (error) {
+        console.error('Error sending custom FCM notification:', error)
+        res.status(500).json({ error: 'Failed to enqueue notification' })
       }
     }
   )

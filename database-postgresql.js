@@ -1358,9 +1358,10 @@ class TennisDatabasePostgreSQL {
    * @returns {Promise<{id: number, token: string}[]>}
    */
   async getDeviceTokensBatch(type, afterId = 0, limit = 500) {
-    const prefColumn = type === 'season'
-      ? 'receive_season_notifications'
-      : 'receive_match_notifications'
+    let prefCondition = 'true' // For custom broadcasts, send to all active users
+    if (type === 'season') prefCondition = 'COALESCE(u.receive_season_notifications, true) = true'
+    else if (type === 'match') prefCondition = 'COALESCE(u.receive_match_notifications, true) = true'
+
     const result = await this.query(`
       SELECT d.id, d.token
       FROM devices d
@@ -1370,7 +1371,7 @@ class TennisDatabasePostgreSQL {
           d.user_id IS NULL                           -- guest devices always included
           OR (
             u.is_active = true
-            AND COALESCE(u.${prefColumn}, true) = true
+            AND ${prefCondition}
           )
         )
       ORDER BY d.id ASC
@@ -1390,6 +1391,14 @@ class TennisDatabasePostgreSQL {
       [tokens]
     )
     return result.rowCount || 0
+  }
+
+  /**
+   * Get the total count of registered FCM devices.
+   */
+  async getDeviceCount() {
+    const result = await this.query(`SELECT COUNT(*) as count FROM devices`)
+    return parseInt(result.rows[0].count)
   }
 
   // Delete tokens not refreshed within `days` days — the client's onTokenRefresh

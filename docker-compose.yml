@@ -9,6 +9,7 @@ services:
     environment:
       - RUN_WORKERS=true
       - REDIS_URL=redis://tennis-redis:6379/0
+      - DB_HOST=postgres
       - DB_NAME=${DB_NAME:-tennis_ranking}
       - DB_USER=${DB_USER:-tennis_user}
       - DB_PASSWORD=${DB_PASSWORD:-tennis_password}

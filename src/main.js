@@ -157,7 +157,10 @@ class TennisRankingSystem {
         this.renderSeasons()
       } else if (activeTabId === 'accounts-tab') {
         this.renderAccounts()
-        if (this.user?.role === 'admin') this.renderCacheStatus()
+        if (this.user?.role === 'admin') {
+          this.renderCacheStatus()
+          this.fetchFcmStatus()
+        }
       }
     } catch (error) {
       console.warn('⚠️ Failed to reload current view:', error)
@@ -1051,6 +1054,27 @@ class TennisRankingSystem {
             this.renderCacheStatus()
           }
         })
+      }
+
+      // FCM Dashboard Controls (Admin Only)
+      const fcmRefreshBtn = document.getElementById('fcmRefreshBtn')
+      if (fcmRefreshBtn) {
+        fcmRefreshBtn.addEventListener('click', () => this.fetchFcmStatus())
+      }
+
+      const fcmPauseBtn = document.getElementById('fcmPauseBtn')
+      if (fcmPauseBtn) {
+        fcmPauseBtn.addEventListener('click', () => this.controlFcm('pause'))
+      }
+
+      const fcmResumeBtn = document.getElementById('fcmResumeBtn')
+      if (fcmResumeBtn) {
+        fcmResumeBtn.addEventListener('click', () => this.controlFcm('resume'))
+      }
+
+      const fcmBroadcastForm = document.getElementById('fcmBroadcastForm')
+      if (fcmBroadcastForm) {
+        fcmBroadcastForm.addEventListener('submit', (e) => this.sendFcmBroadcast(e))
       }
       
       // Today button
@@ -3844,8 +3868,6 @@ class TennisRankingSystem {
     form.reset()
     document.getElementById('accountId').value = ''
     document.getElementById('accountActive').checked = true
-    document.getElementById('accountMatchNotif').checked = true
-    document.getElementById('accountSeasonNotif').checked = true
     
     if (account) {
       // Edit mode
@@ -3857,11 +3879,6 @@ class TennisRankingSystem {
       document.getElementById('accountRole').value = account.role
       document.getElementById('accountNotes').value = account.notes || ''
       document.getElementById('accountActive').checked = account.is_active
-      // Notification preferences (default to true if field missing)
-      document.getElementById('accountMatchNotif').checked =
-        account.receive_match_notifications !== false
-      document.getElementById('accountSeasonNotif').checked =
-        account.receive_season_notifications !== false
       
       // Password is optional when editing
       passwordHint.textContent = 'Để trống nếu không muốn thay đổi mật khẩu'
@@ -3886,9 +3903,7 @@ class TennisRankingSystem {
       email: document.getElementById('accountEmail').value.trim(),
       role: document.getElementById('accountRole').value,
       notes: document.getElementById('accountNotes').value.trim(),
-      isActive: document.getElementById('accountActive').checked,
-      receiveMatchNotifications: document.getElementById('accountMatchNotif').checked,
-      receiveSeasonNotifications: document.getElementById('accountSeasonNotif').checked
+      isActive: document.getElementById('accountActive').checked
     }
     
     const password = document.getElementById('accountPassword').value
@@ -4005,10 +4020,6 @@ class TennisRankingSystem {
             <td>${this.escapeHtml(account.email) || '-'}</td>
             <td><span class="badge ${roleClass}">${this.escapeHtml(account.role || 'viewer').toUpperCase()}</span></td>
             <td><span class="${statusClass}">${account.is_active ? '✅ Hoạt động' : '❌ Vô hiệu'}</span></td>
-            <td class="notif-badges">
-              <span class="badge ${account.receive_match_notifications !== false ? 'badge-notif-on' : 'badge-notif-off'}" title="Thông báo trận đấu">⚽${account.receive_match_notifications !== false ? '✓' : '✗'}</span>
-              <span class="badge ${account.receive_season_notifications !== false ? 'badge-notif-on' : 'badge-notif-off'}" title="Thông báo mùa giải">🏆${account.receive_season_notifications !== false ? '✓' : '✗'}</span>
-            </td>
             <td>${this.escapeHtml(lastLogin)}</td>
             <td>
               <div class="action-btns">
@@ -4158,6 +4169,92 @@ class TennisRankingSystem {
       return `${minutes}m ${secs}s`
     } else {
       return `${secs}s`
+    }
+  }
+
+  // ==========================================
+  // FCM Management
+  // ==========================================
+
+  async fetchFcmStatus() {
+    if (this.user?.role !== 'admin') return
+
+    try {
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/admin/fcm/status`, {
+        method: 'GET'
+      })
+      const data = await response.json()
+      if (data.success && data.status) {
+        const { isPaused, dispatcher, sender } = data.status
+        const pending = (dispatcher?.wait || 0) + (sender?.wait || 0)
+        const active = (dispatcher?.active || 0) + (sender?.active || 0)
+        const failed = (dispatcher?.failed || 0) + (sender?.failed || 0)
+        
+        document.getElementById('fcmDevicesCount').textContent = data.deviceCount || 0
+        document.getElementById('fcmJobsPending').textContent = pending
+        document.getElementById('fcmJobsActive').textContent = active
+        document.getElementById('fcmJobsFailed').textContent = failed
+
+        const pauseBtn = document.getElementById('fcmPauseBtn')
+        const resumeBtn = document.getElementById('fcmResumeBtn')
+        if (pauseBtn) pauseBtn.style.display = isPaused ? 'none' : 'inline-flex'
+        if (resumeBtn) resumeBtn.style.display = isPaused ? 'inline-flex' : 'none'
+      } else {
+        this.showToast('Không thể lấy trạng thái FCM (Workers có thể đang tắt)', 'warning')
+      }
+    } catch (error) {
+      console.warn('Lỗi khi lấy trạng thái FCM:', error)
+    }
+  }
+
+  async controlFcm(action) {
+    if (!confirm(`Bạn có chắc muốn ${action === 'pause' ? 'TẠM DỪNG' : 'TIẾP TỤC'} hàng đợi thông báo?`)) return
+    try {
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/admin/fcm/${action}`, {
+        method: 'POST'
+      })
+      const data = await response.json()
+      if (data.success) {
+        this.showToast(data.message, 'success')
+        this.fetchFcmStatus()
+      } else {
+        this.showToast(data.error || 'Thao tác thất bại', 'error')
+      }
+    } catch (error) {
+      this.showToast('Lỗi mạng khi điều khiển FCM', 'error')
+    }
+  }
+
+  async sendFcmBroadcast(e) {
+    e.preventDefault()
+    if (!confirm('Gửi thông báo này đến TẤT CẢ người dùng?')) return
+
+    const title = document.getElementById('fcmBroadcastTitle').value.trim()
+    const body = document.getElementById('fcmBroadcastBody').value.trim()
+    const submitBtn = document.getElementById('fcmBroadcastSubmitBtn')
+    
+    submitBtn.disabled = true
+    submitBtn.innerHTML = '<span class="spinner-small"></span> Đang gửi...'
+
+    try {
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/admin/fcm/send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, body })
+      })
+      const data = await response.json()
+      if (data.success) {
+        this.showToast('Đã đưa thông báo vào hàng đợi gửi (Broadcast)', 'success')
+        document.getElementById('fcmBroadcastForm').reset()
+        setTimeout(() => this.fetchFcmStatus(), 1500)
+      } else {
+        this.showToast(data.error || 'Gửi thất bại', 'error')
+      }
+    } catch (error) {
+      this.showToast('Lỗi mạng khi gửi Broadcast', 'error')
+    } finally {
+      submitBtn.disabled = false
+      submitBtn.innerHTML = 'Gửi Broadcast'
     }
   }
 

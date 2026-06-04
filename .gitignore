@@ -33,3 +33,4 @@ data/redis-data/dump.rdb
 backend.md
 docker-compose.yml
 firebase-service-account.json
+logs.txt

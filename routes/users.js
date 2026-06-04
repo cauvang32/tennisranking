@@ -79,7 +79,15 @@ export const createAuthRouter = ({
         .withMessage('Display name must be under 100 characters'),
       body('notes')
         .optional()
-        .trim()
+        .trim(),
+      body('receiveMatchNotifications')
+        .optional()
+        .isBoolean()
+        .withMessage('receiveMatchNotifications must be a boolean'),
+      body('receiveSeasonNotifications')
+        .optional()
+        .isBoolean()
+        .withMessage('receiveSeasonNotifications must be a boolean')
     ],
     handleValidationErrors,
     asyncHandler(async (req, res) => {
@@ -146,12 +154,21 @@ export const createAuthRouter = ({
         .isBoolean(),
       body('notes')
         .optional()
-        .trim()
+        .trim(),
+      body('receiveMatchNotifications')
+        .optional()
+        .isBoolean()
+        .withMessage('receiveMatchNotifications must be a boolean'),
+      body('receiveSeasonNotifications')
+        .optional()
+        .isBoolean()
+        .withMessage('receiveSeasonNotifications must be a boolean')
     ],
     handleValidationErrors,
     asyncHandler(async (req, res) => {
       const userId = parseInt(req.params.id)
-      const { email, role, displayName, isActive, notes } = req.body
+      const { email, role, displayName, isActive, notes,
+              receiveMatchNotifications, receiveSeasonNotifications } = req.body
       
       // Check if user exists
       const existingUser = await db.getUserById(userId)
@@ -178,7 +195,9 @@ export const createAuthRouter = ({
         displayName,
         isActive,
         notes,
-        bumpTokenVersion
+        bumpTokenVersion,
+        receiveMatchNotifications,
+        receiveSeasonNotifications
       })
       
       res.json(sanitizeResponse({

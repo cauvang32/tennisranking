@@ -37,10 +37,12 @@ module.exports = {
 
       env: {
         NODE_ENV: 'development',
+        RUN_WORKERS: 'false',
       },
 
       env_production: {
         NODE_ENV: 'production',
+        RUN_WORKERS: 'false',
       },
     },
   ],

@@ -2372,3 +2372,59 @@ body.match-mode-solo .duo-only {
     border: 1px solid #ccc;
   }
 }
+
+/* ========== Notification Preference Badges ========== */
+.notif-badges {
+  display: flex;
+  gap: 0.25rem;
+  white-space: nowrap;
+}
+
+.badge-notif-on {
+  background: var(--success-light, #dcfce7);
+  color: var(--success, #16a34a);
+  font-size: 0.7rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: var(--radius-full, 9999px);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.badge-notif-off {
+  background: var(--surface-hover, #f1f5f9);
+  color: var(--text-muted, #94a3b8);
+  font-size: 0.7rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: var(--radius-full, 9999px);
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+/* Notification preferences section in account modal */
+.form-section-label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 700;
+  color: var(--text, #1e293b);
+  margin-bottom: var(--space-sm, 0.5rem);
+}
+
+.notification-prefs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm, 0.5rem);
+  padding: var(--space-md, 0.75rem);
+  background: var(--surface-hover, #f8fafc);
+  border-radius: var(--radius-md, 0.5rem);
+  border: 1px solid var(--border, #e2e8f0);
+}
+
+.notification-prefs .checkbox-label {
+  font-size: 0.8125rem;
+}

@@ -1,30 +1,37 @@
 services:
 
-  # ── Node.js Application (PM2 cluster inside container) ───────────────────────
-  app:
+  # ── Background FCM Worker (Docker separation) ───────────────────────────────
+  tennis-worker:
     build: .
-    container_name: tennis-app
-    ports:
-      - "3001:3001"
-    env_file: .env
+    container_name: tennis-worker
+    command: ["node", "worker.js"]
+    restart: unless-stopped
     environment:
-      DB_HOST: postgres                 # override to use Docker internal DNS
-      REDIS_URL: redis://redis:6379
-      NODE_ENV: production
+      - RUN_WORKERS=true
+      - REDIS_URL=redis://tennis-redis:6379/0
+      - DB_NAME=${DB_NAME:-tennis_ranking}
+      - DB_USER=${DB_USER:-tennis_user}
+      - DB_PASSWORD=${DB_PASSWORD:-tennis_password}
+      - FIREBASE_SERVICE_ACCOUNT_PATH=/etc/tennis-pro/firebase-service-account.json
+      # Required config validations:
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      - EDITOR_USERNAME=${EDITOR_USERNAME:-editor}
+      - EDITOR_PASSWORD=${EDITOR_PASSWORD:-editor}
+      - JWT_SECRET=${JWT_SECRET:-secret}
+      - CSRF_SECRET=${CSRF_SECRET:-secret}
+    volumes:
+      # Map the production firebase json file path to the container
+      - /etc/tennis-pro/firebase-service-account.json:/etc/tennis-pro/firebase-service-account.json
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://localhost:3001/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"]
-      interval: 15s
-      timeout: 5s
-      start_period: 30s
-      retries: 3
     networks:
       - tennis-network
+
+  # ── Node.js Application (PM2 cluster inside container) ───────────────────────
 
   # ── PostgreSQL Database ─────────────────────────────────────────────────────
   postgres:
@@ -53,7 +60,7 @@ services:
     image: redis:7-alpine
     container_name: tennis-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy allkeys-lru
     volumes:
       - redis-data:/data

@@ -125,10 +125,10 @@ cacheCheckInterval.unref()
 // a warning rather than crashing startup.
 let pushSender
 try {
-  pushSender = await createPushSender()
+  pushSender = await createPushSender({ db })
 } catch (error) {
   console.error('📵 FCM init threw unexpectedly, push notifications disabled:', error.message)
-  pushSender = { enabled: false, sendMatch: async () => {}, sendSeason: async () => {} }
+  pushSender = { enabled: false, sendMatch: async () => {}, sendSeason: async () => {}, close: async () => {} }
 }
 
 // Daily cleanup of FCM tokens not refreshed in 60 days (backend.md §7.3).
@@ -643,6 +643,7 @@ function gracefulShutdown(signal) {
     clearInterval(deviceCleanupInterval)
     try { await rankingsCache.disconnect() } catch { /* ignore */ }
     try { await disconnectRateLimitRedis() } catch { /* ignore */ }
+    try { if (pushSender?.close) await pushSender.close() } catch { /* ignore */ }
     try { await db.close() } catch { /* ignore */ }
     console.log('✅ Graceful shutdown complete')
     process.exit(0)

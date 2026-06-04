@@ -302,6 +302,20 @@ class TennisDatabasePostgreSQL {
         CREATE INDEX IF NOT EXISTS idx_devices_updated_at ON devices(updated_at);
       `)
 
+      // Notification preferences on users table (idempotent)
+      await client.query(`
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_name = 'users' AND column_name = 'receive_match_notifications') THEN
+            ALTER TABLE users ADD COLUMN receive_match_notifications BOOLEAN NOT NULL DEFAULT true;
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_name = 'users' AND column_name = 'receive_season_notifications') THEN
+            ALTER TABLE users ADD COLUMN receive_season_notifications BOOLEAN NOT NULL DEFAULT true;
+          END IF;
+        END $$;
+      `)
+
       await client.query('COMMIT')
     } catch (error) {
       await client.query('ROLLBACK')
@@ -1159,7 +1173,9 @@ class TennisDatabasePostgreSQL {
   async getUsers() {
     const result = await this.query(`
       SELECT id, username, email, role, display_name, is_active, 
-             created_at, updated_at, last_login, created_by, notes
+             created_at, updated_at, last_login, created_by, notes,
+             COALESCE(receive_match_notifications, true) as receive_match_notifications,
+             COALESCE(receive_season_notifications, true) as receive_season_notifications
       FROM users 
       ORDER BY created_at DESC
     `)
@@ -1180,7 +1196,9 @@ class TennisDatabasePostgreSQL {
   async getUserById(userId) {
     const result = await this.query(`
       SELECT id, username, email, role, display_name, is_active, 
-             created_at, updated_at, last_login, created_by, notes
+             created_at, updated_at, last_login, created_by, notes,
+             COALESCE(receive_match_notifications, true) as receive_match_notifications,
+             COALESCE(receive_season_notifications, true) as receive_season_notifications
       FROM users 
       WHERE id = $1
     `, [userId])
@@ -1228,18 +1246,23 @@ class TennisDatabasePostgreSQL {
   }
 
   async updateUser(userId, updates) {
-    const { email, role, displayName, isActive, notes, bumpTokenVersion } = updates
+    const { email, role, displayName, isActive, notes, bumpTokenVersion,
+            receiveMatchNotifications, receiveSeasonNotifications } = updates
     const result = await this.query(`
       UPDATE users 
       SET email = COALESCE($2, email),
           role = COALESCE($3, role),
           display_name = COALESCE($4, display_name),
           is_active = COALESCE($5, is_active),
-          notes = COALESCE($6, notes)
+          notes = COALESCE($6, notes),
+          receive_match_notifications = COALESCE($7, receive_match_notifications),
+          receive_season_notifications = COALESCE($8, receive_season_notifications)
           ${bumpTokenVersion ? ', token_version = COALESCE(token_version, 0) + 1' : ''}
       WHERE id = $1
-      RETURNING id, username, email, role, display_name, is_active, updated_at
-    `, [userId, email, role, displayName, isActive, notes])
+      RETURNING id, username, email, role, display_name, is_active, updated_at,
+                receive_match_notifications, receive_season_notifications
+    `, [userId, email, role, displayName, isActive, notes,
+        receiveMatchNotifications, receiveSeasonNotifications])
     return result.rows[0] || null
   }
 
@@ -1320,6 +1343,53 @@ class TennisDatabasePostgreSQL {
       RETURNING id
     `, [userId, token, platform, appVersion])
     return result.rows[0].id
+  }
+
+  /**
+   * Paginated query for FCM multicast fan-out. Uses keyset pagination on
+   * devices.id for O(1) page lookups regardless of total device count.
+   * Returns tokens for:
+   *   - Guest devices (user_id IS NULL) — always included.
+   *   - Devices belonging to active users who have the corresponding
+   *     notification preference enabled.
+   * @param {'match'|'season'} type  — which preference column to check
+   * @param {number} afterId         — last device id from previous batch (0 for first)
+   * @param {number} limit           — batch size (max 500 for FCM multicast)
+   * @returns {Promise<{id: number, token: string}[]>}
+   */
+  async getDeviceTokensBatch(type, afterId = 0, limit = 500) {
+    const prefColumn = type === 'season'
+      ? 'receive_season_notifications'
+      : 'receive_match_notifications'
+    const result = await this.query(`
+      SELECT d.id, d.token
+      FROM devices d
+      LEFT JOIN users u ON d.user_id = u.id
+      WHERE d.id > $1
+        AND (
+          d.user_id IS NULL                           -- guest devices always included
+          OR (
+            u.is_active = true
+            AND COALESCE(u.${prefColumn}, true) = true
+          )
+        )
+      ORDER BY d.id ASC
+      LIMIT $2
+    `, [afterId, limit])
+    return result.rows
+  }
+
+  /**
+   * Remove invalid FCM tokens (returned by Firebase as unregistered).
+   * Called by the sender worker after sendEachForMulticast.
+   */
+  async removeDevicesByTokens(tokens) {
+    if (!tokens || tokens.length === 0) return 0
+    const result = await this.query(
+      `DELETE FROM devices WHERE token = ANY($1::text[])`,
+      [tokens]
+    )
+    return result.rowCount || 0
   }
 
   // Delete tokens not refreshed within `days` days — the client's onTokenRefresh

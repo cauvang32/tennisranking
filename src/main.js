@@ -3844,6 +3844,8 @@ class TennisRankingSystem {
     form.reset()
     document.getElementById('accountId').value = ''
     document.getElementById('accountActive').checked = true
+    document.getElementById('accountMatchNotif').checked = true
+    document.getElementById('accountSeasonNotif').checked = true
     
     if (account) {
       // Edit mode
@@ -3855,6 +3857,11 @@ class TennisRankingSystem {
       document.getElementById('accountRole').value = account.role
       document.getElementById('accountNotes').value = account.notes || ''
       document.getElementById('accountActive').checked = account.is_active
+      // Notification preferences (default to true if field missing)
+      document.getElementById('accountMatchNotif').checked =
+        account.receive_match_notifications !== false
+      document.getElementById('accountSeasonNotif').checked =
+        account.receive_season_notifications !== false
       
       // Password is optional when editing
       passwordHint.textContent = 'Để trống nếu không muốn thay đổi mật khẩu'
@@ -3879,7 +3886,9 @@ class TennisRankingSystem {
       email: document.getElementById('accountEmail').value.trim(),
       role: document.getElementById('accountRole').value,
       notes: document.getElementById('accountNotes').value.trim(),
-      isActive: document.getElementById('accountActive').checked
+      isActive: document.getElementById('accountActive').checked,
+      receiveMatchNotifications: document.getElementById('accountMatchNotif').checked,
+      receiveSeasonNotifications: document.getElementById('accountSeasonNotif').checked
     }
     
     const password = document.getElementById('accountPassword').value
@@ -3970,7 +3979,7 @@ class TennisRankingSystem {
       })
       
       if (!response.ok) {
-        container.innerHTML = '<tr><td colspan="8" class="text-center">Không thể tải danh sách tài khoản</td></tr>'
+        container.innerHTML = '<tr><td colspan="9" class="text-center">Không thể tải danh sách tài khoản</td></tr>'
         return
       }
       
@@ -3978,7 +3987,7 @@ class TennisRankingSystem {
       const accounts = Array.isArray(raw) ? raw : (raw.users || raw.data || [])
       
       if (accounts.length === 0) {
-        container.innerHTML = '<tr><td colspan="8" class="text-center">Chưa có tài khoản nào</td></tr>'
+        container.innerHTML = '<tr><td colspan="9" class="text-center">Chưa có tài khoản nào</td></tr>'
         return
       }
       
@@ -3996,6 +4005,10 @@ class TennisRankingSystem {
             <td>${this.escapeHtml(account.email) || '-'}</td>
             <td><span class="badge ${roleClass}">${this.escapeHtml(account.role || 'viewer').toUpperCase()}</span></td>
             <td><span class="${statusClass}">${account.is_active ? '✅ Hoạt động' : '❌ Vô hiệu'}</span></td>
+            <td class="notif-badges">
+              <span class="badge ${account.receive_match_notifications !== false ? 'badge-notif-on' : 'badge-notif-off'}" title="Thông báo trận đấu">⚽${account.receive_match_notifications !== false ? '✓' : '✗'}</span>
+              <span class="badge ${account.receive_season_notifications !== false ? 'badge-notif-on' : 'badge-notif-off'}" title="Thông báo mùa giải">🏆${account.receive_season_notifications !== false ? '✓' : '✗'}</span>
+            </td>
             <td>${this.escapeHtml(lastLogin)}</td>
             <td>
               <div class="action-btns">
@@ -4024,7 +4037,7 @@ class TennisRankingSystem {
       })
     } catch (error) {
       console.error('Error rendering accounts:', error)
-      container.innerHTML = '<tr><td colspan="8" class="text-center">Lỗi tải danh sách tài khoản</td></tr>'
+      container.innerHTML = '<tr><td colspan="9" class="text-center">Lỗi tải danh sách tài khoản</td></tr>'
     }
   }
 

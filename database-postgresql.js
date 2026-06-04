@@ -828,7 +828,7 @@ class TennisDatabasePostgreSQL {
           COUNT(mp.match_id) as total_matches,
           COALESCE(SUM(CASE WHEN mp.team != mp.winning_team THEN mp.lose_money ELSE 0 END), 0) as money_lost
         FROM players p
-        LEFT JOIN match_participants mp ON mp.player_id = p.id
+        INNER JOIN match_participants mp ON mp.player_id = p.id
         GROUP BY p.id, p.name
       )
       SELECT
@@ -864,7 +864,7 @@ class TennisDatabasePostgreSQL {
           COUNT(mp.match_id) as total_matches,
           COALESCE(SUM(CASE WHEN mp.team != mp.winning_team THEN mp.lose_money ELSE 0 END), 0) as money_lost
         FROM players p
-        LEFT JOIN match_participants mp ON mp.player_id = p.id
+        INNER JOIN match_participants mp ON mp.player_id = p.id
         GROUP BY p.id, p.name
       )
       SELECT

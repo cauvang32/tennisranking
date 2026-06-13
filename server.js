@@ -604,14 +604,15 @@ if (isDevelopment) {
   })
 } else {
   app.get(SUBPATH, (_req, res) => res.sendFile(join(__dirname, 'dist', 'index.html')))
-  app.get(`${SUBPATH}/*`, (_req, res) => res.sendFile(join(__dirname, 'dist', 'index.html')))
+  // Express 5.x requires named splat parameter syntax: {/*splat} instead of bare *
+  app.get(`${SUBPATH}{/*splat}`, (_req, res) => res.sendFile(join(__dirname, 'dist', 'index.html')))
 }
 
 app.get('/', (_req, res) => res.redirect(SUBPATH))
 
-// Production 404
+// Production 404 — Express 5.x requires named splat parameter syntax
 if (!isDevelopment) {
-  app.get('*', (_req, res) => res.status(404).json({ error: 'Not found' }))
+  app.get('{/*splat}', (_req, res) => res.status(404).json({ error: 'Not found' }))
 }
 
 // Global error handler

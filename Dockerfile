@@ -12,7 +12,7 @@ COPY . .
 RUN npm run build
 
 # ── Stage 2: Production ──────────────────────────────────────────────────────
-FROM node:20-alpine
+FROM node:22-alpine
 
 # dumb-init for proper PID 1 signal handling in containers
 RUN apk add --no-cache dumb-init

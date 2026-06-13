@@ -3,6 +3,7 @@ import { dirname, join, normalize, resolve } from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs/promises'
 import { readFileSync } from 'fs'
+import config from './config/env.js'
 
 const { Pool } = pg
 
@@ -21,14 +22,13 @@ function buildSSLConfig() {
   // Support custom CA certificate for self-signed certs
   if (process.env.DB_SSL_CA) {
     try {
-      // Path traversal protection: Normalize and validate certificate path
-      const certPath = normalize(process.env.DB_SSL_CA)
-      const resolvedPath = resolve(certPath)
-      
-      // Ensure path doesn't contain traversal attempts
-      if (certPath.includes('..')) {
-        console.warn('⚠️ Invalid DB_SSL_CA path: path traversal detected')
+      // Path traversal protection: check raw env value for '..' BEFORE normalize()
+      const rawCaPath = process.env.DB_SSL_CA
+      if (rawCaPath.includes('..')) {
+        console.warn('⚠️ Invalid DB_SSL_CA path: path traversal detected, skipping CA cert')
       } else {
+        const certPath = normalize(rawCaPath)
+        const resolvedPath = resolve(certPath)
         sslConfig.ca = readFileSync(resolvedPath, 'utf8')
       }
     } catch (err) {
@@ -62,7 +62,7 @@ class TennisDatabasePostgreSQL {
       user: process.env.DB_USER,
       password: process.env.DB_PASSWORD,
       ssl: buildSSLConfig(),
-      max: parseInt(process.env.DB_POOL_MAX) || 20,
+      max: config.dbPoolMax,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 2000,
     }

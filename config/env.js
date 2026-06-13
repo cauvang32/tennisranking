@@ -93,6 +93,9 @@ const config = {
   publicDomain: process.env.PUBLIC_DOMAIN,
   trustProxy: envFlagTrue(process.env.TRUST_PROXY) || envFlagTrue(process.env.BEHIND_PROXY) || process.env.NODE_ENV === 'production',
 
+  // Database connection pool
+  dbPoolMax: parseInt(process.env.DB_POOL_MAX) || 20,
+
   // Redis
   redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
   cacheTtlSeconds: parseInt(process.env.CACHE_TTL_SECONDS) || 24 * 60 * 60,

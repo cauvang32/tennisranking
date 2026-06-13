@@ -26,16 +26,15 @@ export default defineConfig(({ mode }) => {
       },
       // CSS code splitting
       cssCodeSplit: true,
-      rollupOptions: {
+      // Vite 8 uses Rolldown instead of Rollup — renamed from rollupOptions
+      rolldownOptions: {
         output: {
           // Use content-hash for long-term caching (immutable assets)
           assetFileNames: 'assets/[name]-[hash][extname]',
           chunkFileNames: 'assets/[name]-[hash].js',
           entryFileNames: 'assets/[name]-[hash].js',
-          // Manual chunks for better caching — vendor code changes less often
-          manualChunks: {
-            // Separate vendor styles/libs if any are imported
-          }
+          // Vite 8 replaces manualChunks with codeSplitting (function form deprecated)
+          // codeSplitting: { groups: [...] } — uncomment when adding vendor chunks
         }
       }
     },

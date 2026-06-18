@@ -33,6 +33,8 @@ services:
       - tennis-network
 
   # ── Node.js Application (PM2 cluster inside container) ───────────────────────
+  # FCM workers are handled exclusively by the tennis-worker service above.
+  # The main app explicitly disables its own FCM workers to prevent double-sends.
 
   # ── PostgreSQL Database ─────────────────────────────────────────────────────
   postgres:
@@ -62,7 +64,7 @@ services:
     container_name: tennis-redis
     ports:
       - "6380:6379"
-    command: redis-server --appendonly yes --maxmemory 512mb --maxmemory-policy noeviction
+    command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy allkeys-lru
     volumes:
       - redis-data:/data
     restart: unless-stopped

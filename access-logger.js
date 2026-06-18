@@ -404,9 +404,6 @@ export function logError(error, req = null, user = null) {
 
 // Get log statistics (for admin dashboard)
 export async function getLogStats(hours = 24) {
-  // This is a simplified version - in production you might want to use a database
-  // or more sophisticated log analysis
-  
   try {
     const logFile = path.join(logsDir, 'access.log')
     if (!fs.existsSync(logFile)) {
@@ -422,20 +419,65 @@ export async function getLogStats(hours = 24) {
         countries: {}
       }
     }
-    
-    // For demo purposes, return mock stats
-    // In production, you'd parse the actual log file or use a database
+
+    // Parse the last N lines of the log file for real-time stats.
+    const lines = fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean)
+    const cutoff = Date.now() - hours * 60 * 60 * 1000
+
+    // Parse log entries for the time window; skip malformed or out-of-window lines.
+    const recentLines = []
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line)
+        if (entry.timestamp && new Date(entry.timestamp).getTime() > cutoff) {
+          recentLines.push(entry)
+        }
+      } catch { /* skip malformed */ }
+    }
+
+    const ipCount = {}
+    const pathCount = {}
+    const statusCodes = {}
+    let userRequests = 0
+    let anonymousRequests = 0
+
+    for (const entry of recentLines) {
+      const method = entry.method || ''
+      const path = entry.path || ''
+      const ip = entry.ip || entry.clientIp || ''
+      const status = entry.statusCode || entry.status || 0
+
+      if (method) ipCount[ip] = (ipCount[ip] || 0) + 1
+      if (path) pathCount[path] = (pathCount[path] || 0) + 1
+      if (status) statusCodes[status] = (statusCodes[status] || 0) + 1
+
+      if (entry.user && entry.user.username) {
+        userRequests++
+      } else {
+        anonymousRequests++
+      }
+    }
+
+    const topIPs = Object.entries(ipCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 20)
+      .map(([ip, count]) => ({ ip, count }))
+
+    const topPaths = Object.entries(pathCount)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 20)
+      .map(([path, count]) => ({ path, count }))
+
     return {
-      totalRequests: 0,
-      uniqueIPs: 0,
-      topIPs: [],
-      topPaths: [],
-      userRequests: 0,
-      anonymousRequests: 0,
-      statusCodes: {},
+      totalRequests: recentLines.length,
+      uniqueIPs: Object.keys(ipCount).length,
+      topIPs,
+      topPaths,
+      userRequests,
+      anonymousRequests,
+      statusCodes,
       browsers: {},
-      countries: {},
-      note: 'Real-time log analysis not implemented yet - use log files in /logs directory'
+      countries: {}
     }
   } catch (error) {
     logError(error)

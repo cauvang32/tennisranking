@@ -28,9 +28,21 @@ const BATCH_SIZE = 200 // rows per DB round-trip
 export async function streamJsonResponse(pool, sql, params, res, options = {}) {
   const { transform, sanitize } = options
   const client = await pool.connect()
+  let cursor = null
+  let isClosed = false
 
   try {
-    const cursor = client.query(new Cursor(sql, params))
+    cursor = client.query(new Cursor(sql, params))
+
+    // Close the cursor and release the DB connection when the client disconnects
+    // mid-stream. Without this, pg-cursor events keep firing until the socket closes.
+    res.on('close', () => {
+      if (!isClosed) {
+        isClosed = true
+        cursor.close(() => {})
+        client.release()
+      }
+    })
 
     res.setHeader('Content-Type', 'application/json; charset=utf-8')
     res.write('[')
@@ -39,6 +51,7 @@ export async function streamJsonResponse(pool, sql, params, res, options = {}) {
 
     const readBatch = () =>
       new Promise((resolve, reject) => {
+        if (isClosed) return resolve([]) // client disconnected
         cursor.read(BATCH_SIZE, (err, rows) => {
           if (err) return reject(err)
           resolve(rows)
@@ -61,10 +74,9 @@ export async function streamJsonResponse(pool, sql, params, res, options = {}) {
 
     res.write(']')
     res.end()
-
-    // Close cursor (fire-and-forget)
-    cursor.close(() => {})
   } catch (err) {
+    isClosed = true
+    cursor?.close(() => {})
     // If headers haven't been sent yet, send proper error
     if (!res.headersSent) {
       res.status(500).json({ error: 'Internal server error' })
@@ -74,7 +86,10 @@ export async function streamJsonResponse(pool, sql, params, res, options = {}) {
     }
     throw err
   } finally {
-    client.release()
+    if (!isClosed) {
+      isClosed = true
+      client.release()
+    }
   }
 }
 

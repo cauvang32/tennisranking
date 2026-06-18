@@ -310,6 +310,37 @@ class TennisDatabasePostgreSQL {
         CREATE INDEX IF NOT EXISTS idx_devices_registered_ip ON devices(registered_ip);
       `)
 
+      // ── Users table (account system) ────────────────────────────────────────
+      // Created here so the app bootstraps without manual migration runs.
+      // Existing accounts-migration DDL was already covered, but self-bootstrapping
+      // ensures fresh Docker/PM2 deploys work immediately.
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          username VARCHAR(100) UNIQUE NOT NULL,
+          email VARCHAR(255),
+          password_hash TEXT NOT NULL,
+          role VARCHAR(20) NOT NULL CHECK (role IN ('admin', 'editor', 'viewer')),
+          display_name VARCHAR(255),
+          is_active BOOLEAN DEFAULT true,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          last_login TIMESTAMPTZ,
+          token_version INTEGER NOT NULL DEFAULT 0,
+          created_by VARCHAR(100),
+          notes TEXT
+        )
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active)
+      `)
+
       // Notification preferences on users table (idempotent)
       await client.query(`
         DO $$ BEGIN

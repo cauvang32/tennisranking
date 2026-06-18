@@ -88,11 +88,6 @@ export const createSeasonRouter = ({
         return
       }
 
-      const expiredSeasons = await db.checkAndEndExpiredSeasons()
-      if (expiredSeasons.length > 0) {
-        console.log(`🏁 Auto-ended ${expiredSeasons.length} expired season(s)`)
-      }
-
       const seasonId = await db.createSeason(name, startDate, endDate, autoEnd, description, loseMoneyPerLoss, playerIds)
       await rankingsCache.invalidateOnSeasonChange()
 

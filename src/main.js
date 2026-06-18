@@ -20,6 +20,10 @@ class TennisRankingSystem {
     this.isManualWinnerMode = false
     this.currentMatchType = 'duo' // 'duo' (đánh đôi) or 'solo' (đánh đơn)
     this.currentSeasonPlayers = [] // Players eligible for current selected season
+    this.batchMatches = [] // [{matchType, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam}]
+    this.batchMatchId = 0 // auto-increment row id
+    this.batchMatchType = 'duo' // default match type for batch mode (2v2)
+    this.currentViewMode = 'single' // 'single' or 'batch' — which mode is active
     this.eventHandlers = [] // Track event listeners for cleanup
     
     // Smart client-side cache with type-specific TTLs
@@ -148,7 +152,6 @@ class TennisRankingSystem {
       const activeTabId = document.querySelector('.tab-content.active')?.id
       if (activeTabId === 'rankings-tab') {
         await this.renderRankings()
-        await this.renderMatchHistory()
       } else if (activeTabId === 'matches-tab') {
         await this.renderMatchHistory()
       } else if (activeTabId === 'players-tab') {
@@ -519,11 +522,13 @@ class TennisRankingSystem {
         this.isAuthenticated = data.authenticated
         this.user = data.user
         this.csrfToken = data.csrfToken // Get CSRF token for authenticated users
+        this.updateScreenshotSectionVisibility()
       }
     } catch (error) {
       console.log('Auth status check failed:', error)
       this.isAuthenticated = false
       this.csrfToken = null
+      this.updateScreenshotSectionVisibility()
     }
   }
 
@@ -545,6 +550,7 @@ class TennisRankingSystem {
         this.user = data.user
         this.csrfToken = data.csrfToken // Store CSRF token from login response
         this.updateUIForAuthStatus()
+        this.updateScreenshotSectionVisibility()
         await this.loadInitialData() // Reload data after login
         return { success: true, message: data.message }
       } else {
@@ -553,6 +559,15 @@ class TennisRankingSystem {
     } catch (error) {
       return { success: false, message: 'Lỗi kết nối server' }
     }
+  }
+
+  /** Show/hide the screenshot upload section based on user role */
+  updateScreenshotSectionVisibility() {
+    const section = document.getElementById('screenshotSection')
+    if (!section) return
+    const canUse = this.user?.role === 'admin' || this.user?.role === 'editor'
+    section.style.display = canUse ? '' : 'none'
+    if (!canUse) this.clearScreenshot()
   }
 
   async logout() {
@@ -650,7 +665,6 @@ class TennisRankingSystem {
     
     this.renderPlayers()
     this.renderSeasons()
-    this.renderMatchHistory()
   }
 
   // Helper method to get CSRF token
@@ -970,7 +984,6 @@ class TennisRankingSystem {
         this.updateDateSelector()
         this.updateSeasonSelector()
         await this.renderRankings()
-        await this.renderMatchHistory()
       }
       
       this.updatePlayerSelects()
@@ -1021,7 +1034,61 @@ class TennisRankingSystem {
       if (resetFormBtn) {
         resetFormBtn.addEventListener('click', () => this.resetMatchForm())
       }
-      
+
+      // Screenshot upload section (editor/admin only)
+      const uploadBtn = document.getElementById('uploadScreenshotBtn')
+      const fileInput = document.getElementById('screenshotFile')
+      const clearBtn = document.getElementById('clearScreenshotBtn')
+      const confirmBtn = document.getElementById('confirmParsedMatchesBtn')
+      const cancelBtn = document.getElementById('cancelParsedMatchesBtn')
+
+      if (uploadBtn && fileInput) {
+        uploadBtn.addEventListener('click', () => fileInput.click())
+      }
+      if (fileInput) {
+        fileInput.addEventListener('change', (e) => this.handleScreenshotUpload(e))
+      }
+      if (clearBtn) {
+        clearBtn.addEventListener('click', () => this.clearScreenshot())
+      }
+      if (confirmBtn) {
+        confirmBtn.addEventListener('click', () => this.confirmParsedMatches())
+      }
+      if (cancelBtn) {
+        cancelBtn.addEventListener('click', () => this.cancelParsedMatches())
+      }
+
+      // Mode toggle: Single Match vs Batch Match
+      const modeSingleBtn = document.getElementById('modeSingleBtn')
+      const modeBatchBtn = document.getElementById('modeBatchBtn')
+      if (modeSingleBtn && modeBatchBtn) {
+        modeSingleBtn.addEventListener('click', () => this.switchToSingleMode())
+        modeBatchBtn.addEventListener('click', () => this.switchToBatchMode())
+      }
+
+      // Batch match type toggle (solo/duo)
+      const batchTypeToggle = document.getElementById('batchTypeToggle')
+      if (batchTypeToggle) {
+        batchTypeToggle.querySelectorAll('.type-btn').forEach(btn => {
+          btn.addEventListener('click', () => {
+            const type = btn.dataset.type
+            if (!type) return
+            batchTypeToggle.querySelector('.type-btn.active')?.classList.remove('active')
+            btn.classList.add('active')
+            this.batchMatchType = type
+          })
+        })
+      }
+
+      // Batch match buttons
+      const addBatchBtn = document.getElementById('addBatchMatchBtn')
+      const confirmBatchBtn = document.getElementById('confirmBatchMatchesBtn')
+      const cancelBatchBtn = document.getElementById('cancelBatchMatchesBtn')
+
+      if (addBatchBtn) addBatchBtn.addEventListener('click', () => this.addBatchMatchRow())
+      if (confirmBatchBtn) confirmBatchBtn.addEventListener('click', () => this.confirmBatchMatches())
+      if (cancelBatchBtn) cancelBatchBtn.addEventListener('click', () => this.hideBatchSection())
+
       // Login button
       const loginBtn = document.getElementById('loginBtn')
       if (loginBtn) {
@@ -1099,7 +1166,6 @@ class TennisRankingSystem {
           }
           this.selectedDate = today
           this.renderRankings()
-          this.renderMatchHistory()
         })
       }
       
@@ -1128,11 +1194,10 @@ class TennisRankingSystem {
           this.selectedDate = e.target.value
           if (this.currentViewMode === 'daily') {
             this.renderRankings()
-            this.renderMatchHistory()
           }
         })
       }
-      
+
       // Season select
       const seasonSelect = document.getElementById('seasonSelect')
       if (seasonSelect) {
@@ -1140,7 +1205,6 @@ class TennisRankingSystem {
           this.selectedSeason = parseInt(e.target.value)
           if (this.currentViewMode === 'season') {
             this.renderRankings()
-            this.renderMatchHistory()
           }
         })
       }
@@ -1308,7 +1372,6 @@ class TennisRankingSystem {
           this.selectedDate = e.target.value
           if (this.currentViewMode === 'daily') {
             this.renderRankings()
-            this.renderMatchHistory()
           }
         })
       }
@@ -1319,7 +1382,6 @@ class TennisRankingSystem {
           this.selectedSeason = parseInt(e.target.value)
           if (this.currentViewMode === 'season') {
             this.renderRankings()
-            this.renderMatchHistory()
           }
         })
       }
@@ -1560,7 +1622,6 @@ class TennisRankingSystem {
       this.updateSeasonSelector()
       this.setupViewModeUI()
       this.renderRankings()
-      this.renderMatchHistory()
     } else if (tabName === 'matches') {
       // Update player selects and set today's date when switching to matches
       this.updatePlayerSelects()
@@ -1609,7 +1670,6 @@ class TennisRankingSystem {
     }
     
     await this.renderRankings()
-    await this.renderMatchHistory()
   }
 
   setupViewModeUI() {
@@ -1694,7 +1754,6 @@ class TennisRankingSystem {
         await this.loadMatches()
         this.renderPlayers()
         this.renderRankings()
-        this.renderMatchHistory()
         this.updatePlayerSelects()
         this.showToast(`Đã xóa người chơi: ${player.name}`, 'success')
       } else {
@@ -1843,6 +1902,904 @@ class TennisRankingSystem {
     } catch (error) {
       console.error('Error recording match:', error)
       this.showToast('Lỗi khi ghi nhận kết quả', 'error')
+    }
+  }
+
+  // ── Screenshot Upload → AI Parse → Bulk Confirm ──────────────────────────────
+
+  /** State for parsed matches pending confirmation */
+  parsedMatchesBuffer = []
+
+  /** Fuzzy match an AI-extracted name against database players.
+   *  Returns the matching player ID, or null if no close match found.
+   *  Handles Vietnamese accent normalization and common nickname/abbreviation patterns. */
+  fuzzyMatchPlayer(name, players) {
+    if (!name || !players?.length) return null
+
+    const normalized = this.normalizeVietnamese(name).toLowerCase().trim()
+    if (!normalized) return null
+
+    // Exact match (case-insensitive, accent-normalized)
+    const exact = players.find(p => this.normalizeVietnamese(p.name).toLowerCase() === normalized)
+    if (exact) return exact.id
+
+    // Check if the AI name is a substring of a DB player name
+    const substringMatch = players.find(p => {
+      const dbNorm = this.normalizeVietnamese(p.name).toLowerCase()
+      return dbNorm.includes(normalized) || normalized.includes(dbNorm)
+    })
+    if (substringMatch) return substringMatch.id
+
+    // Check first word match (e.g. "Hưng Tâm" matches "Hưng" or "Tâm" individually)
+    const words = normalized.split(/\s+/)
+    if (words.length >= 2) {
+      // Try last word (common Vietnamese nickname)
+      const lastWord = words[words.length - 1]
+      const nicknameMatch = players.find(p => {
+        const dbNorm = this.normalizeVietnamese(p.name).toLowerCase()
+        const dbWords = dbNorm.split(/\s+/)
+        return dbWords.some(w => w === lastWord || lastWord.startsWith(w) || w.startsWith(lastWord))
+      })
+      if (nicknameMatch) return nicknameMatch.id
+    }
+
+    // Try matching just the first word
+    const firstWord = words[0]
+    const firstWordMatch = players.find(p => {
+      const dbNorm = this.normalizeVietnamese(p.name).toLowerCase()
+      const dbWords = dbNorm.split(/\s+/)
+      return dbWords.some(w => w === firstWord || firstWord.startsWith(w) || w.startsWith(firstWord))
+    })
+    if (firstWordMatch) return firstWordMatch.id
+
+    // Last resort: Levenshtein distance on full names
+    let bestScore = Infinity
+    let bestPlayer = null
+    for (const player of players) {
+      const dbNorm = this.normalizeVietnamese(player.name).toLowerCase()
+      const score = this.levenshteinDistance(normalized, dbNorm)
+      if (score < bestScore && score <= 3) {
+        bestScore = score
+        bestPlayer = player.id
+      }
+    }
+    return bestPlayer
+  }
+
+  /** Normalize Vietnamese text: remove accents for comparison */
+  normalizeVietnamese(text) {
+    if (!text) return ''
+    const accents = {
+      // Lowercase
+      'à': 'a', 'á': 'a', 'ả': 'a', 'ã': 'a', 'ạ': 'a', 'ă': 'a', 'ằ': 'a', 'ắ': 'a', 'ẳ': 'a', 'ẵ': 'a', 'ặ': 'a',
+      'è': 'e', 'é': 'e', 'ẻ': 'e', 'ẽ': 'e', 'ẹ': 'e', 'ê': 'e', 'ề': 'e', 'ể': 'e', 'ễ': 'e', 'ệ': 'e',
+      'ì': 'i', 'í': 'i', 'ỉ': 'i', 'ĩ': 'i', 'ị': 'i',
+      'ò': 'o', 'ó': 'o', 'ỏ': 'o', 'õ': 'o', 'ọ': 'o', 'ô': 'o', 'ồ': 'o', 'ố': 'o', 'ổ': 'o', 'ỗ': 'o', 'ộ': 'o',
+      'ơ': 'o', 'ờ': 'o', 'ở': 'o', 'ỡ': 'o', 'ợ': 'o',
+      'ù': 'u', 'ú': 'u', 'ủ': 'u', 'ũ': 'u', 'ụ': 'u', 'ư': 'u', 'ừ': 'u', 'ử': 'u', 'ữ': 'u', 'ự': 'u',
+      'ỳ': 'y', 'ý': 'y', 'ỷ': 'y', 'ỹ': 'y', 'ỵ': 'y',
+      'đ': 'd',
+      // Uppercase
+      'À': 'A', 'Á': 'A', 'Ả': 'A', 'Ã': 'A', 'Ạ': 'A', 'Ă': 'A', 'Ằ': 'A', 'Ắ': 'A', 'Ẳ': 'A', 'Ẵ': 'A', 'Ặ': 'A',
+      'È': 'E', 'É': 'E', 'Ẻ': 'E', 'Ẽ': 'E', 'Ẹ': 'E', 'Ê': 'E', 'Ề': 'E', 'Ể': 'E', 'Ễ': 'E', 'Ệ': 'E',
+      'Ì': 'I', 'Í': 'I', 'Ỉ': 'I', 'Ĩ': 'I', 'Ị': 'I',
+      'Ò': 'O', 'Ó': 'O', 'Ỏ': 'O', 'Õ': 'O', 'Ọ': 'O', 'Ô': 'O', 'Ồ': 'O', 'Ố': 'O', 'Ổ': 'O', 'Ỗ': 'O', 'Ộ': 'O',
+      'Ơ': 'O', 'Ờ': 'O', 'Ở': 'O', 'Ỡ': 'O', 'Ợ': 'O',
+      'Ù': 'U', 'Ú': 'U', 'Ủ': 'U', 'Ũ': 'U', 'Ụ': 'U', 'Ư': 'U', 'Ừ': 'U', 'Ử': 'U', 'Ữ': 'U', 'Ự': 'U',
+      'Ỳ': 'Y', 'Ý': 'Y', 'Ỷ': 'Y', 'Ỹ': 'Y', 'Ỵ': 'Y',
+      'Đ': 'D'
+    }
+    return text.replace(/[àáảãạăằắẳẵặèéẻẽêềểễệìíỉĩòóỏõôồốổỗơờởỡờỳýỷỹđÀÁẢÃẠĂẰẮẲẴẶÈÉẺẼÊỀỂỄỆÌÍỈĨÒÓỎÕÔỒỐỔỖỜỞỠỜỲÝỶỸĐ]/g, m => accents[m] || m)
+  }
+
+  /** Simple Levenshtein distance */
+  levenshteinDistance(a, b) {
+    const matrix = Array.from({ length: b.length + 1 }, (_, i) =>
+      Array.from({ length: a.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+    )
+    for (let i = 1; i <= b.length; i++) {
+      for (let j = 1; j <= a.length; j++) {
+        if (b.charAt(i - 1) === a.charAt(j - 1)) {
+          matrix[i][j] = matrix[i - 1][j - 1]
+        } else {
+          matrix[i][j] = Math.min(
+            matrix[i - 1][j - 1] + 1,
+            matrix[i][j - 1] + 1,
+            matrix[i - 1][j] + 1
+          )
+        }
+      }
+    }
+    return matrix[b.length][a.length]
+  }
+
+  // ── Team Nickname → Player Pair Mapping ──────────────────────────────
+  // In this tennis group, team names are compound nicknames made from
+  // syllables of two actual players' names. E.g. "Hưng Tâm" = "Tuấn Hưng"
+  // + "Tâm Neo". This function maps a team nickname back to the pair of
+  // database player IDs.
+
+  /** Score a single player against a single word from a team nickname.
+   *  Returns 0-10 (higher = better match). */
+  _scoreWordAgainstPlayer(word, playerNorm) {
+    // Exact match (word is the player's full name)
+    if (word === playerNorm) return 10
+
+    // Exact match: word is the player's last word (common Vietnamese nickname)
+    const playerWords = playerNorm.split(/\s+/)
+    if (playerWords.length > 0 && word === playerWords[playerWords.length - 1]) return 10
+
+    // Exact match: word is the player's first word
+    if (playerWords.length > 0 && word === playerWords[0]) return 7
+
+    // Substring: word appears somewhere in the player name
+    if (playerNorm.includes(word)) return 7
+
+    // Partial: word starts with the player's last word
+    if (playerWords.length > 0 && playerWords[playerWords.length - 1].startsWith(word)) return 5
+
+    // Partial: player's last word starts with the given word
+    if (playerWords.length > 0 && word.startsWith(playerWords[playerWords.length - 1])) return 5
+
+    return 0
+  }
+
+  /** Map a team nickname (e.g. "Hưng Tâm") to a pair of player IDs.
+   *  The team name is split into words; each word is matched against
+   *  all players. The best pair that covers all words is returned.
+   *
+   *  @param {string} teamName — e.g. "Hưng Tâm"
+   *  @param {Array} players  — database players
+   *  @returns {{ player1Id: number, player2Id: number } | null}
+   */
+  mapTeamToPlayerPair(teamName, players) {
+    if (!teamName || !players?.length) return null
+
+    const normalized = this.normalizeVietnamese(teamName).toLowerCase().trim()
+    if (!normalized) return null
+
+    const words = normalized.split(/\s+/)
+    if (words.length === 0) return null
+
+    // Score every player against every word
+    const playerScores = players.map(player => {
+      const playerNorm = this.normalizeVietnamese(player.name).toLowerCase()
+      let totalScore = 0
+      for (const word of words) {
+        totalScore += this._scoreWordAgainstPlayer(word, playerNorm)
+      }
+      return { id: player.id, name: player.name, score: totalScore }
+    })
+
+    // Only consider players with at least some match
+    const candidates = playerScores.filter(p => p.score > 0)
+    if (candidates.length === 0) return null
+
+    // Single player covers all words perfectly → probably a solo match
+    // But only if the team name is a single word (multi-word names are likely team nicknames)
+    const singlePerfect = candidates.find(p => {
+      if (words.length > 1) return false // multi-word → likely a team nickname, skip single-player fallback
+      let coverage = 0
+      for (const word of words) {
+        if (this._scoreWordAgainstPlayer(word, this.normalizeVietnamese(p.name).toLowerCase()) > 0) {
+          coverage++
+        }
+      }
+      return coverage === words.length && candidates.length <= 2
+    })
+    if (singlePerfect && candidates.length <= 2) {
+      return { player1Id: singlePerfect.id, player2Id: null }
+    }
+
+    // Find best pair: iterate all pairs, score by total coverage
+    let bestPair = null
+    let bestTotalScore = -1
+
+    for (let i = 0; i < candidates.length; i++) {
+      for (let j = i + 1; j < candidates.length; j++) {
+        const a = candidates[i]
+        const b = candidates[j]
+        const totalScore = a.score + b.score
+
+        // Check word coverage: how many words are covered by at least one player?
+        let coveredWords = 0
+        for (const word of words) {
+          const aScore = this._scoreWordAgainstPlayer(word, this.normalizeVietnamese(a.name).toLowerCase())
+          const bScore = this._scoreWordAgainstPlayer(word, this.normalizeVietnamese(b.name).toLowerCase())
+          if (aScore > 0 || bScore > 0) coveredWords++
+        }
+
+        // Bonus: full coverage of all words
+        const coverageBonus = coveredWords === words.length ? 20 : 0
+
+        // Penalty: both players covering the same word (overlap)
+        // (implicit — if overlap is high, one player's score drops)
+
+        if (totalScore + coverageBonus > bestTotalScore) {
+          bestTotalScore = totalScore + coverageBonus
+          bestPair = { player1Id: a.id, player2Id: b.id }
+        }
+      }
+    }
+
+    // Require minimum score threshold (at least some words must be covered)
+    if (bestPair && bestTotalScore >= words.length * 3) {
+      return bestPair
+    }
+
+    // Fallback: best single player (for solo matches)
+    if (candidates.length > 0) {
+      const best = candidates.reduce((a, b) => (a.score > b.score ? a : b))
+      return { player1Id: best.id, player2Id: null }
+    }
+
+    return null
+  }
+
+  /** Handle file selection from screenshot upload */
+  async handleScreenshotUpload(event) {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    // Show file name
+    const fileNameEl = document.getElementById('screenshotFileName')
+    const statusEl = document.getElementById('screenshotStatus')
+    const clearBtn = document.getElementById('clearScreenshotBtn')
+    const resultsSection = document.getElementById('parsedResultsSection')
+
+    if (fileNameEl) fileNameEl.textContent = file.name
+    if (clearBtn) clearBtn.style.display = ''
+    if (statusEl) {
+      statusEl.textContent = 'Đang phân tích...'
+      statusEl.style.color = 'var(--text-secondary)'
+    }
+    if (resultsSection) resultsSection.style.display = 'none'
+
+    // Read file as base64
+    try {
+      const base64 = await this.readFileAsBase64(file)
+
+      // Call AI parse endpoint
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/matches/parse-image`, {
+        method: 'POST',
+        body: JSON.stringify({ imageBase64: base64, mimeType: file.type })
+      })
+
+      if (!response.ok) {
+        const error = await response.json()
+        if (statusEl) {
+          statusEl.textContent = `❌ ${error.error || 'Phân tích thất bại'}`
+          statusEl.style.color = 'var(--error-color)'
+        }
+        return
+      }
+
+      const data = await response.json()
+      this.parsedMatchesBuffer = data.matches || []
+
+      if (statusEl) {
+        statusEl.textContent = `✅ Đã trích xuất ${this.parsedMatchesBuffer.length} trận đấu. Vui lòng kiểm tra và xác nhận.`
+        statusEl.style.color = 'var(--success-color)'
+      }
+
+      // Render preview table
+      if (this.parsedMatchesBuffer.length > 0) {
+        this.renderParsedMatchesTable()
+        if (resultsSection) resultsSection.style.display = ''
+      } else {
+        if (statusEl) statusEl.textContent = '⚠️ Không tìm thấy trận đấu nào trong hình ảnh.'
+      }
+    } catch (error) {
+      console.error('Screenshot upload error:', error)
+      if (statusEl) {
+        statusEl.textContent = 'Lỗi khi tải lên hình ảnh.'
+        statusEl.style.color = 'var(--error-color)'
+      }
+    } finally {
+      // Reset file input so re-selecting the same file triggers change
+      if (event.target) event.target.value = ''
+    }
+  }
+
+  /** Read a file as base64 string (without data URI prefix) */
+  readFileAsBase64(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => {
+        // Strip "data:image/xxx;base64," prefix
+        const base64 = reader.result?.split?.(',')[1] || reader.result
+        resolve(base64)
+      }
+      reader.onerror = reject
+      reader.readAsDataURL(file)
+    })
+  }
+
+  /** Clear the screenshot upload UI and buffer */
+  clearScreenshot() {
+    const fileInput = document.getElementById('screenshotFile')
+    const fileNameEl = document.getElementById('screenshotFileName')
+    const statusEl = document.getElementById('screenshotStatus')
+    const resultsSection = document.getElementById('parsedResultsSection')
+    const clearBtn = document.getElementById('clearScreenshotBtn')
+
+    if (fileInput) fileInput.value = ''
+    if (fileNameEl) fileNameEl.textContent = ''
+    if (statusEl) {
+      statusEl.textContent = ''
+      statusEl.style.color = ''
+    }
+    if (resultsSection) resultsSection.style.display = 'none'
+    if (clearBtn) clearBtn.style.display = 'none'
+    this.parsedMatchesBuffer = []
+
+    // Also clear the preview table
+    const tbody = document.getElementById('parsedMatchesBody')
+    if (tbody) tbody.innerHTML = ''
+
+    // Also clear batch state
+    this.batchMatches = []
+    this.batchMatchId = 0
+    const batchSection = document.getElementById('batchSection')
+    if (batchSection) batchSection.style.display = 'none'
+    const batchTbody = document.getElementById('batchMatchesBody')
+    if (batchTbody) batchTbody.innerHTML = ''
+  }
+
+  /** Cancel and hide the parsed results section */
+  cancelParsedMatches() {
+    this.clearScreenshot()
+  }
+
+  // ── Manual Batch Match Creation ─────────────────────────────────────────────
+
+  /** Switch to single-match mode (show form, hide batch) */
+  switchToSingleMode() {
+    this.currentViewMode = 'single'
+    const singleBtn = document.getElementById('modeSingleBtn')
+    const batchBtn = document.getElementById('modeBatchBtn')
+    const matchTypeArea = document.getElementById('matchTypeToggleArea')
+    const batchSection = document.getElementById('batchSection')
+    const matchForm = document.getElementById('matchForm')
+    const screenshotSection = document.getElementById('screenshotSection')
+
+    if (singleBtn) singleBtn.classList.add('active')
+    if (batchBtn) batchBtn.classList.remove('active')
+    if (matchTypeArea) matchTypeArea.style.display = ''
+    if (batchSection) batchSection.style.display = 'none'
+    if (matchForm) matchForm.style.display = ''
+    if (screenshotSection) screenshotSection.style.display = ''
+
+    // Reset batch state
+    this.batchMatches = []
+    this.batchMatchId = 0
+  }
+
+  /** Switch to batch-match mode (hide form, show batch) */
+  switchToBatchMode() {
+    this.currentViewMode = 'batch'
+    const singleBtn = document.getElementById('modeSingleBtn')
+    const batchBtn = document.getElementById('modeBatchBtn')
+    const matchTypeArea = document.getElementById('matchTypeToggleArea')
+    const batchSection = document.getElementById('batchSection')
+    const matchForm = document.getElementById('matchForm')
+    const screenshotSection = document.getElementById('screenshotSection')
+
+    if (singleBtn) singleBtn.classList.remove('active')
+    if (batchBtn) batchBtn.classList.add('active')
+    if (matchTypeArea) matchTypeArea.style.display = 'none'
+    if (batchSection) this.showBatchSection()
+    if (matchForm) matchForm.style.display = 'none'
+    if (screenshotSection) screenshotSection.style.display = 'none'
+  }
+
+  /** Show and initialise the batch match creation section */
+  showBatchSection() {
+    const section = document.getElementById('batchSection')
+    if (!section) return
+    section.style.display = ''
+
+    // Populate shared season selector — use `selected` on the option, not `value` on select
+    const batchSeasonSelect = document.getElementById('batchSeasonSelect')
+    const batchDateInput = document.getElementById('batchDateInput')
+    if (batchSeasonSelect) {
+      const activeSeasons = (this.seasons || []).filter(s => s.is_active)
+      const latestSeasonId = activeSeasons.length > 0 ? activeSeasons[0].id : null
+      const options = activeSeasons.map(s => {
+        const sel = s.id === latestSeasonId ? ' selected' : ''
+        return `<option value="${s.id}"${sel}>${this.escapeHtml(s.name)}</option>`
+      }).join('')
+      batchSeasonSelect.innerHTML = `<option value="">-- Chọn --</option>${options}`
+    }
+    if (batchDateInput) {
+      const latestPlayDate = this.playDates?.[0]?.play_date?.split('T')[0] || new Date().toISOString().split('T')[0]
+      batchDateInput.value = latestPlayDate
+    }
+
+    this.renderBatchMatchesTable()
+  }
+
+  /** Hide the batch match creation section */
+  hideBatchSection() {
+    const section = document.getElementById('batchSection')
+    if (section) section.style.display = 'none'
+    this.batchMatches = []
+    this.batchMatchId = 0
+    // Switch back to single mode
+    this.switchToSingleMode()
+  }
+
+  /** Build <option> strings for a player dropdown, pre-selecting selectedId */
+  _buildPlayerOptions(selectedId) {
+    const options = (this.players || []).map(p => {
+      const sel = p.id === selectedId ? ' selected' : ''
+      return `<option value="${p.id}"${sel}>${this.escapeHtml(p.name)}</option>`
+    }).join('')
+    return `<option value="">-- Chọn --</option>${options}`
+  }
+
+  /** Render the batch matches table */
+  renderBatchMatchesTable() {
+    const tbody = document.getElementById('batchMatchesBody')
+    if (!tbody) return
+
+    tbody.innerHTML = this.batchMatches.map((match, index) => {
+      const isSolo = match.matchType === 'solo'
+
+      if (isSolo) {
+        return `
+          <tr data-batch-index="${index}" data-match-type="solo">
+            <td><span style="font-size: 11px; color: var(--text-secondary);">Đội 1</span><br>
+              <select class="select-field" data-field="player1Id" style="font-size: 12px; padding: 4px;">
+                ${this._buildPlayerOptions(match.player1Id)}
+              </select>
+            </td>
+            <td><span style="font-size: 11px; color: var(--text-secondary);">Đội 2</span><br>
+              <select class="select-field" data-field="player3Id" style="font-size: 12px; padding: 4px;">
+                ${this._buildPlayerOptions(match.player3Id)}
+              </select>
+            </td>
+            <td>
+              <div style="display: flex; gap: 4px; align-items: center;">
+                <input type="number" class="input-field" data-field="team1Score" value="${match.team1Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
+                <span>-</span>
+                <input type="number" class="input-field" data-field="team2Score" value="${match.team2Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
+              </div>
+            </td>
+            <td>
+              <select class="select-field" data-field="winningTeam" style="font-size: 12px; padding: 4px;">
+                <option value="1" ${match.winningTeam === 1 ? 'selected' : ''}>Đội 1</option>
+                <option value="2" ${match.winningTeam === 2 ? 'selected' : ''}>Đội 2</option>
+              </select>
+            </td>
+            <td><span style="font-size: 12px;">1v1</span></td>
+            <td>
+              <button class="btn btn-ghost btn-sm" data-batch-remove="${index}" style="padding: 2px 6px; font-size: 14px;">✕</button>
+            </td>
+          </tr>
+        `
+      }
+
+      // ── Duo match ──
+      return `
+        <tr data-batch-index="${index}" data-match-type="duo">
+          <td>
+            <span style="font-size: 11px; color: var(--text-secondary);">Đội 1</span><br>
+            <select class="select-field" data-field="player1Id" style="font-size: 12px; padding: 4px;">
+              ${this._buildPlayerOptions(match.player1Id)}
+            </select>
+            <select class="select-field" data-field="player2Id" style="font-size: 12px; padding: 4px; margin-top: 2px;">
+              ${this._buildPlayerOptions(match.player2Id)}
+            </select>
+          </td>
+          <td>
+            <span style="font-size: 11px; color: var(--text-secondary);">Đội 2</span><br>
+            <select class="select-field" data-field="player3Id" style="font-size: 12px; padding: 4px;">
+              ${this._buildPlayerOptions(match.player3Id)}
+            </select>
+            <select class="select-field" data-field="player4Id" style="font-size: 12px; padding: 4px; margin-top: 2px;">
+              ${this._buildPlayerOptions(match.player4Id)}
+            </select>
+          </td>
+          <td>
+            <div style="display: flex; gap: 4px; align-items: center;">
+              <input type="number" class="input-field" data-field="team1Score" value="${match.team1Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
+              <span>-</span>
+              <input type="number" class="input-field" data-field="team2Score" value="${match.team2Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
+            </div>
+          </td>
+          <td>
+            <select class="select-field" data-field="winningTeam" style="font-size: 12px; padding: 4px;">
+              <option value="1" ${match.winningTeam === 1 ? 'selected' : ''}>Đội 1</option>
+              <option value="2" ${match.winningTeam === 2 ? 'selected' : ''}>Đội 2</option>
+            </select>
+          </td>
+          <td><span style="font-size: 12px;">4v4</span></td>
+          <td>
+            <button class="btn btn-ghost btn-sm" data-batch-remove="${index}" style="padding: 2px 6px; font-size: 14px;">✕</button>
+          </td>
+        </tr>
+      `
+    }).join('')
+
+    // Wire up remove buttons
+    tbody.querySelectorAll('[data-batch-remove]').forEach(btn => {
+      const idx = parseInt(btn.dataset.batchRemove, 10)
+      btn.addEventListener('click', () => this.removeBatchMatchRow(idx))
+    })
+  }
+
+  /** Add a new batch match row with default values (uses batchMatchType) */
+  addBatchMatchRow() {
+    this.batchMatches.push({
+      matchType: this.batchMatchType,
+      player1Id: null,
+      player2Id: null,
+      player3Id: null,
+      player4Id: null,
+      team1Score: 0,
+      team2Score: 0,
+      winningTeam: 1
+    })
+    this.renderBatchMatchesTable()
+  }
+
+  /** Remove a batch match row by index */
+  removeBatchMatchRow(index) {
+    this.batchMatches.splice(index, 1)
+    this.renderBatchMatchesTable()
+  }
+
+  /** Validate and send all batch matches to the server */
+  async confirmBatchMatches() {
+    const tbody = document.getElementById('batchMatchesBody')
+    if (!tbody || !this.batchMatches.length) {
+      this.showToast('Vui lòng thêm ít nhất một trận đấu', 'error')
+      return
+    }
+
+    // Read shared season and date
+    const batchSeasonSelect = document.getElementById('batchSeasonSelect')
+    const batchDateInput = document.getElementById('batchDateInput')
+    const seasonId = parseInt(batchSeasonSelect?.value)
+    const playDate = batchDateInput?.value
+
+    if (!seasonId || !playDate) {
+      this.showToast('Vui lòng chọn mùa giải và ngày', 'error')
+      return
+    }
+
+    const rows = tbody.querySelectorAll('tr')
+    const matches = []
+
+    for (const row of rows) {
+      const index = parseInt(row.dataset.batchIndex, 10)
+      const match = this.batchMatches[index]
+
+      const player1Id = parseInt(row.querySelector('[data-field="player1Id"]')?.value)
+      const player2Id = parseInt(row.querySelector('[data-field="player2Id"]')?.value)
+      const player3Id = parseInt(row.querySelector('[data-field="player3Id"]')?.value)
+      const player4Id = parseInt(row.querySelector('[data-field="player4Id"]')?.value)
+      const team1Score = parseInt(row.querySelector('[data-field="team1Score"]')?.value) || 0
+      const team2Score = parseInt(row.querySelector('[data-field="team2Score"]')?.value) || 0
+      const winningTeam = parseInt(row.querySelector('[data-field="winningTeam"]')?.value)
+
+      const isSolo = match.matchType === 'solo'
+
+      if (winningTeam !== 1 && winningTeam !== 2) {
+        this.showToast(`Vui lòng chọn đội thắng cho trận ${index + 1}`, 'error')
+        return
+      }
+
+      if (isSolo) {
+        if (isNaN(player1Id) || isNaN(player3Id) || player1Id === player3Id) {
+          this.showToast(`Vui lòng chọn 2 người chơi khác nhau cho trận ${index + 1}`, 'error')
+          return
+        }
+        matches.push({
+          seasonId, playDate, player1Id, player2Id: null, player3Id, player4Id: null,
+          team1Score, team2Score, winningTeam, matchType: 'solo'
+        })
+      } else {
+        if ([player1Id, player2Id, player3Id, player4Id].some(id => isNaN(id))) {
+          this.showToast(`Vui lòng chọn đủ 4 người chơi cho trận ${index + 1}`, 'error')
+          return
+        }
+        if (new Set([player1Id, player2Id, player3Id, player4Id]).size !== 4) {
+          this.showToast(`Cần 4 người chơi khác nhau cho trận ${index + 1}`, 'error')
+          return
+        }
+        matches.push({
+          seasonId, playDate, player1Id, player2Id, player3Id, player4Id,
+          team1Score, team2Score, winningTeam, matchType: 'duo'
+        })
+      }
+    }
+
+    // Send bulk create request
+    try {
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/matches/bulk-create`, {
+        method: 'POST',
+        body: JSON.stringify({ matches })
+      })
+
+      const data = await response.json()
+
+      if (response.ok) {
+        this.invalidateCache(['rankings', 'matches', 'playDates'])
+        await this.loadMatches()
+        await this.loadPlayDates()
+        this.renderRankings()
+        this.renderMatchHistory()
+        this.updateDateSelector()
+
+        this.hideBatchSection()
+
+        const created = data.created || matches.length
+        this.showToast(`Đã ghi nhận ${created} trận đấu`, 'success')
+      } else {
+        this.showToast(data.error || 'Lỗi khi ghi nhận kết quả', 'error')
+      }
+    } catch (error) {
+      console.error('Batch create error:', error)
+      this.showToast('Lỗi kết nối khi ghi nhận kết quả', 'error')
+    }
+  }
+
+  /** Render parsed matches into the preview table.
+   *  For solo matches: 2 player dropdowns (player 1 & 3).
+   *  For duo matches: 2 team columns, each with 2 player dropdowns.
+   *  Team nicknames (e.g. "Hưng Tâm") are mapped to player pairs via
+   *  mapTeamToPlayerPair so the best matches are pre-selected. */
+  renderParsedMatchesTable() {
+    const tbody = document.getElementById('parsedMatchesBody')
+    if (!tbody) return
+
+    // Get active seasons for the dropdown
+    const activeSeasons = (this.seasons || []).filter(s => s.is_active)
+
+    // Helper: build <option> strings with a selected attribute
+    const buildOptions = (selectedId) => {
+      const options = this.players.map(p => {
+        const sel = p.id === selectedId ? ' selected' : ''
+        return `<option value="${p.id}"${sel}>${this.escapeHtml(p.name)}</option>`
+      }).join('')
+      return `<option value="">-- Chọn --</option>${options}`
+    }
+
+    const today = new Date().toISOString().split('T')[0]
+    // Default to the latest active season and latest play date
+    const latestSeasonId = activeSeasons.length > 0 ? activeSeasons[0].id : null
+    const latestPlayDate = this.playDates?.[0]?.play_date?.split('T')[0] || today
+
+    // Build season options with `selected` on the latest (not `value` on select, which doesn't work)
+    const seasonOptions = activeSeasons.map(s => {
+      const sel = s.id === latestSeasonId ? ' selected' : ''
+      return `<option value="${s.id}"${sel}>${this.escapeHtml(s.name)}</option>`
+    }).join('')
+
+    tbody.innerHTML = this.parsedMatchesBuffer.map((match, index) => {
+      const isSolo = match.matchType === 'solo'
+
+      if (isSolo) {
+        // ── Solo match: 2 player dropdowns ──────────────────────────
+        const player1Id = this.fuzzyMatchPlayer(match.player1Name, this.players)
+        const player3Id = this.fuzzyMatchPlayer(match.player3Name, this.players)
+
+        return `
+          <tr data-index="${index}" data-match-type="solo">
+            <td><span style="font-size: 11px; color: var(--text-secondary);">Đội 1</span><br>
+              <select class="select-field" data-field="player1Id" style="font-size: 12px; padding: 4px;">
+                ${buildOptions(player1Id)}
+              </select>
+            </td>
+            <td><span style="font-size: 11px; color: var(--text-secondary);">Đội 2</span><br>
+              <select class="select-field" data-field="player3Id" style="font-size: 12px; padding: 4px;">
+                ${buildOptions(player3Id)}
+              </select>
+            </td>
+            <td>
+              <div style="display: flex; gap: 4px; align-items: center;">
+                <input type="number" class="input-field" data-field="team1Score" value="${match.team1Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
+                <span>-</span>
+                <input type="number" class="input-field" data-field="team2Score" value="${match.team2Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
+              </div>
+            </td>
+            <td>
+              <select class="select-field" data-field="winningTeam" style="font-size: 12px; padding: 4px;">
+                <option value="1" ${match.winningTeam === 1 ? 'selected' : ''}>Đội 1</option>
+                <option value="2" ${match.winningTeam === 2 ? 'selected' : ''}>Đội 2</option>
+              </select>
+            </td>
+            <td><span style="font-size: 12px;">1v1</span></td>
+            <td>
+              <select class="select-field" data-field="seasonId" style="font-size: 12px; padding: 4px;">
+                <option value="">-- Chọn --</option>
+                ${seasonOptions}
+              </select>
+            </td>
+            <td>
+              <input type="date" class="input-field" data-field="playDate" value="${latestPlayDate}" style="font-size: 12px; padding: 4px;">
+            </td>
+          </tr>
+        `
+      }
+
+      // ── Duo match: 2 team columns, each with 2 player dropdowns ──
+      // Map team nicknames (e.g. "Hưng Tâm") to pairs of players
+      const team1Pair = this.mapTeamToPlayerPair(
+        [match.player1Name, match.player2Name].filter(Boolean).join(' '),
+        this.players
+      )
+      const team2Pair = this.mapTeamToPlayerPair(
+        [match.player3Name, match.player4Name].filter(Boolean).join(' '),
+        this.players
+      )
+
+      const team1Player1Id = team1Pair?.player1Id || null
+      const team1Player2Id = team1Pair?.player2Id || null
+      const team2Player1Id = team2Pair?.player1Id || null
+      const team2Player2Id = team2Pair?.player2Id || null
+
+      // Build team label showing matched player names (for display)
+      const buildTeamLabel = (pair) => {
+        if (!pair) return ''
+        const names = [pair.player1Id, pair.player2Id]
+          .filter(id => id)
+          .map(id => {
+            const p = this.players.find(pl => pl.id === id)
+            return p ? p.name : ''
+          })
+          .filter(Boolean)
+        return names.join(' + ')
+      }
+
+      const team1Label = this.escapeHtml(buildTeamLabel(team1Pair))
+      const team2Label = this.escapeHtml(buildTeamLabel(team2Pair))
+
+      return `
+        <tr data-index="${index}" data-match-type="duo">
+          <td>
+            <span style="font-size: 11px; color: var(--text-secondary);">Đội 1</span><br>
+            <select class="select-field" data-field="player1Id" style="font-size: 12px; padding: 4px;">
+              ${buildOptions(team1Player1Id)}
+            </select>
+            ${team1Player2Id ? `
+            <select class="select-field" data-field="player2Id" style="font-size: 12px; padding: 4px; margin-top: 2px;">
+              ${buildOptions(team1Player2Id)}
+            </select>
+            <span style="font-size: 10px; color: var(--text-secondary); display: block;">${team1Label}</span>` : ''}
+          </td>
+          <td>
+            <span style="font-size: 11px; color: var(--text-secondary);">Đội 2</span><br>
+            <select class="select-field" data-field="player3Id" style="font-size: 12px; padding: 4px;">
+              ${buildOptions(team2Player1Id)}
+            </select>
+            ${team2Player2Id ? `
+            <select class="select-field" data-field="player4Id" style="font-size: 12px; padding: 4px; margin-top: 2px;">
+              ${buildOptions(team2Player2Id)}
+            </select>
+            <span style="font-size: 10px; color: var(--text-secondary); display: block;">${team2Label}</span>` : ''}
+          </td>
+          <td>
+            <div style="display: flex; gap: 4px; align-items: center;">
+              <input type="number" class="input-field" data-field="team1Score" value="${match.team1Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
+              <span>-</span>
+              <input type="number" class="input-field" data-field="team2Score" value="${match.team2Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
+            </div>
+          </td>
+          <td>
+            <select class="select-field" data-field="winningTeam" style="font-size: 12px; padding: 4px;">
+              <option value="1" ${match.winningTeam === 1 ? 'selected' : ''}>Đội 1</option>
+              <option value="2" ${match.winningTeam === 2 ? 'selected' : ''}>Đội 2</option>
+            </select>
+          </td>
+          <td><span style="font-size: 12px;">4v4</span></td>
+          <td>
+            <select class="select-field" data-field="seasonId" style="font-size: 12px; padding: 4px;">
+              <option value="">-- Chọn --</option>
+              ${seasonOptions}
+            </select>
+          </td>
+          <td>
+            <input type="date" class="input-field" data-field="playDate" value="${latestPlayDate}" style="font-size: 12px; padding: 4px;">
+          </td>
+        </tr>
+      `
+    }).join('')
+  }
+
+  /** Bulk confirm all parsed matches and create them in the database */
+  async confirmParsedMatches() {
+    const tbody = document.getElementById('parsedMatchesBody')
+    if (!tbody || !this.parsedMatchesBuffer.length) {
+      this.showToast('Không có dữ liệu để xác nhận', 'error')
+      return
+    }
+
+    // Read all row data from the preview table
+    const rows = tbody.querySelectorAll('tr')
+    const matches = []
+
+    for (const row of rows) {
+      const index = row.dataset.index
+      const match = this.parsedMatchesBuffer[index]
+
+      const player1Id = parseInt(row.querySelector('[data-field="player1Id"]')?.value)
+      const player2Id = parseInt(row.querySelector('[data-field="player2Id"]')?.value)
+      const player3Id = parseInt(row.querySelector('[data-field="player3Id"]')?.value)
+      const player4Id = parseInt(row.querySelector('[data-field="player4Id"]')?.value)
+      const team1Score = parseInt(row.querySelector('[data-field="team1Score"]')?.value) || 0
+      const team2Score = parseInt(row.querySelector('[data-field="team2Score"]')?.value) || 0
+      const winningTeam = parseInt(row.querySelector('[data-field="winningTeam"]')?.value)
+      const seasonId = parseInt(row.querySelector('[data-field="seasonId"]')?.value)
+      const playDate = row.querySelector('[data-field="playDate"]')?.value
+
+      const isSolo = match.matchType === 'solo'
+
+      if (!seasonId || !playDate) {
+        this.showToast('Vui lòng chọn mùa giải và ngày cho tất cả trận', 'error')
+        return
+      }
+
+      if (winningTeam !== 1 && winningTeam !== 2) {
+        this.showToast('Vui lòng chọn đội thắng cho tất cả trận', 'error')
+        return
+      }
+
+      if (isSolo) {
+        if (isNaN(player1Id) || isNaN(player3Id) || player1Id === player3Id) {
+          this.showToast('Vui lòng chọn 2 người chơi khác nhau', 'error')
+          return
+        }
+        matches.push({
+          seasonId, playDate, player1Id, player2Id: null, player3Id, player4Id: null,
+          team1Score, team2Score, winningTeam, matchType: 'solo'
+        })
+      } else {
+        if ([player1Id, player2Id, player3Id, player4Id].some(id => isNaN(id))) {
+          this.showToast('Vui lòng chọn đủ 4 người chơi', 'error')
+          return
+        }
+        if (new Set([player1Id, player2Id, player3Id, player4Id]).size !== 4) {
+          this.showToast('Cần 4 người chơi khác nhau', 'error')
+          return
+        }
+        matches.push({
+          seasonId, playDate, player1Id, player2Id, player3Id, player4Id,
+          team1Score, team2Score, winningTeam, matchType: 'duo'
+        })
+      }
+    }
+
+    // Send bulk create request
+    try {
+      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/matches/bulk-create`, {
+        method: 'POST',
+        body: JSON.stringify({ matches })
+      })
+
+      const data = await response.json()
+
+      if (response.ok) {
+        this.invalidateCache(['rankings', 'matches', 'playDates'])
+        await this.loadMatches()
+        await this.loadPlayDates()
+        this.renderRankings()
+        this.renderMatchHistory()
+        this.updateDateSelector()
+
+        // Clear the buffer and UI
+        this.clearScreenshot()
+
+        const created = data.created || matches.length
+        this.showToast(`Đã ghi nhận ${created} trận đấu từ ảnh`, 'success')
+      } else {
+        this.showToast(data.error || 'Lỗi khi ghi nhận kết quả', 'error')
+      }
+    } catch (error) {
+      console.error('Bulk create error:', error)
+      this.showToast('Lỗi kết nối khi ghi nhận kết quả', 'error')
     }
   }
 
@@ -2125,6 +3082,14 @@ class TennisRankingSystem {
   }
 
   async renderMatchHistory() {
+    // Match history is inside #matches-tab — only render when visible
+    const matchesTab = document.getElementById('matches-tab')
+    if (!matchesTab || !matchesTab.classList.contains('active')) return
+
+    // Defensive: also verify the table element exists
+    const tableBody = document.querySelector('#matchHistoryTable tbody')
+    if (!tableBody) return
+
     let matches = []
     
     try {
@@ -2986,7 +3951,6 @@ class TennisRankingSystem {
             
             // Update UI
             this.renderRankings()
-            this.renderMatchHistory()
             this.renderSeasons()
             this.updatePlayerSelects()
             this.updateSeasonSelector()
@@ -3151,7 +4115,6 @@ class TennisRankingSystem {
         this.renderPlayers()
         this.renderSeasons()
         this.renderRankings()
-        this.renderMatchHistory()
         this.updatePlayerSelects()
         this.updateDateSelector()
         this.updateSeasonSelector()
@@ -3372,7 +4335,6 @@ class TennisRankingSystem {
         this.renderPlayers()
         this.renderSeasons()
         this.renderRankings()
-        this.renderMatchHistory()
         this.updatePlayerSelects()
         this.updateDateSelector()
         this.updateSeasonSelector()

@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { body, param, query } from 'express-validator'
 import { asyncHandler } from '../utils/async-handler.js'
 import { streamJsonResponse } from '../utils/stream-helper.js'
+import { parseImageMatches } from '../lib/ai-parser.js'
 
 export const createMatchRouter = ({
   db,
@@ -327,6 +328,141 @@ export const createMatchRouter = ({
     res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json({ playDate: latestDate })
   }))
+
+  // ── Bulk Create: POST /api/matches/bulk-create ───────────────────────────────
+  // Creates multiple matches in a single database transaction.
+  // Used by the AI screenshot parse flow to bulk-confirm extracted matches.
+  // Requires editor/admin authentication.
+
+  router.post(
+    '/bulk-create',
+    authenticateToken,
+    requireEditor,
+    asyncHandler(async (req, res) => {
+      const { matches } = req.body
+
+      if (!Array.isArray(matches) || matches.length === 0) {
+        res.status(400).json({ error: 'Danh sách trận đấu không được để trống' })
+        return
+      }
+
+      const client = await db.pool.connect()
+      let createdCount = 0
+
+      try {
+        await client.query('BEGIN')
+
+        for (const match of matches) {
+          const { seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType = 'duo' } = match
+
+          // Validate players are in season
+          const playerIds = matchType === 'duo'
+            ? [player1Id, player2Id, player3Id, player4Id]
+            : [player1Id, player3Id]
+
+          const validation = await validatePlayersInSeason(seasonId, playerIds)
+          if (!validation.valid) {
+            await client.query('ROLLBACK')
+            res.status(400).json({ error: validation.error })
+            return
+          }
+
+          let matchId
+          if (matchType === 'solo') {
+            matchId = await db.addMatch(seasonId, playDate, player1Id, null, player3Id, null, team1Score, team2Score, winningTeam, matchType)
+          } else {
+            matchId = await db.addMatch(seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType)
+          }
+
+          // Invalidate cache for the new play date
+          await rankingsCache.invalidateOnMatchChange(playDate)
+          fireMatchPush(matchId, match, matchType)
+          createdCount++
+        }
+
+        await client.query('COMMIT')
+        res.json({ success: true, created: createdCount, total: matches.length })
+      } catch (err) {
+        await client.query('ROLLBACK')
+        console.error('❌ Bulk create failed:', err.message)
+        res.status(500).json({ error: 'Lỗi khi tạo nhiều trận đấu' })
+      } finally {
+        client.release()
+      }
+    })
+  )
+
+  // ── AI Image Parser: POST /api/matches/parse-image ──────────────────────────
+  // Accepts a JSON body with a base64-encoded image, calls AI vision API,
+  // returns parsed matches as JSON for frontend preview/editing.
+  // Requires editor/admin authentication. Only one image per request.
+
+  router.post(
+    '/parse-image',
+    authenticateToken,
+    requireEditor,
+    asyncHandler(async (req, res) => {
+      const { imageBase64, mimeType } = req.body
+
+      if (!imageBase64) {
+        res.status(400).json({ error: 'Vui lòng chọn một hình ảnh để phân tích' })
+        return
+      }
+
+      try {
+        const parsed = await parseImageMatches(imageBase64)
+
+        // Normalize parsed matches into our internal format
+        const normalized = parsed.matches.map(m => {
+          const names = [m.player1Name, m.player2Name, m.player3Name, m.player4Name].filter(Boolean)
+          let matchType = names.length <= 2 ? 'solo' : 'duo'
+          const team1Score = parseInt(m.team1Score) || 0
+          const team2Score = parseInt(m.team2Score) || 0
+          const winningTeam = team1Score > team2Score ? 1 : 2
+
+          let player1Name = m.player1Name?.trim() || ''
+          let player2Name = m.player2Name?.trim() || null
+          let player3Name = m.player3Name?.trim() || ''
+          let player4Name = m.player4Name?.trim() || null
+
+          // Handle solo matches: the model may put the two opponents in
+          // player1 + player2 (with player3/player4 = null). Our DB format
+          // expects player1 + player3 (with player2/player4 = null).
+          if (matchType === 'solo' && player2Name) {
+            player3Name = player2Name
+            player2Name = null
+          }
+
+          // Heuristic: if a solo match has a multi-word name (e.g. "Hải Phong"),
+          // it's likely a doubles match where the AI extracted team nicknames
+          // instead of individual player names. Reclassify as duo so the
+          // frontend's mapTeamToPlayerPair can resolve the nicknames.
+          if (matchType === 'solo' && player1Name && player1Name.split(/\s+/).length > 1) {
+            const isTeamNickname = (name) => name && name.split(/\s+/).length > 1
+            if (isTeamNickname(player1Name) && isTeamNickname(player3Name)) {
+              matchType = 'duo'
+            }
+          }
+
+          return {
+            player1Name,
+            player2Name,
+            player3Name,
+            player4Name,
+            team1Score,
+            team2Score,
+            winningTeam,
+            matchType
+          }
+        })
+
+        res.json({ matches: normalized })
+      } catch (err) {
+        console.error('❌ AI parse failed:', err.message)
+        res.status(502).json({ error: `Phân tích hình ảnh thất bại: ${err.message}` })
+      }
+    })
+  )
 
   return router
 }

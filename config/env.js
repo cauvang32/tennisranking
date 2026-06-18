@@ -146,6 +146,25 @@ const config = {
     tokenRetentionDays: parseInt(process.env.FCM_TOKEN_RETENTION_DAYS) || 30,
     maxDevicesPerUser: parseInt(process.env.FCM_MAX_DEVICES_PER_USER) || 10,
     maxGuestDevicesPerIp: parseInt(process.env.FCM_MAX_GUEST_DEVICES_PER_IP) || 5
+  },
+
+  // Auto-redirect from domain root to subpath (e.g. domain.com → domain.com/tennis).
+  // Set to false to serve the app at the domain root without redirecting.
+  allowSubpathRedirect: envFlagTrue(process.env.ALLOW_SUBPATH_REDIRECT) ?? true,
+
+  // AI Image Parser (optional — if AI_MODEL is set, AI_API_KEY becomes required)
+  ai: {
+    apiKey: process.env.AI_API_KEY || null,
+    model: process.env.AI_MODEL || null,
+    baseUrl: (process.env.AI_BASE_URL || 'https://api.openai.com/v1').replace(/\/+$/, '')
+  }
+}
+
+// Validate: if AI_MODEL is set, AI_API_KEY is required
+if (config.ai.model) {
+  if (!config.ai.apiKey) {
+    console.error('❌ AI_MODEL is set but AI_API_KEY is missing')
+    process.exit(1)
   }
 }
 

@@ -78,7 +78,7 @@ export const buildAuthMiddleware = ({
       }
 
       try {
-        const user = jwt.verify(token, process.env.JWT_SECRET, { algorithms: ['HS256'] })
+        const user = jwt.verify(token, config.jwtSecret, { algorithms: [config.jwtAlgorithm] })
 
         // Reject refresh tokens used as access tokens (same as authenticateToken)
         if (user.type && user.type !== 'access') {

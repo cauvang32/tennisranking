@@ -78,6 +78,19 @@ if (!dbReady) {
   console.warn('⚠️  PostgreSQL unavailable at startup - server will keep retrying in the background')
 }
 
+// One-time check for expired seasons at startup (previously per-request in seasons routes).
+if (db.pool) {
+  try {
+    const expiredSeasons = await db.checkAndEndExpiredSeasons()
+    if (expiredSeasons.length > 0) {
+      console.log(`🏁 Auto-ended ${expiredSeasons.length} expired season(s) at startup`)
+      await rankingsCache.invalidateOnSeasonChange()
+    }
+  } catch (err) {
+    console.error('❌ Startup expired-season check failed:', err.message)
+  }
+}
+
 const rankingsCache = new RedisCache({
   redisUrl: config.redisUrl,
   ttl: config.cacheTtlSeconds,
@@ -323,10 +336,24 @@ if (SUBPATH !== '/' && !isDevelopment) {
 }
 
 // API cache headers (ETag based on data version)
-// Skip auth routes — they must always return fresh authentication state
+// Skip routes that return user-specific or auth state — ETag only encodes
+// the data version, not the user identity. Without these exclusions an admin's
+// cached response for `/api/players` or `/api/admin/*` would be served to guests.
 const apiCachePaths = ['/api', ...(SUBPATH !== '/' && !isDevelopment ? [`${SUBPATH}/api`] : [])]
+
+// Routes that must never receive ETag / 304 responses because their bodies vary
+// per-user, per-session, or per-role. Public rankings (GET /rankings/*) are safe
+// to cache since they don't depend on auth state.
+const skipETagRoutes = [
+  '/auth/',       // login response body includes user data
+  '/init',        // contains per-user auth state
+  '/admin/',      // admin dashboard may return role-specific data
+  '/users',       // user list/profile
+  '/devices',     // device registry (per-user)
+]
+
 app.use(apiCachePaths, (req, res, next) => {
-  if (req.method === 'GET' && !req.path.startsWith('/auth/') && req.path !== '/init') {
+  if (req.method === 'GET' && !skipETagRoutes.some(p => req.path.startsWith(p))) {
     res.setHeader('Cache-Control', 'no-cache')
     res.setHeader('Pragma', 'no-cache')
     const dv = rankingsCache.getDataVersion()
@@ -335,12 +362,11 @@ app.use(apiCachePaths, (req, res, next) => {
       res.setHeader('ETag', etag)
       if (req.get('If-None-Match') === etag) return res.status(304).end()
     }
-  } else if (req.path === '/init') {
-    // /api/init contains per-user auth state — never cache
-    res.setHeader('Cache-Control', 'no-store, max-age=0')
-    res.setHeader('Pragma', 'no-cache')
-    res.setHeader('Vary', 'Cookie')
   } else {
+    // Never cache: auth routes, admin, users, devices, or non-GET methods
+    if (req.path === '/init') {
+      res.setHeader('Vary', 'Cookie')
+    }
     res.setHeader('Cache-Control', 'no-store, max-age=0')
     res.setHeader('Pragma', 'no-cache')
     res.setHeader('Expires', '0')
@@ -608,7 +634,10 @@ if (isDevelopment) {
   app.get(`${SUBPATH}{/*splat}`, (_req, res) => res.sendFile(join(__dirname, 'dist', 'index.html')))
 }
 
-app.get('/', (_req, res) => res.redirect(SUBPATH))
+// Auto-redirect from domain root to subpath (controlled by ALLOW_SUBPATH_REDIRECT env).
+if (config.allowSubpathRedirect) {
+  app.get('/', (_req, res) => res.redirect(SUBPATH))
+}
 
 // Production 404 — Express 5.x requires named splat parameter syntax
 if (!isDevelopment) {

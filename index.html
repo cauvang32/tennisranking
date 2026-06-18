@@ -225,12 +225,19 @@
                 <div class="card match-form-card edit-only">
                     <div class="card-header">
                         <h3 class="card-title">Tạo Trận Đấu Mới</h3>
-                        <div class="match-type-toggle">
-                            <button class="type-btn active" data-type="duo">👥 2v2</button>
-                            <button class="type-btn" data-type="solo">👤 1v1</button>
+                        <!-- Mode Toggle: Single Match vs Batch Match -->
+                        <div class="mode-toggle">
+                            <button class="mode-btn active" id="modeSingleBtn">Trận Đơn</button>
+                            <button class="mode-btn" id="modeBatchBtn">Trận Hàng Loạt</button>
+                        </div>
+                        <!-- Match Type Toggle (visible only in Single Match mode) -->
+                        <div class="match-type-toggle" id="matchTypeToggleArea">
+                            <button class="type-btn active" data-type="duo">2v2</button>
+                            <button class="type-btn" data-type="solo">1v1</button>
                         </div>
                     </div>
                     <div class="card-body">
+                        <!-- Single Match Form -->
                         <form id="matchForm" class="match-form">
                             <input type="hidden" id="matchType" value="duo">
                             
@@ -312,6 +319,62 @@
                             <input type="hidden" id="winMoney" value="0">
                             <input type="hidden" id="loseMoney" value="0">
                             
+                            <!-- Screenshot Upload Section (editor/admin only) -->
+                            <div class="screenshot-section" id="screenshotSection" style="display: none;">
+                                <div class="card" style="border: 1px solid var(--border-color); border-radius: 12px; padding: 16px; margin-bottom: 16px;">
+                                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                                        <span style="font-size: 18px;">📷</span>
+                                        <strong style="font-size: 14px;">Phân tích hình ảnh kết quả</strong>
+                                    </div>
+                                    <p style="font-size: 13px; color: var(--text-secondary); margin-bottom: 12px;">
+                                        Tải lên ảnh chụp màn hình nhóm chat chứa kết quả trận đấu. AI sẽ tự động trích xuất thông tin.
+                                    </p>
+                                    <div style="display: flex; gap: 12px; flex-wrap: wrap; align-items: center;">
+                                        <label class="btn btn-secondary" style="margin: 0; cursor: pointer;" id="uploadScreenshotBtn">
+                                            <span>📤</span> Chọn ảnh
+                                            <input type="file" id="screenshotFile" accept="image/*" style="display: none;">
+                                        </label>
+                                        <span id="screenshotFileName" style="font-size: 13px; color: var(--text-secondary);"></span>
+                                        <button class="btn btn-ghost btn-sm" id="clearScreenshotBtn" style="display: none;">
+                                            Xóa ảnh
+                                        </button>
+                                    </div>
+                                    <div id="screenshotStatus" style="margin-top: 8px; font-size: 13px;"></div>
+                                </div>
+
+                                <!-- AI Parsed Results Preview -->
+                                <div id="parsedResultsSection" style="display: none;">
+                                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                                        <span style="font-size: 18px;">🤖</span>
+                                        <strong style="font-size: 14px;">Kết quả AI trích xuất</strong>
+                                    </div>
+                                    <div style="overflow-x: auto;">
+                                        <table class="data-table" id="parsedMatchesTable" style="width: 100%; font-size: 13px;">
+                                            <thead>
+                                                <tr>
+                                                    <th style="width: 80px;">1v2</th>
+                                                    <th style="width: 80px;">3v4</th>
+                                                    <th style="width: 60px;">Tỷ số</th>
+                                                    <th style="width: 60px;">Thắng</th>
+                                                    <th style="width: 120px;">Loại</th>
+                                                    <th style="width: 140px;">Mùa giải</th>
+                                                    <th style="width: 100px;">Ngày</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="parsedMatchesBody"></tbody>
+                                        </table>
+                                    </div>
+                                    <div class="form-actions" style="margin-top: 12px;">
+                                        <button class="btn btn-primary" id="confirmParsedMatchesBtn">
+                                            <span>✓</span> Xác nhận tất cả
+                                        </button>
+                                        <button class="btn btn-ghost" id="cancelParsedMatchesBtn">
+                                            Hủy
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
                             <div class="form-actions">
                                 <button type="submit" class="btn btn-primary btn-lg">
                                     <span>✓</span> Lưu Trận Đấu
@@ -321,6 +384,51 @@
                                 </button>
                             </div>
                         </form>
+
+                        <!-- Batch Match Section (outside form) -->
+                        <div id="batchSection" style="display: none;">
+                            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+                                <span style="font-size: 18px;">📋</span>
+                                <strong style="font-size: 14px;">Tạo nhiều trận đấu thủ công</strong>
+                                <div class="match-type-toggle" id="batchTypeToggle" style="margin-left: auto;">
+                                    <button class="type-btn active" data-type="duo">2v2</button>
+                                    <button class="type-btn" data-type="solo">1v1</button>
+                                </div>
+                            </div>
+                            <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center;">
+                                <label style="font-size: 13px;">Mùa giải:</label>
+                                <select id="batchSeasonSelect" class="select-field" style="font-size: 12px; padding: 4px;"></select>
+                                <label style="font-size: 13px;">Ngày:</label>
+                                <input type="date" id="batchDateInput" class="input-field" style="font-size: 12px; padding: 4px;">
+                            </div>
+                            <div style="overflow-x: auto;">
+                                <table class="data-table" id="batchMatchesTable" style="width: 100%; font-size: 13px;">
+                                    <thead>
+                                        <tr>
+                                            <th style="width: 80px;">1v2</th>
+                                            <th style="width: 80px;">3v4</th>
+                                            <th style="width: 60px;">Tỷ số</th>
+                                            <th style="width: 60px;">Thắng</th>
+                                            <th style="width: 120px;">Loại</th>
+                                            <th style="width: 40px;"></th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="batchMatchesBody"></tbody>
+                                </table>
+                            </div>
+                            <div class="form-actions" style="margin-top: 12px;">
+                                <button type="button" class="btn btn-secondary" id="addBatchMatchBtn">
+                                    <span>+</span> Thêm trận
+                                </button>
+                                <button type="button" class="btn btn-primary" id="confirmBatchMatchesBtn">
+                                    <span>✓</span> Xác nhận tất cả
+                                </button>
+                                <button type="button" class="btn btn-ghost" id="cancelBatchMatchesBtn">
+                                    Hủy
+                                </button>
+                            </div>
+                        </div>
+                    </div>
                     </div>
                 </div>
                 
@@ -331,8 +439,8 @@
                         <p>Đăng nhập với quyền Editor hoặc Admin để tạo trận đấu mới.</p>
                     </div>
                 </div>
-                
-                <!-- Match History -->
+
+                <!-- Match History (inside matches tab, hidden on non-matches tabs) -->
                 <div class="card match-history-card">
                     <div class="card-header">
                         <h3 class="card-title">

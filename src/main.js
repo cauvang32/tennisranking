@@ -1892,9 +1892,13 @@ class TennisRankingSystem {
         
         // Update displays
         this.renderRankings()
-        this.renderMatchHistory()
+        // Only refresh match history if user is on the matches tab
+        const activeTabId = document.querySelector('.tab-content.active')?.id
+        if (activeTabId === 'matches-tab') {
+          this.renderMatchHistory()
+        }
         this.updateDateSelector()
-        
+
         this.showToast('Đã ghi nhận kết quả trận đấu', 'success')
       } else {
         this.showToast(data.error || 'Lỗi khi ghi nhận kết quả', 'error')
@@ -2427,6 +2431,38 @@ class TennisRankingSystem {
       const idx = parseInt(btn.dataset.batchRemove, 10)
       btn.addEventListener('click', () => this.removeBatchMatchRow(idx))
     })
+
+    // Wire up auto-winner on score input for each batch row
+    tbody.querySelectorAll('tr').forEach(row => {
+      const scoreInputs = ['team1Score', 'team2Score']
+      const team1ScoreInput = row.querySelector(`[data-field="team1Score"]`)
+      const team2ScoreInput = row.querySelector(`[data-field="team2Score"]`)
+      const winningTeamSelect = row.querySelector(`[data-field="winningTeam"]`)
+      const rowMatchIndex = parseInt(row.dataset.batchIndex, 10)
+
+      const updateBatchRowWinner = () => {
+        if (!winningTeamSelect) return
+        const team1Score = parseInt(team1ScoreInput?.value) || 0
+        const team2Score = parseInt(team2ScoreInput?.value) || 0
+
+        // Only auto-select if scores differ and at least one is > 0
+        if (team1Score !== team2Score && (team1Score > 0 || team2Score > 0)) {
+          const winningTeam = team1Score > team2Score ? 1 : 2
+          winningTeamSelect.value = winningTeam
+          this.batchMatches[rowMatchIndex].winningTeam = winningTeam
+        } else {
+          // Tied or both 0 — clear manual selection hint
+          winningTeamSelect.value = ''
+        }
+      }
+
+      scoreInputs.forEach(id => {
+        const input = row.querySelector(`[data-field="${id}"]`)
+        if (input) {
+          input.addEventListener('input', updateBatchRowWinner)
+        }
+      })
+    })
   }
 
   /** Add a new batch match row with default values (uses batchMatchType) */
@@ -2482,13 +2518,23 @@ class TennisRankingSystem {
       const player4Id = parseInt(row.querySelector('[data-field="player4Id"]')?.value)
       const team1Score = parseInt(row.querySelector('[data-field="team1Score"]')?.value) || 0
       const team2Score = parseInt(row.querySelector('[data-field="team2Score"]')?.value) || 0
-      const winningTeam = parseInt(row.querySelector('[data-field="winningTeam"]')?.value)
+      let winningTeam = parseInt(row.querySelector('[data-field="winningTeam"]')?.value)
 
       const isSolo = match.matchType === 'solo'
 
+      // If winner not manually selected, derive from scores (same as single match)
       if (winningTeam !== 1 && winningTeam !== 2) {
-        this.showToast(`Vui lòng chọn đội thắng cho trận ${index + 1}`, 'error')
-        return
+        if (team1Score > team2Score) {
+          winningTeam = 1
+        } else if (team2Score > team1Score) {
+          winningTeam = 2
+        } else {
+          // Tied scores — can't determine winner, require manual selection
+          this.showToast(`Vui lòng chọn đội thắng cho trận ${index + 1} (hòa — chưa xác định được người thắng)`, 'error')
+          return
+        }
+        // Update the batch match data so the dropdown reflects the derived value
+        this.batchMatches[index].winningTeam = winningTeam
       }
 
       if (isSolo) {
@@ -2530,7 +2576,11 @@ class TennisRankingSystem {
         await this.loadMatches()
         await this.loadPlayDates()
         this.renderRankings()
-        this.renderMatchHistory()
+        // Only refresh match history if user is on the matches tab
+        const activeTabId = document.querySelector('.tab-content.active')?.id
+        if (activeTabId === 'matches-tab') {
+          this.renderMatchHistory()
+        }
         this.updateDateSelector()
 
         this.hideBatchSection()
@@ -2786,7 +2836,11 @@ class TennisRankingSystem {
         await this.loadMatches()
         await this.loadPlayDates()
         this.renderRankings()
-        this.renderMatchHistory()
+        // Only refresh match history if user is on the matches tab
+        const activeTabId = document.querySelector('.tab-content.active')?.id
+        if (activeTabId === 'matches-tab') {
+          this.renderMatchHistory()
+        }
         this.updateDateSelector()
 
         // Clear the buffer and UI
@@ -3082,7 +3136,7 @@ class TennisRankingSystem {
   }
 
   async renderMatchHistory() {
-    // Match history is inside #matches-tab — only render when visible
+    // Guard: return BEFORE any API calls if matches tab is not active
     const matchesTab = document.getElementById('matches-tab')
     if (!matchesTab || !matchesTab.classList.contains('active')) return
 
@@ -4415,7 +4469,11 @@ class TennisRankingSystem {
         await this.loadMatches()
         await this.loadPlayDates()
         this.renderRankings()
-        this.renderMatchHistory()
+        // Only refresh match history if user is on the matches tab
+        const activeTabId = document.querySelector('.tab-content.active')?.id
+        if (activeTabId === 'matches-tab') {
+          this.renderMatchHistory()
+        }
         this.updateDateSelector()
         this.showToast('Đã xóa trận đấu thành công', 'success')
       } else {
@@ -4663,7 +4721,11 @@ class TennisRankingSystem {
           await this.loadMatches()
           await this.loadPlayDates()
           this.renderRankings()
-          this.renderMatchHistory()
+          // Only refresh match history if user is on the matches tab
+          const activeTabId = document.querySelector('.tab-content.active')?.id
+          if (activeTabId === 'matches-tab') {
+            this.renderMatchHistory()
+          }
           this.updateDateSelector()
           this.showToast('Đã cập nhật trận đấu thành công', 'success')
         } else {

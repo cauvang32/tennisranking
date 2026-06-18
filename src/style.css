@@ -854,6 +854,35 @@ textarea.input-field {
   color: var(--text);
 }
 
+/* Mode Toggle (Single Match / Batch Match) */
+.mode-toggle {
+  display: flex;
+  background: var(--surface-hover);
+  border-radius: var(--radius-full);
+  padding: 0.25rem;
+}
+
+.mode-btn {
+  padding: var(--space-sm) var(--space-md);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-full);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.mode-btn.active {
+  background: var(--primary);
+  color: var(--text-inverse);
+}
+
+.mode-btn:hover:not(.active) {
+  color: var(--text);
+}
+
 /* Teams Container */
 .teams-container {
   display: grid;

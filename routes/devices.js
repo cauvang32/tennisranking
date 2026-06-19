@@ -4,7 +4,7 @@ import { asyncHandler } from '../utils/async-handler.js'
 import config from '../config/env.js'
 
 /**
- * Device registration router for FCM push notifications. See backend.md §1.1 / §3.
+ * Device registration router for FCM push notifications.
  *
  * POST /api/devices/register — upsert an FCM token for the current user (or
  * guest). Auth is optional (checkAuth): a logged-in user's id is attached when

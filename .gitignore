@@ -34,3 +34,4 @@ backend.md
 docker-compose.yml
 firebase-service-account.json
 logs.txt
+.db-credentials

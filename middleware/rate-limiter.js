@@ -168,7 +168,7 @@ export const initLimiter = createProxyAwareRateLimiter({
 })
 
 // Device registration limiter: 60/hour per IP. FCM token rotations are bursty
-// (reinstall, token refresh, multi-account on one device) but bounded. See backend.md §3.4.
+// (reinstall, token refresh, multi-account on one device) but bounded.
 // essential: true — survives DISABLE_RATE_LIMITING so an attacker can't spam
 // devices table inserts when an operator toggles the global disable flag.
 export const deviceRegisterLimiter = createProxyAwareRateLimiter({

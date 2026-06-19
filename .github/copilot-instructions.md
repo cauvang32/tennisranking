@@ -287,10 +287,13 @@ npm run dev-full     # Both (uses concurrently)
 
 ### Migrations
 
-Apply in order (tracked in `.env` flags):
-1. Multi-season: `./apply-multi-season-migration.sh`
-2. Performance indexes: `./apply-performance-indexes.sh`
-3. Cache triggers: `./apply-cache-triggers-migration.sh`
+Apply in order via the unified script:
+```bash
+./setup.sh migrate              # Run all pending migrations
+./setup.sh migrate <name>       # Run a specific migration (e.g. devices-table, token-version)
+./setup.sh status               # Show which migrations are applied
+```
+Migration files live in `migrations/` (SQL or shell scripts). Each is idempotent.
 
 Check PostgreSQL logs: `docker logs tennis-postgres`
 
@@ -317,7 +320,7 @@ See [.env](../.env) for all options. Key settings:
 
 1. Create migration SQL in [migrations/](../migrations)
 2. Update [database-postgresql.js](../database-postgresql.js) method
-3. Create shell script (e.g., `apply-*.sh`) to apply migration
+3. Add it to the migration registry in [setup.sh](../setup.sh) and run `./setup.sh migrate <name>`
 4. Test on local Docker PostgreSQL first
 
 ### Debugging Cache Issues

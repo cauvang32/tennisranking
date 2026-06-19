@@ -283,7 +283,7 @@ class TennisDatabasePostgreSQL {
       `)
 
       // FCM device registry — self-bootstrapped so a fresh DB doesn't need the
-      // separate migrations/add-devices-table.sh to be run first. See backend.md §2.
+      // separate migrations/add-devices-table.sh to be run first.
       await client.query(`
         CREATE TABLE IF NOT EXISTS devices (
           id          BIGSERIAL PRIMARY KEY,
@@ -1369,7 +1369,7 @@ class TennisDatabasePostgreSQL {
   // ── FCM device registry ─────────────────────────────────────────────────
   // Upsert keyed on the unique token: re-registering the same token (rotation,
   // reinstall, or a different user signing in on the same device) updates the
-  // existing row instead of inserting a duplicate. See backend.md §1.1.
+  // existing row instead of inserting a duplicate.
   async upsertDevice(userId, token, platform, appVersion = null, registeredIp = null) {
     const result = await this.query(`
       INSERT INTO devices (user_id, token, platform, app_version, registered_ip)
@@ -1462,7 +1462,7 @@ class TennisDatabasePostgreSQL {
   }
 
   // Delete tokens not refreshed within `days` days — the client's onTokenRefresh
-  // would have bumped updated_at otherwise, so these are stale. See backend.md §7.3.
+  // would have bumped updated_at otherwise, so these are stale.
   async deleteStaleDevices(days = 60) {
     // Defense in depth: String(NaN) → 'NaN days' (PG syntax error),
     // String(-1) → '-1 days' (NOW() - (-1 days) is the FUTURE → wipes the table).

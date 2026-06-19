@@ -144,7 +144,7 @@ try {
   pushSender = { enabled: false, sendMatch: async () => {}, sendSeason: async () => {}, close: async () => {} }
 }
 
-// Daily cleanup of FCM tokens not refreshed in 60 days (backend.md §7.3).
+// Daily cleanup of FCM tokens not refreshed in 60 days.
 // Run once at startup so freshly-stale tokens from prior deploys are reaped
 // immediately (not after a 24h wait), then schedule the daily cadence.
 // The null-pool guard makes this safe even when DB init failed at boot.

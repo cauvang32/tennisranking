@@ -151,7 +151,7 @@ export const createMatchRouter = ({
   // from the request body + a single player-name lookup (run in parallel with
   // the cache invalidation), so we avoid the extra 5-table JOIN that a
   // post-hoc getMatchById would have required. Never blocks or fails the
-  // response. backend.md §5 — create only, not PUT/PATCH.
+  // response. Create-only; no PUT/PATCH variant.
   const fireMatchPush = (matchId, body, matchType) => {
     if (!pushSender) return
     Promise.resolve()

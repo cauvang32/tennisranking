@@ -83,7 +83,7 @@ Wired in `server.js` via `app.use('/api/players', createPlayerRouter(routeCtx))`
 ### Auth & security
 
 - JWT (HS256, 15m access / 7d refresh) encrypted with **AES-256-GCM** in httpOnly cookies (`lib/jwt-encryption.js`).
-- CSRF: HMAC-derived secret per session-id cookie + double-submit token (`middleware/csrf.js`). Required on all non-GET requests via `X-CSRF-Token` header.
+- CSRF: HMAC-derived secret from user ID + double-submit token (`middleware/csrf.js`). Required on all non-GET requests via `X-CSRF-Token` header.
 - bcrypt with 14 rounds (`BCRYPT_ROUNDS`).
 - Helmet with strict CSP, HSTS, Permissions-Policy, frameguard deny.
 - Redis-backed rate limiting with dynamic scaling when CPU>80% or RAM>85% (`middleware/rate-limiter.js`).
@@ -143,4 +143,4 @@ PM2/cluster is safe because: rate limits use Redis (`rate-limit-redis-tennis:<na
 - **`/api/init` is never cached** — it carries per-user auth state. Other auth routes skip the ETag middleware.
 - **SSE** — request timeout middleware explicitly skips `/api/events`; set `MAX_SSE_CLIENTS` (default 1000).
 - **Trust proxy** — auto-on in production. Off in dev. Affects `req.ip` and rate-limit keying.
-- **CSRF secret derivation** — `HMAC-SHA256(CSRF_SECRET, sessionId)`. The session-id cookie is the only thing stored; the secret is never persisted.
+- **CSRF secret derivation** — `HMAC-SHA256(CSRF_SECRET, userId)`. Secret is derived deterministically from the user ID (or `'anonymous'` for guests), with no cookie session ID required.

@@ -1952,7 +1952,7 @@ body.match-mode-solo .duo-only {
 
 .badge-notif-off {
     background: rgba(239, 68, 68, 0.15);
-    color: var(--danger-color);
+    color: var(--danger);
 }
 
 /* =========================================
@@ -1960,14 +1960,14 @@ body.match-mode-solo .duo-only {
    ========================================= */
 
 .fcm-dashboard-card {
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border);
     box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-    background: var(--card-bg);
+    background: var(--surface);
 }
 
 .fcm-dashboard-card .card-header {
     background: rgba(255, 255, 255, 0.02);
-    border-bottom: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border);
     padding: 1.25rem 1.5rem;
 }
 
@@ -1985,8 +1985,8 @@ body.match-mode-solo .duo-only {
 }
 
 .metric-box {
-    background: var(--bg-color);
-    border: 1px solid var(--border-color);
+    background: var(--bg);
+    border: 1px solid var(--border);
     border-radius: 12px;
     padding: 1.5rem;
     display: flex;
@@ -2005,7 +2005,7 @@ body.match-mode-solo .duo-only {
     font-size: 2.5rem;
     font-weight: 700;
     margin-bottom: 0.5rem;
-    color: var(--text-color);
+    color: var(--text);
     line-height: 1;
 }
 
@@ -2018,7 +2018,7 @@ body.match-mode-solo .duo-only {
 }
 
 .fcm-custom-broadcast {
-    border-top: 1px dashed var(--border-color);
+    border-top: 1px dashed var(--border);
     padding-top: 1.5rem;
 }
 

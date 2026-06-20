@@ -1,5 +1,11 @@
 import './style.css'
 
+// ── Module imports (extracted from main.js to reduce file size) ────────────────
+import { connectSSE, closeSSE } from './modules/sse-manager.js'
+import { createCacheManager } from './modules/cache-manager.js'
+import { getCSRFToken as moduleGetCSRFToken, makeAuthenticatedRequest as moduleMakeAuthenticatedRequest, resetCSRFToken } from './modules/csrf-handler.js'
+import { detectServerMode as moduleDetectServerMode, checkAuthStatus as moduleCheckAuthStatus, login as moduleLogin, logout as moduleLogout, getApiBaseUrl as moduleGetApiBaseUrl, updateUIForAuthStatus as moduleUpdateUIForAuthStatus } from './modules/auth-manager.js'
+
 // Tennis Ranking System with PostgreSQL Database
 class TennisRankingSystem {
   constructor() {
@@ -12,7 +18,8 @@ class TennisRankingSystem {
     this.selectedSeason = null
     this.autoSaveEnabled = true
     this.serverMode = true
-    this.apiBase = this.getApiBaseUrl()
+    // Use extracted module for API base detection
+    this.apiBase = moduleGetApiBaseUrl()
     this.isAuthenticated = false
     this.user = null
     this.csrfToken = null // CSRF token for secure requests
@@ -25,31 +32,20 @@ class TennisRankingSystem {
     this.batchMatchType = 'duo' // default match type for batch mode (2v2)
     this.currentViewMode = 'single' // 'single' or 'batch' — which mode is active
     this.eventHandlers = [] // Track event listeners for cleanup
-    
-    // Smart client-side cache with type-specific TTLs
-    this.cache = {
-      rankings: new Map(),   // Key: 'daily:date' | 'season:id' | 'lifetime'
-      matches: new Map(),    // Key: 'all' | 'date:date' | 'season:id'
-      players: null,
-      seasons: null,
-      playDates: null,
-      lastFetch: new Map(),  // Track when each cache entry was fetched
-      serverVersion: null    // Server data version for cache invalidation
-    }
-    
-    // Different TTLs for different data types (in ms)
-    this.CACHE_TTL = {
-      rankings: 2 * 60 * 1000,      // 2 min - changes when matches recorded
-      matches: 1 * 60 * 1000,       // 1 min - changes frequently
-      players: 10 * 60 * 1000,      // 10 min - rarely changes
-      seasons: 10 * 60 * 1000,      // 10 min - rarely changes
-      playDates: 5 * 60 * 1000,     // 5 min - changes with new matches
-      versionCheck: 15 * 1000        // 15s - check server version (fast fallback when SSE unavailable)
-    }
-    
+
+    // Use extracted module for cache management
+    const cacheManager = createCacheManager()
+    this.cache = cacheManager.cache
+    this.CACHE_TTL = cacheManager.CACHE_TTL
+    this.isCacheValid = cacheManager.isCacheValid
+    this.setCache = cacheManager.setCache
+    this.getCache = cacheManager.getCache
+    this.invalidateCache = cacheManager.invalidateCache
+    this.clearCache = cacheManager.clearCache
+
     // Start version polling for cache coherence
     this.startVersionPolling()
-    
+
     this.init()
   }
 
@@ -63,51 +59,16 @@ class TennisRankingSystem {
   connectSSE() {
     if (!this.serverMode) return
 
-    // Build SSE URL from API base (strip /api suffix to get /api/events)
-    const sseUrl = `${this.apiBase}/events`
-
-    try {
-      this.eventSource = new EventSource(sseUrl, { withCredentials: true })
-
-      this.eventSource.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data)
-          const newVersion = data.version
-
-          if (this.cache.serverVersion !== null && this.cache.serverVersion !== newVersion) {
-            console.log(`🔄 SSE: Server data changed (${this.cache.serverVersion} → ${newVersion}), clearing cache`)
-            this.invalidateCache()
-
-            // Reload current view data after invalidation
-            this.reloadCurrentView()
-          }
-
-          this.cache.serverVersion = newVersion
-        } catch (parseError) {
-          console.warn('⚠️ SSE: Failed to parse event data')
-        }
-      }
-
-      this.eventSource.onopen = () => {
-        console.log('🟢 SSE: Connected for real-time updates')
-        // SSE connected — stop polling fallback if active
-        this.stopPollingFallback()
-      }
-
-      this.eventSource.onerror = () => {
-        console.warn('⚠️ SSE: Connection error — falling back to polling')
-        // EventSource will auto-reconnect, but start polling as fallback
-        this.startPollingFallback()
-      }
-    } catch (error) {
-      console.warn('⚠️ SSE: Not supported — using polling fallback')
-      this.startPollingFallback()
-    }
+    // Use extracted module
+    connectSSE(this.apiBase, this.cache,
+      (newVersion) => { this.cache.serverVersion = newVersion; this.invalidateCache(); this.reloadCurrentView() },
+      () => this.reloadCurrentView()
+    )
   }
 
   // Polling fallback when SSE is unavailable
   startPollingFallback() {
-    if (this.versionPollInterval) return // Already polling
+    if (this.versionPollInterval) return
 
     this.checkServerVersion()
     this.versionPollInterval = setInterval(() => {
@@ -125,11 +86,7 @@ class TennisRankingSystem {
 
   // Stop all version sync (SSE + polling)
   stopVersionPolling() {
-    if (this.eventSource) {
-      this.eventSource.close()
-      this.eventSource = null
-    }
-    this.stopPollingFallback()
+    closeSSE()
   }
 
   // Reload current view data after cache invalidation (called by SSE handler)
@@ -451,57 +408,13 @@ class TennisRankingSystem {
   }
 
   async detectServerMode() {
-    try {
-      const response = await fetch(`${this.apiBase}/players`, {
-        credentials: 'include',
-        headers: {
-          'Accept': 'application/json'
-        }
-      })
-      
-      if (response.ok) {
-        this.serverMode = true
-        console.log('✅ Server mode detected - using server database')
-        console.log('✅ API base URL confirmed:', this.apiBase)
-        return
-      } else {
-        throw new Error(`Server responded with ${response.status}`)
-      }
-    } catch (error) {
-      console.log('⚠️ Primary API URL failed:', this.apiBase)
-      console.log('🔄 Trying fallback API URL...')
-      
-      // Try fallback URL - if we tried subpath, try root, and vice versa
-      let fallbackApiBase
-      const currentOrigin = window.location.origin
-      
-      if (this.apiBase.includes('/tennis/api')) {
-        // We tried tennis subpath, try root
-        fallbackApiBase = `${currentOrigin}/api`
-      } else {
-        // We tried root, try tennis subpath
-        fallbackApiBase = `${currentOrigin}/tennis/api`
-      }
-      
-      try {
-        console.log('🔄 Testing fallback:', fallbackApiBase)
-        const fallbackResponse = await fetch(`${fallbackApiBase}/players`, {
-          credentials: 'include',
-          headers: {
-            'Accept': 'application/json'
-          }
-        })
-        
-        if (fallbackResponse.ok) {
-          this.apiBase = fallbackApiBase
-          this.serverMode = true
-          console.log('✅ Fallback API URL works - updated API base:', this.apiBase)
-          return
-        }
-      } catch (fallbackError) {
-        console.log('❌ Fallback API URL also failed')
-      }
-      
+    const result = await moduleDetectServerMode(this.apiBase)
+    this.serverMode = result.serverMode
+    if (result.serverMode) {
+      this.apiBase = result.apiBase
+      console.log('✅ Server mode detected - using server database')
+      console.log('✅ API base URL confirmed:', this.apiBase)
+    } else {
       console.log('⚠️ No server available, falling back to local storage mode')
       this.serverMode = false
       this.apiBase = null
@@ -510,55 +423,25 @@ class TennisRankingSystem {
 
   async checkAuthStatus() {
     if (!this.serverMode) return
-    
-    try {
-      const response = await fetch(`${this.apiBase}/auth/status`, {
-        method: 'GET',
-        credentials: 'include' // Use httpOnly cookies instead of Authorization header
-      })
-      
-      if (response.ok) {
-        const data = await response.json()
-        this.isAuthenticated = data.authenticated
-        this.user = data.user
-        this.csrfToken = data.csrfToken // Get CSRF token for authenticated users
-        this.updateScreenshotSectionVisibility()
-      }
-    } catch (error) {
-      console.log('Auth status check failed:', error)
-      this.isAuthenticated = false
-      this.csrfToken = null
-      this.updateScreenshotSectionVisibility()
-    }
+
+    const result = await moduleCheckAuthStatus(this.apiBase)
+    this.isAuthenticated = result.isAuthenticated
+    this.user = result.user
+    this.csrfToken = result.csrfToken
+    this.updateScreenshotSectionVisibility()
   }
 
   async login(username, password) {
-    try {
-      const response = await fetch(`${this.apiBase}/auth/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        credentials: 'include',
-        body: JSON.stringify({ username, password })
-      })
-
-      const data = await response.json()
-      
-      if (response.ok) {
-        this.isAuthenticated = true
-        this.user = data.user
-        this.csrfToken = data.csrfToken // Store CSRF token from login response
-        this.updateUIForAuthStatus()
-        this.updateScreenshotSectionVisibility()
-        await this.loadInitialData() // Reload data after login
-        return { success: true, message: data.message }
-      } else {
-        return { success: false, message: data.error }
-      }
-    } catch (error) {
-      return { success: false, message: 'Lỗi kết nối server' }
+    const result = await moduleLogin(this.apiBase, username, password)
+    if (result.success) {
+      this.isAuthenticated = true
+      this.user = result.user
+      this.csrfToken = result.csrfToken
+      this.updateUIForAuthStatus()
+      this.updateScreenshotSectionVisibility()
+      await this.loadInitialData()
     }
+    return result
   }
 
   /** Show/hide the screenshot upload section based on user role */
@@ -571,24 +454,8 @@ class TennisRankingSystem {
   }
 
   async logout() {
-    try {
-      // Include CSRF token if authenticated
-      const headers = {
-        'Content-Type': 'application/json'
-      }
-      if (this.csrfToken) {
-        headers['X-CSRF-Token'] = this.csrfToken
-      }
-      
-      await fetch(`${this.apiBase}/auth/logout`, {
-        method: 'POST',
-        headers,
-        credentials: 'include'
-      })
-    } catch (error) {
-      console.log('Logout request failed:', error)
-    }
-    
+    await moduleLogout(this.apiBase, this.csrfToken)
+    resetCSRFToken()
     this.isAuthenticated = false
     this.user = null
     this.csrfToken = null
@@ -667,73 +534,18 @@ class TennisRankingSystem {
     this.renderSeasons()
   }
 
-  // Helper method to get CSRF token
+  // Helper method to get CSRF token (uses extracted module if available)
+  // Helper method to get CSRF token (uses extracted module)
   async getCSRFToken() {
-    if (this.csrfToken) {
-      return this.csrfToken
-    }
-    
-    try {
-      const response = await fetch(`${this.apiBase}/csrf-token`, {
-        credentials: 'include'
-      })
-      
-      if (response.ok) {
-        const data = await response.json()
-        this.csrfToken = data.csrfToken
-        return this.csrfToken
-      }
-    } catch (error) {
-      console.error('Failed to get CSRF token:', error)
-    }
-    
-    return null
+    if (this.csrfToken) return this.csrfToken
+    const token = await moduleGetCSRFToken(this.apiBase)
+    if (token) this.csrfToken = token
+    return token
   }
 
-  // Helper method to make authenticated requests with CSRF protection
+  // Helper method to make authenticated requests with CSRF protection (uses extracted module)
   async makeAuthenticatedRequest(url, options = {}) {
-    if (!this.isAuthenticated) {
-      throw new Error('Authentication required')
-    }
-    
-    // SSRF Protection: Validate URL is targeting our own API only
-    const allowedOrigin = window.location.origin
-    const parsedUrl = new URL(url, allowedOrigin)
-    if (parsedUrl.origin !== allowedOrigin) {
-      throw new Error('Invalid request URL: external URLs not allowed')
-    }
-    if (!parsedUrl.pathname.includes('/api/')) {
-      throw new Error('Invalid request URL: must target API endpoint')
-    }
-    
-    const csrfToken = await this.getCSRFToken()
-    if (!csrfToken) {
-      throw new Error('CSRF token required')
-    }
-    
-    const headers = {
-      'Content-Type': 'application/json',
-      'X-CSRF-Token': csrfToken,
-      ...options.headers
-    }
-    
-    // SSRF Protection: Validate URL is relative or same-origin
-    try {
-      const parsedUrl = new URL(url, window.location.origin)
-      // Only allow same-origin or relative URLs
-      if (parsedUrl.origin !== window.location.origin) {
-        throw new Error('Cross-origin requests not allowed')
-      }
-    } catch (error) {
-      // If URL parsing fails or cross-origin, reject
-      return Promise.reject(new Error('Invalid URL: ' + error.message))
-    }
-    
-    return fetch(url, {
-      ...options,
-      headers,
-      credentials: 'include'
-    })
+    return moduleMakeAuthenticatedRequest(this.apiBase, url, options)
   }
 
   updateAuthHeader() {
@@ -5035,6 +4847,9 @@ class TennisRankingSystem {
         const statusClass = account.is_active ? 'status-active' : 'status-inactive'
         const lastLogin = formatDate(account.last_login) || 'Chưa đăng nhập'
         const isSelf = this.user && this.user.username === account.username
+        const notifMatch = account.receive_match_notifications !== false ? '🎯' : ''
+        const notifSeason = account.receive_season_notifications !== false ? '🏆' : ''
+        const notifStatus = (notifMatch || notifSeason) ? `${notifMatch} ${notifSeason}`.trim() : '<span class="badge badge-notif-off">Tắt</span>'
         
         return `
           <tr>
@@ -5044,6 +4859,7 @@ class TennisRankingSystem {
             <td>${this.escapeHtml(account.email) || '-'}</td>
             <td><span class="badge ${roleClass}">${this.escapeHtml(account.role || 'viewer').toUpperCase()}</span></td>
             <td><span class="${statusClass}">${account.is_active ? '✅ Hoạt động' : '❌ Vô hiệu'}</span></td>
+            <td>${notifStatus}</td>
             <td>${this.escapeHtml(lastLogin)}</td>
             <td>
               <div class="action-btns">

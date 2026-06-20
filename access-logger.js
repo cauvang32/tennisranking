@@ -205,7 +205,7 @@ export function createAccessLogEntry(req, res, responseTime, user = null) {
     } : null,
     
     // Session information
-    sessionId: req.cookies?.csrfSessionId || 'none',
+    sessionId: req.user?.id?.toString() || 'anonymous',
     isAuthenticated: !!user,
     
     // Browser and device information

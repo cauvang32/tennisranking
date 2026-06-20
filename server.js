@@ -23,8 +23,8 @@ import { validationResult } from 'express-validator'
 // ── Internal modules ────────────────────────────────────────────────────────
 import config from './config/env.js'
 import { withCookieDefaults, clearCookieAllPaths } from './config/cookie.js'
-import { encryptJWT, decryptJWT, generateToken, generateRefreshToken } from './lib/jwt-encryption.js'
-import { globalCSRFProtection, deriveCSRFSecret, ensureCSRFCookie, tokens } from './middleware/csrf.js'
+import { generateToken, generateRefreshToken, readToken } from './lib/jwt-encryption.js'
+import { globalCSRFProtection, deriveCSRFSecretFromUser, tokens } from './middleware/csrf.js'
 import { createCompressionMiddleware } from './middleware/compression.js'
 import {
   applyGlobalRateLimiting, logRateLimitConfig, disconnectRateLimitRedis,
@@ -192,10 +192,9 @@ function sanitizeResponse(data) {
 // ── Build auth middleware with security helpers ─────────────────────────────
 
 const securityForAuth = {
-  decryptJWT,
   clearCookieAllPaths,
-  deriveCSRFSecret,
-  ensureCSRFCookie
+  readToken,
+  deriveCSRFSecretFromUser
 }
 const cookiePaths = ['/']
 const { authenticateToken, checkAuth, requireAdmin, requireEditor } = buildAuthMiddleware({
@@ -447,8 +446,8 @@ const routeCtx = {
   handleValidationErrors, sanitizeResponse, formatSecureTimestamp,
   // Auth helpers for inline routes
   hashedAdminPassword, hashedEditorPassword,
-  encryptJWT, decryptJWT, generateToken, generateRefreshToken,
-  withCookieDefaults, clearCookieAllPaths, deriveCSRFSecret, ensureCSRFCookie, tokens
+  generateToken, generateRefreshToken, readToken,
+  withCookieDefaults, clearCookieAllPaths, deriveCSRFSecretFromUser, tokens
 }
 
 // ── Mount routes ────────────────────────────────────────────────────────────
@@ -512,11 +511,10 @@ app.post('/api/auth/login',
       const token = generateToken(user)
       const refreshToken = generateRefreshToken(user)
 
-      res.cookie('authToken', encryptJWT(token), withCookieDefaults({ httpOnly: true, maxAge: 15 * 60 * 1000 }))
-      res.cookie('refreshToken', encryptJWT(refreshToken), withCookieDefaults({ httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 }))
+      res.cookie('authToken', token, withCookieDefaults({ httpOnly: true, maxAge: 15 * 60 * 1000 }))
+      res.cookie('refreshToken', refreshToken, withCookieDefaults({ httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 }))
 
-      const sessionId = ensureCSRFCookie(req, res)
-      const csrfToken = tokens.create(deriveCSRFSecret(sessionId))
+      const csrfToken = tokens.create(deriveCSRFSecretFromUser(req.user || { id: 'anonymous' }))
 
       const isAPIClient = !req.headers.accept?.includes('text/html') && req.headers.accept?.includes('application/json')
       const response = {
@@ -551,7 +549,6 @@ app.post('/api/auth/logout', checkAuth, async (req, res) => {
     res.setHeader('Clear-Site-Data', '"cookies"')
     clearCookieAllPaths(res, 'authToken')
     clearCookieAllPaths(res, 'refreshToken')
-    clearCookieAllPaths(res, 'csrfSessionId')
     return res.json({ success: true, message: 'Logged out successfully' })
   } catch (error) {
     console.error('Logout error:', error)
@@ -575,7 +572,7 @@ app.post('/api/auth/refresh', refreshLimiter, async (req, res) => {
     if (!enc) return res.status(401).json({ error: 'No refresh token provided' })
     let decoded
     try {
-      decoded = jwt.verify(decryptJWT(enc), config.jwtSecret, { algorithms: [config.jwtAlgorithm] })
+      decoded = jwt.verify(readToken(enc) || enc, config.jwtSecret, { algorithms: [config.jwtAlgorithm] })
       if (decoded.type !== 'refresh') return res.status(401).json({ error: 'Invalid token type' })
     } catch { return res.status(401).json({ error: 'Invalid refresh token' }) }
 
@@ -595,9 +592,8 @@ app.post('/api/auth/refresh', refreshLimiter, async (req, res) => {
     }
 
     const user = { id: decoded.id, username: decoded.username, role: decoded.role, tokenVersion: decoded.tokenVersion }
-    res.cookie('authToken', encryptJWT(generateToken(user)), withCookieDefaults({ httpOnly: true, maxAge: 15 * 60 * 1000 }))
-    const sessionId = req.cookies?.csrfSessionId || ensureCSRFCookie(req, res)
-    res.json({ success: true, csrfToken: tokens.create(deriveCSRFSecret(sessionId)), user })
+    res.cookie('authToken', generateToken(user), withCookieDefaults({ httpOnly: true, maxAge: 15 * 60 * 1000 }))
+    res.json({ success: true, csrfToken: tokens.create(deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })), user })
   } catch (error) {
     console.error('Token refresh error:', error)
     res.status(500).json({ error: 'Token refresh failed' })

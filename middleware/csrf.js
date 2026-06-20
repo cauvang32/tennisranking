@@ -1,52 +1,31 @@
 import crypto from 'crypto'
 import csrf from 'csrf'
 import config from '../config/env.js'
-import { withCookieDefaults } from '../config/cookie.js'
 
 /**
  * CSRF protection middleware.
  *
- * Strategy:
- * 1. A random csrfSessionId is stored in an httpOnly cookie (not the secret itself).
- * 2. The real CSRF secret is derived from csrfSessionId + server CSRF_SECRET using HMAC.
- * 3. Tokens are verified against this derived secret on every state-changing request.
+ * Strategy: The CSRF secret is derived from the authenticated user's ID
+ * (or 'anonymous' for unauthenticated requests) using HMAC-SHA256.
+ * No csrfSessionId cookie is needed. The frontend reads the derived
+ * CSRF token from API responses (/api/csrf-token, /api/auth/login, /api/auth/status).
  */
 
 const tokens = new csrf()
 
 export { tokens }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-export function generateSessionId() {
-  return crypto.randomBytes(32).toString('base64url')
-}
-
-export function deriveCSRFSecret(sessionId) {
-  if (!sessionId) {
-    throw new Error('Session ID is required for CSRF secret derivation')
-  }
-  return crypto.createHmac('sha256', config.csrfSecret)
-    .update(sessionId)
-    .digest('base64')
-}
-
 /**
- * Ensure a csrfSessionId cookie exists on the response.
- * Returns the session ID (existing or newly created).
+ * Derive a CSRF secret from a user object.
+ * Same user ID always produces the same secret (deterministic).
+ * @param {object} user - User object with id property, or null/undefined
+ * @returns {string} Base64-encoded HMAC secret
  */
-export function ensureCSRFCookie(req, res) {
-  let sessionId = req.cookies.csrfSessionId
-  if (!sessionId) {
-    sessionId = generateSessionId()
-    if (!res.headersSent) {
-      res.cookie('csrfSessionId', sessionId, withCookieDefaults({
-        httpOnly: true,
-        maxAge: 24 * 60 * 60 * 1000
-      }))
-    }
-  }
-  return sessionId
+export function deriveCSRFSecretFromUser(user) {
+  const userId = user?.id ?? 'anonymous'
+  return crypto.createHmac('sha256', config.csrfSecret)
+    .update(userId.toString())
+    .digest('base64')
 }
 
 // ── Route helpers ───────────────────────────────────────────────────────────
@@ -81,26 +60,13 @@ export const globalCSRFProtection = (req, res, next) => {
   // Skip CSRF for non-authenticated users on logout
   if (matchesApiRoute(req, '/api/auth/logout') && !req.cookies.authToken) return next()
 
-  // Skip CSRF for unauthenticated device registration. A first-launch mobile
-  // client has no session, no csrfSessionId cookie, and no X-CSRF-Token — the
-  // global CSRF middleware would 403 the first FCM-registration call and push
-  // would never be wired up. Logged-in users still pass CSRF normally
-  // (they have a csrfSessionId from /api/csrf-token).
+  // Skip CSRF for unauthenticated device registration
   if (matchesApiRoute(req, '/api/devices/register') && !req.cookies.authToken) return next()
 
   // Apply CSRF validation for all other state-changing operations
   const token = req.get('X-CSRF-Token') || req.body._csrf
 
-  let sessionId = req.cookies.csrfSessionId
-  if (!sessionId) {
-    sessionId = generateSessionId()
-    res.cookie('csrfSessionId', sessionId, withCookieDefaults({
-      httpOnly: true,
-      maxAge: 24 * 60 * 60 * 1000
-    }))
-  }
-
-  const secret = deriveCSRFSecret(sessionId)
+  const secret = deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })
 
   if (!token || !tokens.verify(secret, token)) {
     return res.status(403).json({

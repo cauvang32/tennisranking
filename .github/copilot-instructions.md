@@ -120,16 +120,17 @@ The `timingSafeCompare` function uses `crypto.timingSafeEqual` with length norma
 
 ### CSRF Protection Flow
 
-1. **Session ID** stored in `csrfSessionId` httpOnly cookie (not the secret itself)
-2. **CSRF secret** derived via HMAC: `HMAC-SHA256(CSRF_SECRET, sessionId)`
+1. **User ID** derived secret: CSRF secret is derived from the user's ID (or `'anonymous'` for guests) using HMAC-SHA256. No cookie is needed.
+2. **CSRF secret** derived via HMAC: `HMAC-SHA256(CSRF_SECRET, userId)`
 3. **Token** generated from secret using `csrf` library
 4. **Validation**: All non-GET requests must include `X-CSRF-Token` header
 
 ```javascript
 // Secret derivation (never stored in cleartext)
-const deriveCSRFSecret = (sessionId) => {
+const deriveCSRFSecretFromUser = (user) => {
+  const userId = user?.id ?? 'anonymous'
   return crypto.createHmac('sha256', CSRF_SECRET)
-    .update(sessionId)
+    .update(userId.toString())
     .digest('base64')
 }
 ```

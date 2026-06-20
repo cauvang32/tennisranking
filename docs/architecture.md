@@ -122,7 +122,7 @@ sequenceDiagram
     S->>S: bcrypt.compare(password, hash)
     S->>S: Generate JWT (HS256)
     S->>S: Encrypt JWT (AES-256-GCM)
-    S-->>C: Set httpOnly cookies (authToken, refreshToken, csrfSessionId)
+    S-->>C: Set httpOnly cookies (authToken, refreshToken)
     Note over C,S: All subsequent requests include cookies automatically
 
     C->>S: GET /api/rankings (with cookie)

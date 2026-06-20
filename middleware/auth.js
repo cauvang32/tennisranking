@@ -7,7 +7,7 @@ export const buildAuthMiddleware = ({
   db,
   roles = ['admin', 'editor']
 }) => {
-  const { decryptJWT, clearCookieAllPaths, deriveCSRFSecret, ensureCSRFCookie } = security
+  const { clearCookieAllPaths, readToken, deriveCSRFSecretFromUser } = security
   const { jwtSecret, jwtAlgorithm } = config
 
   const authenticateToken = async (req, res, next) => {
@@ -18,11 +18,9 @@ export const buildAuthMiddleware = ({
     }
 
     if (req.cookies.authToken && token === req.cookies.authToken) {
-      token = decryptJWT(token)
-      if (!token) {
-        clearCookieAllPaths(res, 'authToken')
-        return res.status(401).json({ error: 'Invalid encrypted token' })
-      }
+      const raw = readToken(token)
+      if (raw) token = raw
+      // If readToken returns null, token is already raw — proceed with jwt.verify below
     }
 
     try {
@@ -66,15 +64,9 @@ export const buildAuthMiddleware = ({
 
     if (token) {
       if (req.cookies.authToken && token === req.cookies.authToken) {
-        token = decryptJWT(token)
-        if (!token) {
-          if (!res.headersSent) {
-            clearCookieAllPaths(res, 'authToken')
-          }
-          req.isAuthenticated = false
-          req.csrfSecret = deriveCSRFSecret(ensureCSRFCookie(req, res))
-          return next()
-        }
+        const raw = readToken(token)
+        if (raw) token = raw
+        // If readToken returns null, token is already raw — proceed with jwt.verify below
       }
 
       try {
@@ -83,7 +75,7 @@ export const buildAuthMiddleware = ({
         // Reject refresh tokens used as access tokens (same as authenticateToken)
         if (user.type && user.type !== 'access') {
           req.isAuthenticated = false
-          req.csrfSecret = deriveCSRFSecret(ensureCSRFCookie(req, res))
+          req.csrfSecret = deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })
           return next()
         }
 
@@ -97,7 +89,7 @@ export const buildAuthMiddleware = ({
               clearCookieAllPaths(res, 'refreshToken')
             }
             req.isAuthenticated = false
-            req.csrfSecret = deriveCSRFSecret(ensureCSRFCookie(req, res))
+            req.csrfSecret = deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })
             return next()
           }
         }
@@ -113,8 +105,7 @@ export const buildAuthMiddleware = ({
 
     req.isAuthenticated = req.isAuthenticated || false
 
-    const sessionId = ensureCSRFCookie(req, res)
-    req.csrfSecret = deriveCSRFSecret(sessionId)
+    req.csrfSecret = deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })
     next()
   }
 

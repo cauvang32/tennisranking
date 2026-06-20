@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import config from '../config/env.js'
-import { deriveCSRFSecret, ensureCSRFCookie, tokens } from '../middleware/csrf.js'
+import { deriveCSRFSecretFromUser, tokens } from '../middleware/csrf.js'
 import { getRealClientIP } from '../access-logger.js'
 
 /**
@@ -23,15 +23,13 @@ export const createSystemRouter = ({
 
   // ── CSRF token endpoint ───────────────────────────────────────────────────
   router.get('/api/csrf-token', (req, res) => {
-    const sessionId = ensureCSRFCookie(req, res)
-    const csrfSecret = deriveCSRFSecret(sessionId)
+    const csrfSecret = deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })
     const csrfToken = tokens.create(csrfSecret)
     res.json({ csrfToken })
   })
 
   router.post('/api/csrf-token', (req, res) => {
-    const sessionId = ensureCSRFCookie(req, res)
-    const csrfSecret = deriveCSRFSecret(sessionId)
+    const csrfSecret = deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })
     const csrfToken = tokens.create(csrfSecret)
     res.json({ csrfToken })
   })
@@ -100,8 +98,7 @@ export const createSystemRouter = ({
       }
 
       // CSP-safe: set CSRF token for all sessions
-      const sessionId = ensureCSRFCookie(req, res)
-      initData.csrfToken = tokens.create(deriveCSRFSecret(sessionId))
+      initData.csrfToken = tokens.create(deriveCSRFSecretFromUser(req.user || { id: 'anonymous' }))
 
       const hitCount = [rankingsHit, playersHit, seasonsHit, activeSeasonsHit, playDatesHit, activeSeasonHit].filter(Boolean).length
       res.set('Redis-Cache', `${hitCount}/6`)

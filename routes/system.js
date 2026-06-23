@@ -1,3 +1,4 @@
+import express from 'express'
 import { Router } from 'express'
 import config from '../config/env.js'
 import { deriveCSRFSecretFromUser, tokens } from '../middleware/csrf.js'
@@ -110,28 +111,50 @@ export const createSystemRouter = ({
   })
 
   // ── SSE — Server-Sent Events for real-time updates ────────────────────────
-  // Open to all users (authenticated or not) — only broadcasts version numbers
+  // Per-IP connection limits prevent a single client from opening all slots.
+  // Anonymous connections are allowed — the data version broadcast is public.
+  const maxSsePerIp = Math.max(10, Math.floor(config.maxSseClients / 50)) // ~10 per IP, max 1000 total
+  const ipConnections = new Map() // IP -> Set of responses
+
+  // Periodic cleanup of stale IP entries (every 5 minutes)
+  const sseCleanupInterval = setInterval(() => {
+    for (const [ip, conns] of ipConnections) {
+      if (conns.size === 0) ipConnections.delete(ip)
+    }
+  }, 5 * 60 * 1000)
+  sseCleanupInterval.unref?.()
+
   router.get('/api/events', (req, res) => {
+    const clientIP = getRealClientIP(req)
+    let ipConns = ipConnections.get(clientIP)
+    if (!ipConns) {
+      ipConns = new Set()
+      ipConnections.set(clientIP, ipConns)
+    }
+    if (ipConns.size >= maxSsePerIp) {
+      return res.status(429).json({ error: 'Too many SSE connections from this IP' })
+    }
     if (sseClients.size >= config.maxSseClients) {
       return res.status(503).json({ error: 'Too many SSE connections' })
     }
 
     // Disable request timeout for SSE (otherwise middleware timeout kills it)
-    if (req.setTimeout) req.setTimeout(0)
-    if (res.setTimeout) res.setTimeout(0)
+    // Use socket-level timeout (Express 4/5 compatible, no deprecated API)
+    req.socket.setTimeout(0)
 
     res.setHeader('Content-Type', 'text/event-stream')
     res.setHeader('Cache-Control', 'no-cache, no-transform')
     res.setHeader('Connection', 'keep-alive')
     res.setHeader('Content-Encoding', 'identity') // Bypass compression buffer
     res.setHeader('X-Accel-Buffering', 'no') // Nginx: don't buffer SSE
-    res.flushHeaders()
+    try { res.flushHeaders() } catch { /* client may have disconnected */ }
 
     // Send initial version — flush immediately so Nginx/proxies see activity
     res.write(`data: ${JSON.stringify({ type: 'version', version: rankingsCache.getDataVersion() })}\n\n`)
     if (typeof res.flush === 'function') res.flush()
 
     sseClients.add(res)
+    ipConns.add(res)
 
     // Keepalive every 20s — flush so proxies don't consider the connection idle
     const keepAlive = setInterval(() => {
@@ -142,20 +165,28 @@ export const createSystemRouter = ({
     req.on('close', () => {
       clearInterval(keepAlive)
       sseClients.delete(res)
+      ipConns.delete(res)
+      if (ipConns.size === 0) ipConnections.delete(clientIP)
     })
   })
 
   // ── CSP violation report endpoint ─────────────────────────────────────────
-  router.post('/api/csp-report', (req, res) => {
+  // Accepts CSP violation reports from browsers. Body is limited to 1KB to
+  // prevent log flooding. Only logs valid JSON objects (not raw strings).
+  router.post('/api/csp-report', express.json({ limit: '1kb' }), (req, res) => {
     const report = req.body?.['csp-report'] || req.body
-    if (report) {
+    if (report && typeof report === 'object') {
       console.warn('⚠️ CSP Violation:', JSON.stringify(report, null, 2))
     }
     res.status(204).end()
   })
 
   // ── Debug config (subpath / proxy debugging) — admin only ─────────────────
+  // DISABLED in production: exposes subpath, NODE_ENV, proxy headers, topology.
   router.get('/api/debug/config', authenticateToken, requireAdmin, (req, res) => {
+    if (config.isProduction) {
+      return res.status(404).json({ error: 'Debug endpoint disabled in production' })
+    }
     const currentIP = getRealClientIP(req)
     res.json({
       success: true,

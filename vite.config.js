@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite'
+import { visualizer } from 'rollup-plugin-visualizer'
 
 export default defineConfig(({ mode }) => {
   // Get base path from environment or default
@@ -28,13 +29,28 @@ export default defineConfig(({ mode }) => {
       cssCodeSplit: true,
       // Vite 8 uses Rolldown instead of Rollup — renamed from rollupOptions
       rolldownOptions: {
+        // Bundle analysis plugin (outputs HTML report on build)
+        plugins: [
+          visualizer({
+            open: mode === 'development',
+            filename: 'stats.html',
+            gzipSize: true,
+            brotliSize: true
+          })
+        ],
         output: {
           // Use content-hash for long-term caching (immutable assets)
           assetFileNames: 'assets/[name]-[hash][extname]',
           chunkFileNames: 'assets/[name]-[hash].js',
           entryFileNames: 'assets/[name]-[hash].js',
-          // Vite 8 replaces manualChunks with codeSplitting (function form deprecated)
-          // codeSplitting: { groups: [...] } — uncomment when adding vendor chunks
+          // Split vendor chunks: heavy libraries into separate files for better caching
+          // Vite 8 (Rolldown) uses `manualChunks` (not `getManualChunks`)
+          manualChunks: (id) => {
+            if (id.includes('write-excel-file')) return 'vendor-excel'
+            if (id.includes('firebase-admin')) return 'vendor-firebase'
+            if (id.includes('bullmq')) return 'vendor-bullmq'
+            if (id.includes('ioredis')) return 'vendor-redis'
+          }
         }
       }
     },

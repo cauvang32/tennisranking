@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { body, param, query } from 'express-validator'
+import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
 import { streamJsonResponse } from '../utils/stream-helper.js'
 import { parseImageMatches } from '../lib/ai-parser.js'
@@ -40,32 +41,38 @@ export const createMatchRouter = ({
   `
 
   router.get('/', checkAuth, [
-    query('limit').optional().isInt({ min: 1, max: 1000 }).withMessage('Limit must be between 1 and 1000')
+    query('limit').optional().isInt({ min: 1, max: 1000 }).withMessage('Limit must be between 1 and 1000'),
+    query('after').optional().isInt({ min: 1 }).withMessage('Valid after ID required for pagination')
   ], handleValidationErrors, asyncHandler(async (req, res) => {
-    const limit = req.query.limit ? parseInt(req.query.limit) : null
+    // Apply a default server-side limit to prevent loading all matches into memory.
+    // The frontend can override with ?limit=N (max 1000).
+    const limit = req.query.limit ? parseInt(req.query.limit) : 200
+    const afterId = req.query.after ? parseInt(req.query.after) : null
+
+    // Build query with optional cursor-based pagination
+    let queryMatches
+    if (afterId) {
+      queryMatches = () => db.getMatchesAfterId(afterId, limit)
+    } else {
+      queryMatches = () => db.getMatches(limit)
+    }
 
     // For bounded requests (with limit), use the cached path
-    if (limit) {
-      const cacheKey = `matches:list:${limit}`
-      const { data: matches, hit: cacheHit } = await rankingsCache.getOrSet(
-        cacheKey,
-        () => db.getMatches(limit)
-      )
-      res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
-      return res.json(sanitizeResponse(matches))
+    const cacheKey = afterId ? `matches:list:${afterId}:${limit}` : `matches:list:${limit}`
+    const { data: matches, hit: cacheHit } = await rankingsCache.getOrSet(
+      cacheKey,
+      queryMatches
+    )
+    // Only expose Redis-Cache headers in development for debugging
+    if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+
+    // Add pagination headers for frontend
+    if (matches && matches.length > 0) {
+      const lastId = matches[matches.length - 1].id
+      res.set('X-Next-Cursor', String(lastId))
     }
 
-    // For unbounded requests (no limit), try cache first, then stream
-    const cacheKey = 'matches:list:all'
-    const cached = await rankingsCache.get(cacheKey)
-    if (cached) {
-      res.set('Redis-Cache', 'HIT')
-      return res.json(sanitizeResponse(cached))
-    }
-
-    // Stream directly from DB → HTTP response (constant memory)
-    res.set('Redis-Cache', 'MISS')
-    await streamJsonResponse(db.pool, MATCHES_LIST_SQL, [], res, { sanitize: sanitizeResponse })
+    return res.json(sanitizeResponse(matches))
   }))
 
   router.get('/by-date/:date', checkAuth, [
@@ -77,7 +84,7 @@ export const createMatchRouter = ({
       cacheKey,
       () => db.getMatchesByPlayDate(date)
     )
-    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(sanitizeResponse(matches))
   }))
 
@@ -90,7 +97,7 @@ export const createMatchRouter = ({
       cacheKey,
       () => db.getMatchesBySeason(seasonId)
     )
-    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(sanitizeResponse(matches))
   }))
 
@@ -109,7 +116,7 @@ export const createMatchRouter = ({
       res.status(404).json({ error: 'Match not found' })
       return
     }
-    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(sanitizeResponse(match))
   }))
 
@@ -183,9 +190,11 @@ export const createMatchRouter = ({
     handleValidationErrors,
     asyncHandler(async (req, res) => {
       const { seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType = 'duo' } = req.body
-      
+      // winMoney / loseMoney are intentionally ignored — computed server-side from season config
+      const resolvedMatchType = matchType
+
       // For solo matches, only player1 and player3 are required (they are the opponents)
-      if (matchType === 'solo') {
+      if (resolvedMatchType === 'solo') {
         if (!player1Id || !player3Id) {
           res.status(400).json({ error: 'For solo matches, player 1 and player 3 are required' })
           return
@@ -194,18 +203,18 @@ export const createMatchRouter = ({
           res.status(400).json({ error: 'Players must be different' })
           return
         }
-        
+
         // Validate players are in season
         const validation = await validatePlayersInSeason(seasonId, [player1Id, player3Id])
         if (!validation.valid) {
           res.status(400).json({ error: validation.error })
           return
         }
-        
+
         // For solo matches, player2 and player4 are null
-        const matchId = await db.addMatch(seasonId, playDate, player1Id, null, player3Id, null, team1Score, team2Score, winningTeam, matchType)
+        const matchId = await db.addMatch(seasonId, playDate, player1Id, null, player3Id, null, team1Score, team2Score, winningTeam, resolvedMatchType)
         await rankingsCache.invalidateOnMatchChange(playDate)
-        fireMatchPush(matchId, req.body, matchType)
+        fireMatchPush(matchId, req.body, resolvedMatchType)
         res.json({ success: true, id: matchId })
       } else {
         // Duo match validation (existing logic)
@@ -222,9 +231,9 @@ export const createMatchRouter = ({
           return
         }
 
-        const matchId = await db.addMatch(seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType)
+        const matchId = await db.addMatch(seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, resolvedMatchType)
         await rankingsCache.invalidateOnMatchChange(playDate)
-        fireMatchPush(matchId, req.body, matchType)
+        fireMatchPush(matchId, req.body, resolvedMatchType)
         res.json({ success: true, id: matchId })
       }
     })
@@ -243,9 +252,11 @@ export const createMatchRouter = ({
         res.status(404).json({ error: 'Match not found' })
         return
       }
-      const { seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType = 'duo' } = req.body
-      
-      if (matchType === 'solo') {
+      const { seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType } = req.body
+      // Preserve existing matchType when not provided in update
+      const resolvedMatchType = matchType || existingMatch.match_type || 'duo'
+
+      if (resolvedMatchType === 'solo') {
         if (!player1Id || !player3Id) {
           res.status(400).json({ error: 'For solo matches, player 1 and player 3 are required' })
           return
@@ -262,22 +273,22 @@ export const createMatchRouter = ({
           return
         }
         
-        await db.updateMatch(matchId, seasonId, playDate, player1Id, null, player3Id, null, team1Score, team2Score, winningTeam, matchType)
+        await db.updateMatch(matchId, seasonId, playDate, player1Id, null, player3Id, null, team1Score, team2Score, winningTeam, resolvedMatchType)
       } else {
         const playerIds = [player1Id, player2Id, player3Id, player4Id]
         if (new Set(playerIds).size !== 4) {
           res.status(400).json({ error: 'All players must be different' })
           return
         }
-        
+
         // Validate players are in season
         const validation = await validatePlayersInSeason(seasonId, playerIds)
         if (!validation.valid) {
           res.status(400).json({ error: validation.error })
           return
         }
-        
-        await db.updateMatch(matchId, seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType)
+
+        await db.updateMatch(matchId, seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, resolvedMatchType)
       }
       
       // Invalidate new date + old date if play_date changed
@@ -459,7 +470,9 @@ export const createMatchRouter = ({
         res.json({ matches: normalized })
       } catch (err) {
         console.error('❌ AI parse failed:', err.message)
-        res.status(502).json({ error: `Phân tích hình ảnh thất bại: ${err.message}` })
+        if (!res.headersSent) {
+          res.status(502).json({ error: `Phân tích hình ảnh thất bại: ${err.message}` })
+        }
       }
     })
   )

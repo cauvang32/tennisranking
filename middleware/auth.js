@@ -1,4 +1,5 @@
 import config from '../config/env.js'
+import { readToken, verifyToken } from '../lib/jwt-encryption.js'
 
 export const buildAuthMiddleware = ({
   jwt,
@@ -7,8 +8,7 @@ export const buildAuthMiddleware = ({
   db,
   roles = ['admin', 'editor']
 }) => {
-  const { clearCookieAllPaths, readToken, deriveCSRFSecretFromUser } = security
-  const { jwtSecret, jwtAlgorithm } = config
+  const { clearCookieAllPaths, deriveCSRFSecretFromUser } = security
 
   const authenticateToken = async (req, res, next) => {
     let token = req.cookies.authToken || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1])
@@ -20,11 +20,10 @@ export const buildAuthMiddleware = ({
     if (req.cookies.authToken && token === req.cookies.authToken) {
       const raw = readToken(token)
       if (raw) token = raw
-      // If readToken returns null, token is already raw — proceed with jwt.verify below
     }
 
     try {
-      const user = jwt.verify(token, jwtSecret, { algorithms: [jwtAlgorithm] })
+      const user = verifyToken(token)
 
       // Reject refresh tokens used as access tokens
       if (user.type && user.type !== 'access') {
@@ -66,11 +65,10 @@ export const buildAuthMiddleware = ({
       if (req.cookies.authToken && token === req.cookies.authToken) {
         const raw = readToken(token)
         if (raw) token = raw
-        // If readToken returns null, token is already raw — proceed with jwt.verify below
       }
 
       try {
-        const user = jwt.verify(token, config.jwtSecret, { algorithms: [config.jwtAlgorithm] })
+        const user = verifyToken(token)
 
         // Reject refresh tokens used as access tokens (same as authenticateToken)
         if (user.type && user.type !== 'access') {

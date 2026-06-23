@@ -70,3 +70,21 @@ Dockerfile
 .dockerignore
 
 # Scripts handled by setup.sh and npm scripts
+
+# Migration scripts (not needed in production image)
+migrations/*.sh
+migrations/*.sql
+
+# Environment files (secrets)
+.env
+.env.local
+.env.*.local
+
+# Claude Code
+.claude/
+
+# Documentation (not needed in production image)
+README.md
+README_EN.md
+CLAUDE.md
+MEMORY.md

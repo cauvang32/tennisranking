@@ -23,14 +23,14 @@ import { validationResult } from 'express-validator'
 // ── Internal modules ────────────────────────────────────────────────────────
 import config from './config/env.js'
 import { withCookieDefaults, clearCookieAllPaths } from './config/cookie.js'
-import { generateToken, generateRefreshToken, readToken } from './lib/jwt-encryption.js'
+import { generateToken, generateRefreshToken, readToken, verifyToken } from './lib/jwt-encryption.js'
 import { globalCSRFProtection, deriveCSRFSecretFromUser, tokens } from './middleware/csrf.js'
 import { createCompressionMiddleware } from './middleware/compression.js'
 import {
   applyGlobalRateLimiting, logRateLimitConfig, disconnectRateLimitRedis,
   authLimiter, refreshLimiter, initLimiter, smartApiLimiter, conditionalRateLimit,
   createLimiter, deleteLimiter, exportLimiter, criticalLimiter, restoreLimiter,
-  deviceRegisterLimiter
+  strictRestoreLimiter, loginLimiter, deviceRegisterLimiter
 } from './middleware/rate-limiter.js'
 import { buildAuthMiddleware } from './middleware/auth.js'
 import { createTimeoutMiddleware } from './utils/async-handler.js'
@@ -51,6 +51,7 @@ import { createBackupRouter } from './routes/backup.js'
 import { createHealthRouter } from './routes/health.js'
 import { createSystemRouter } from './routes/system.js'
 import { createDeviceRouter } from './routes/devices.js'
+import { createInlineAuthRouter } from './routes/auth-inline.js'
 
 // ── Bootstrap ───────────────────────────────────────────────────────────────
 
@@ -94,8 +95,10 @@ if (db.pool) {
 const rankingsCache = new RedisCache({
   redisUrl: config.redisUrl,
   ttl: config.cacheTtlSeconds,
-  devLogging: isDevelopment
+  devLogging: isDevelopment,
+  maxKeySize: 256 * 1024  // 256 KB — skip caching oversized values
 })
+rankingsCache.db = db
 
 try {
   const redisConnected = await rankingsCache.connect()
@@ -196,13 +199,12 @@ const securityForAuth = {
   readToken,
   deriveCSRFSecretFromUser
 }
-const cookiePaths = ['/']
+
 const { authenticateToken, checkAuth, requireAdmin, requireEditor } = buildAuthMiddleware({
   jwt,
   security: securityForAuth,
   tokens,
-  db,
-  cookiePaths
+  db
 })
 
 // ── Middleware stack ─────────────────────────────────────────────────────────
@@ -217,11 +219,12 @@ if (config.trustProxy) {
 }
 
 // Helmet security headers
+// xssFilter removed: deprecated in helmet 7.x and redundant with CSP
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "https://fonts.googleapis.com", "'unsafe-inline'"],
+      styleSrc: ["'self'", "https://fonts.googleapis.com"],
       scriptSrc: ["'self'", "https://static.cloudflareinsights.com"],
       imgSrc: ["'self'", "data:"],
       connectSrc: ["'self'"],
@@ -248,14 +251,22 @@ app.use(helmet({
     unsizedMedia: [], webShare: [], xrSpacialTracking: []
   },
   referrerPolicy: { policy: "strict-origin-when-cross-origin" },
-  noSniff: true, frameguard: { action: 'deny' }, xssFilter: true
+  noSniff: true, frameguard: { action: 'deny' }
 }))
 
 // Rate limiting
 logRateLimitConfig()
 applyGlobalRateLimiting(app)
 
-// CORS
+// CORS — tie dev-origin allowance to explicit env var, not NODE_ENV
+const allowDevOrigins = (() => {
+  const raw = process.env.ALLOW_DEV_ORIGINS
+  if (raw !== undefined) {
+    const n = raw.toString().trim().toLowerCase()
+    return n === 'true' || n === '1' || n === 'yes'
+  }
+  return isDevelopment
+})()
 const corsOptions = {
   origin: function (origin, callback) {
     if (isDevelopment) console.log('CORS Origin:', origin)
@@ -268,15 +279,16 @@ const corsOptions = {
         allowedOrigins.push(`${protocol}://www.${config.publicDomain}`)
       }
     }
-    if (isDevelopment) {
+    if (allowDevOrigins) {
       allowedOrigins.push('http://localhost:3001', 'http://127.0.0.1:3001', 'http://localhost:5173', 'http://127.0.0.1:5173')
     }
     const localNetworkRegex = /^https?:\/\/(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3}):\d+$/
-    if (allowedOrigins.includes(origin) || (isDevelopment && localNetworkRegex.test(origin))) {
+    if (allowedOrigins.includes(origin) || (allowDevOrigins && localNetworkRegex.test(origin))) {
       callback(null, true)
     } else {
       if (isDevelopment) console.log('CORS: Origin blocked:', origin)
-      callback(new Error('Not allowed by CORS'))
+      // Return 403 instead of proceeding without CORS headers
+      return res.status(403).json({ error: 'Not allowed by CORS' })
     }
   },
   credentials: true,
@@ -310,7 +322,7 @@ if (!isDevelopment) {
       res.setHeader('X-Frame-Options', 'DENY')
       const lp = filePath.toLowerCase()
       if (lp.endsWith('.html')) {
-        res.setHeader('Cache-Control', 'public, max-age=600, must-revalidate')
+        res.setHeader('Cache-Control', 'public, max-age=3600, must-revalidate')
       } else if (/\.(js|css|mjs|cjs|svg|png|jpg|jpeg|gif|ico|webp|avif|woff|woff2|ttf)$/i.test(lp)) {
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
       } else {
@@ -323,8 +335,12 @@ if (!isDevelopment) {
   console.log('🚧 Development mode: Static files handled by Vite')
 }
 
-// Subpath API normalisation (production)
-if (SUBPATH !== '/' && !isDevelopment) {
+// Subpath API normalisation (production + development)
+// Strips the configured subpath (e.g. /tennis) from incoming API requests so that
+// routes defined as /api/... work regardless of whether the client includes the
+// subpath prefix.  Previously this was disabled in development, which caused
+// /tennis/api/... → 404 when the frontend auto-detected the subpath.
+if (SUBPATH !== '/') {
   app.use((req, res, next) => {
     if (req.originalUrl?.startsWith(`${SUBPATH}/api`)) {
       const normalized = req.originalUrl.slice(SUBPATH.length)
@@ -338,7 +354,7 @@ if (SUBPATH !== '/' && !isDevelopment) {
 // Skip routes that return user-specific or auth state — ETag only encodes
 // the data version, not the user identity. Without these exclusions an admin's
 // cached response for `/api/players` or `/api/admin/*` would be served to guests.
-const apiCachePaths = ['/api', ...(SUBPATH !== '/' && !isDevelopment ? [`${SUBPATH}/api`] : [])]
+const apiCachePaths = SUBPATH !== '/' ? [`${SUBPATH}/api`, '/api'] : ['/api']
 
 // Routes that must never receive ETag / 304 responses because their bodies vary
 // per-user, per-session, or per-role. Public rankings (GET /rankings/*) are safe
@@ -442,11 +458,12 @@ const routeCtx = {
   authenticateToken, checkAuth, requireAdmin, requireEditor,
   conditionalRateLimit, smartApiLimiter,
   authLimiter, refreshLimiter, initLimiter, createLimiter, deleteLimiter, exportLimiter, criticalLimiter, restoreLimiter,
+  strictRestoreLimiter,
   deviceRegisterLimiter,
   handleValidationErrors, sanitizeResponse, formatSecureTimestamp,
   // Auth helpers for inline routes
   hashedAdminPassword, hashedEditorPassword,
-  generateToken, generateRefreshToken, readToken,
+  generateToken, generateRefreshToken, readToken, verifyToken,
   withCookieDefaults, clearCookieAllPaths, deriveCSRFSecretFromUser, tokens
 }
 
@@ -467,138 +484,14 @@ app.use('/api', createBackupRouter(routeCtx))
 app.use('/', createHealthRouter(routeCtx))
 app.use('/', createSystemRouter(routeCtx))
 
-// ── Inline legacy auth routes (login / logout / refresh / status) ───────────
-// These stay here because they tightly couple auth state with cookies.
-
-import { body } from 'express-validator'
-
-// Login
-app.post('/api/auth/login',
-  authLimiter,
-  [
-    body('username').isLength({ min: 1, max: 50 }),
-    body('password').isLength({ min: 1, max: 100 })
-  ],
-  handleValidationErrors,
-  async (req, res) => {
-    try {
-      const { username, password } = req.body
-      let user = null, isDbUser = false
-
-      // Check database users first
-      try {
-        const dbUser = await db.getUserByUsername(username)
-        if (dbUser && dbUser.is_active) {
-          if (await bcrypt.compare(password, dbUser.password_hash)) {
-            user = { id: dbUser.id, username: dbUser.username, email: dbUser.email, role: dbUser.role, displayName: dbUser.display_name, tokenVersion: dbUser.token_version || 0 }
-            isDbUser = true
-            await db.updateUserLastLogin(dbUser.id)
-          }
-        }
-      } catch { /* continue to env-based check */ }
-
-      // Fallback to env-based admin/editor
-      if (!user) {
-        if (username === config.admin.username && await bcrypt.compare(password, hashedAdminPassword)) {
-          user = { username: config.admin.username, email: config.admin.email, role: 'admin', displayName: 'System Admin' }
-        } else if (username === config.editor.username && await bcrypt.compare(password, hashedEditorPassword)) {
-          user = { username: config.editor.username, email: config.editor.email, role: 'editor', displayName: 'System Editor' }
-        }
-      }
-
-      if (!user) return res.status(401).json({ error: 'Invalid credentials' })
-
-      const token = generateToken(user)
-      const refreshToken = generateRefreshToken(user)
-
-      res.cookie('authToken', token, withCookieDefaults({ httpOnly: true, maxAge: 15 * 60 * 1000 }))
-      res.cookie('refreshToken', refreshToken, withCookieDefaults({ httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 }))
-
-      const csrfToken = tokens.create(deriveCSRFSecretFromUser(req.user || { id: 'anonymous' }))
-
-      const isAPIClient = !req.headers.accept?.includes('text/html') && req.headers.accept?.includes('application/json')
-      const response = {
-        success: true, message: 'Login successful', csrfToken,
-        user: { id: user.id, username: user.username, email: user.email, role: user.role, displayName: user.displayName, isSystemUser: !isDbUser }
-      }
-      if (isAPIClient) { response.token = token; response.authMethod = 'bearer_token' } else { response.authMethod = 'httponly_cookie' }
-
-      res.json(response)
-    } catch (error) {
-      console.error('Login error:', error)
-      res.status(500).json({ error: 'Login failed' })
-    }
-  }
-)
-
-// Logout
-app.post('/api/auth/logout', checkAuth, async (req, res) => {
-  try {
-    if (res.headersSent) return
-    if (req.isAuthenticated) {
-      const token = req.get('X-CSRF-Token') || req.body._csrf
-      if (!token || !tokens.verify(req.csrfSecret, token)) {
-        return res.status(403).json({ error: 'Invalid CSRF token', csrfRequired: true })
-      }
-      // Increment token_version for DB users to revoke all existing tokens
-      if (req.user?.id && typeof db.incrementTokenVersion === 'function') {
-        try { await db.incrementTokenVersion(req.user.id) } catch { /* best-effort */ }
-      }
-    }
-    // Nuclear option: force browser to destroy all cookies for this site
-    res.setHeader('Clear-Site-Data', '"cookies"')
-    clearCookieAllPaths(res, 'authToken')
-    clearCookieAllPaths(res, 'refreshToken')
-    return res.json({ success: true, message: 'Logged out successfully' })
-  } catch (error) {
-    console.error('Logout error:', error)
-    if (!res.headersSent) return res.status(500).json({ success: false, error: 'Logout failed' })
-  }
-})
-
-// Auth status
-app.get('/api/auth/status', checkAuth, (req, res) => {
-  if (req.isAuthenticated) {
-    res.json({ authenticated: true, user: req.user, csrfToken: tokens.create(req.csrfSecret) })
-  } else {
-    res.json({ authenticated: false })
-  }
-})
-
-// Refresh token
-app.post('/api/auth/refresh', refreshLimiter, async (req, res) => {
-  try {
-    const enc = req.cookies?.refreshToken
-    if (!enc) return res.status(401).json({ error: 'No refresh token provided' })
-    let decoded
-    try {
-      decoded = jwt.verify(readToken(enc) || enc, config.jwtSecret, { algorithms: [config.jwtAlgorithm] })
-      if (decoded.type !== 'refresh') return res.status(401).json({ error: 'Invalid token type' })
-    } catch { return res.status(401).json({ error: 'Invalid refresh token' }) }
-
-    // Server-side token revocation check for database users
-    if (decoded.id && db && typeof db.getTokenVersion === 'function') {
-      const currentVersion = await db.getTokenVersion(decoded.id)
-      if (currentVersion === null) {
-        clearCookieAllPaths(res, 'authToken')
-        clearCookieAllPaths(res, 'refreshToken')
-        return res.status(401).json({ error: 'User no longer exists' })
-      }
-      if (typeof decoded.tokenVersion === 'number' && decoded.tokenVersion !== currentVersion) {
-        clearCookieAllPaths(res, 'authToken')
-        clearCookieAllPaths(res, 'refreshToken')
-        return res.status(401).json({ error: 'Token has been revoked' })
-      }
-    }
-
-    const user = { id: decoded.id, username: decoded.username, role: decoded.role, tokenVersion: decoded.tokenVersion }
-    res.cookie('authToken', generateToken(user), withCookieDefaults({ httpOnly: true, maxAge: 15 * 60 * 1000 }))
-    res.json({ success: true, csrfToken: tokens.create(deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })), user })
-  } catch (error) {
-    console.error('Token refresh error:', error)
-    res.status(500).json({ error: 'Token refresh failed' })
-  }
-})
+// ── Inline auth routes (login / logout / refresh / status) ────────────────
+// Extracted from server.js for modularity.
+app.use(createInlineAuthRouter({
+  db, checkAuth, hashedAdminPassword, hashedEditorPassword,
+  generateToken, generateRefreshToken, readToken, verifyToken,
+  withCookieDefaults, clearCookieAllPaths, deriveCSRFSecretFromUser, tokens,
+  authLimiter, refreshLimiter, loginLimiter, handleValidationErrors
+}))
 
 // Legacy play-dates routes (frontend calls /api/play-dates directly)
 app.get('/api/play-dates', checkAuth, async (req, res) => {
@@ -675,7 +568,8 @@ function gracefulShutdown(signal) {
     process.exit(0)
   })
 
-  setTimeout(() => { console.error('⚠️  Forced shutdown after timeout'); process.exit(1) }, 4500).unref()
+  const shutdownTimeout = config.shutdownTimeoutMs
+  setTimeout(() => { console.error(`⚠️  Forced shutdown after ${shutdownTimeout}ms timeout`); process.exit(1) }, shutdownTimeout).unref()
 }
 
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'))

@@ -21,28 +21,79 @@ import { getRealClientIP, logError } from '../access-logger.js'
 // instead of accumulating in memory. passOnStoreError: false on each limiter
 // ensures rate limiting stays enforced even when Redis is down (fail-closed).
 const rateLimitRedis = new IORedis(config.redisUrl, {
-  maxRetriesPerRequest: 1,
+  // Use null (unlimited retries) like the cache client so rate limiting
+  // stays functional during brief Redis hiccups.  passOnStoreError: false
+  // on each limiter ensures requests are still blocked when Redis is truly down.
+  maxRetriesPerRequest: null,
   enableOfflineQueue: false,
+  connectTimeout: 5000,
   retryStrategy(times) {
-    return Math.min(times * 200, 5000) // reconnect with backoff
+    const delay = Math.min(1000 * (2 ** Math.min(times, 5)), 60000)
+    return delay
   }
 })
 rateLimitRedis.on('error', () => {
   // Suppressed — passOnStoreError: false ensures requests are blocked when Redis is down
 })
 
+// Track how long Redis has been down for rate limiting (for logging)
+let redisDownSince = null
+const REDIS_DOWN_WARN_THRESHOLD = 30 // seconds
+
 const createRedisRateLimitStore = (suffix) => new RedisStore({
   sendCommand: async (...args) => {
     try {
       // If Redis is offline, ioredis throws immediately because offlineQueue is false.
       // rate-limit-redis calls 'SCRIPT LOAD' on startup. If this throws, the app crashes.
-      if (rateLimitRedis.status !== 'ready' && args[0] === 'SCRIPT' && args[1] === 'LOAD') {
-        // Return a dummy SHA to satisfy the library during startup
-        return 'dummy_sha_to_prevent_startup_crash'
+      //
+      // Distinguish "Redis hasn't connected yet" (startup race) from "Redis is truly down"
+      // (actual failure). During startup, Redis may take a few hundred ms to become ready;
+      // instead of immediately falling back to a dummy store, wait up to 3s for readiness.
+      // Only after that timeout do we treat Redis as down.
+      if (args[0] === 'SCRIPT' && args[1] === 'LOAD') {
+        if (rateLimitRedis.status !== 'ready') {
+          // Check whether Redis ever becomes ready within a short window.
+          // This handles the startup race where the rate-limit client connects
+          // before Redis is fully ready (cache client may connect faster because
+          // it uses more aggressive retry settings).
+          const startedDown = Date.now()
+          let becameReady = false
+
+          // Wait up to 3 seconds for Redis to become ready (startup race window)
+          while (Date.now() - startedDown < 3000) {
+            if (rateLimitRedis.status === 'ready' || rateLimitRedis.status === 'connecting') {
+              await new Promise(resolve => setTimeout(resolve, 100))
+              if (rateLimitRedis.status === 'ready') {
+                becameReady = true
+                break
+              }
+            } else {
+              // status is 'end' / 'fault' / 'disconnected' — Redis is truly down
+              break
+            }
+          }
+
+          if (!becameReady) {
+            if (!redisDownSince) {
+              redisDownSince = Date.now()
+              console.warn(`⚠️ Redis unavailable for rate limiting — using dummy store (will auto-recover when Redis is back)`)
+            }
+            return 'dummy_sha_to_prevent_startup_crash'
+          }
+        }
+        // Redis is back online — reset the counter
+        if (redisDownSince) {
+          console.log(`✅ Rate limiter: Redis recovered (${Math.round((Date.now() - redisDownSince) / 1000)}s downtime)`)
+          redisDownSince = null
+        }
       }
       return await rateLimitRedis.call(...args)
     } catch (err) {
       if (err.message && err.message.includes('enableOfflineQueue')) {
+        // Log warning if Redis has been down for more than threshold
+        if (redisDownSince && (Date.now() - redisDownSince) > REDIS_DOWN_WARN_THRESHOLD * 1000) {
+          console.warn(`⚠️ Rate limiter: Redis has been down for ${Math.round((Date.now() - redisDownSince) / 1000)}s — rate limiting is disabled (fail-closed)`)
+        }
         // For EVALSHA or other commands when offline, just throw an error that rate-limit-redis will catch and fail-open
         throw new Error('Redis offline')
       }
@@ -119,6 +170,7 @@ const createProxyAwareRateLimiter = ({ storePrefix, essential = false, ...option
     skip: (req) =>
       req.path === '/api/health' ||
       req.path === '/health' ||
+      req.path === '/api/csp-report' ||
       /\.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf)$/.test(req.path),
     handler: (req, res, _next, opts) => {
       const clientIP = getRealClientIP(req)
@@ -149,6 +201,13 @@ export const apiLimiter = createProxyAwareRateLimiter({
 export const authLimiter = createProxyAwareRateLimiter({
   windowMs: wm, limit: 5, storePrefix: 'auth', essential: true,
   message: { error: 'Too many login attempts from this IP, please try again later.' }
+})
+
+// Dedicated login brute-force limiter: 10 requests per 5 minutes, per IP.
+// Compensates for the CSRF bypass on the login endpoint.
+export const loginLimiter = createProxyAwareRateLimiter({
+  windowMs: 5 * 60 * 1000, limit: 10, storePrefix: 'login', essential: true,
+  message: { error: 'Too many login attempts. Please wait before trying again.' }
 })
 
 // Refresh-token rotation limiter: 10/hour, always enforced (essential).
@@ -199,6 +258,24 @@ export const criticalLimiter = createProxyAwareRateLimiter({
 export const restoreLimiter = createProxyAwareRateLimiter({
   windowMs: 60 * 60 * 1000, limit: 50, storePrefix: 'restore',
   message: { error: 'Too many restore requests from this IP, please try again later.' }
+})
+
+// Strict restore limiter: 5 requests per 15-minute window, per IP.
+// Dedicated to restore endpoints so they cannot exhaust the general restore budget.
+export const strictRestoreLimiter = createProxyAwareRateLimiter({
+  windowMs: 15 * 60 * 1000, limit: 5, storePrefix: 'strict-restore',
+  message: { error: 'Too many restore requests. Please wait before trying again.', retryAfter: 900 },
+  handler: (req, res, _next, opts) => {
+    const clientIP = getRealClientIP(req)
+    const userInfo = req.user ? `${req.user.username}(${req.user.role})` : 'anonymous'
+    console.warn(`⚠️ Strict restore rate limit exceeded: ${clientIP} | ${userInfo} | ${req.method} ${req.path}`)
+    logError(new Error(`Strict restore rate limit exceeded: ${req.method} ${req.path}`), req, req.user)
+    const retryAfter = typeof opts.message?.retryAfter === 'number' ? opts.message.retryAfter : 900
+    res.set('Retry-After', String(retryAfter))
+    res.status(opts.statusCode || 429).json(
+      opts.message || { error: 'Too many restore requests. Please wait before trying again.', retryAfter }
+    )
+  }
 })
 
 // User-aware rate limiter (different limits for authenticated users vs anonymous)
@@ -256,6 +333,20 @@ export function logRateLimitConfig() {
     console.log(`   RAM High/Critical: ${d.ramHighPct}% / ${d.ramCriticalPct}%`)
     console.log(`   Scale High/Critical: ${d.scaleHigh} / ${d.scaleCritical} (min ${d.minScale})`)
   }
+}
+
+/**
+ * Start the rate-limit Redis client.
+ * Call this from server.js after the cache client connects so both
+ * Redis clients start at roughly the same time, avoiding the startup race.
+ */
+export function initRateLimitRedis() {
+  // If already created (module load), just ensure it's connecting.
+  // If not yet created (lazy mode), create it now.
+  if (!rateLimitRedisCreated) {
+    createRateLimitRedisClient()
+  }
+  return rateLimitRedis
 }
 
 /**

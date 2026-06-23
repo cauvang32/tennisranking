@@ -33,46 +33,44 @@ export const sendError = (res, statusCode, message, code = null, details = null)
                    statusCode === 429 ? ErrorCodes.RATE_LIMITED :
                    ErrorCodes.INTERNAL_ERROR)
   }
-  
+
   if (details) {
     response.details = details
   }
-  
+
   return res.status(statusCode).json(response)
 }
 
 // Standardized success response format
 export const sendSuccess = (res, data = null, message = null, statusCode = 200) => {
   const response = { success: true }
-  
+
   if (message) {
     response.message = message
   }
-  
+
   if (data !== null) {
     response.data = data
   }
-  
+
   return res.status(statusCode).json(response)
 }
 
-// Request timeout middleware factory
+// Request timeout middleware factory (Express 5 compatible)
+// Replaces deprecated req.setTimeout()/res.setTimeout() with
+// socket-level timeout handling. Express 5 removed the deprecated
+// methods and this approach works across Express 4 and 5.
 export const createTimeoutMiddleware = (timeoutMs = 30000) => {
   return (req, res, next) => {
-    // Set timeout for the request
-    req.setTimeout(timeoutMs, () => {
+    const socket = req.socket
+    socket.setTimeout(timeoutMs)
+    socket.once('timeout', () => {
       if (!res.headersSent) {
         sendError(res, 408, 'Request timeout', ErrorCodes.TIMEOUT)
+        socket.destroy()
       }
     })
-    
-    // Also set response timeout
-    res.setTimeout(timeoutMs, () => {
-      if (!res.headersSent) {
-        sendError(res, 408, 'Response timeout', ErrorCodes.TIMEOUT)
-      }
-    })
-    
+
     next()
   }
 }

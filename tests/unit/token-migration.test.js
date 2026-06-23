@@ -6,6 +6,9 @@ process.env.EDITOR_USERNAME = 'test_editor'
 process.env.EDITOR_PASSWORD = 'test_password'
 process.env.JWT_SECRET = 'test_jwt_secret_at_least_32_characters_long_xyz'
 process.env.CSRF_SECRET = 'test_csrf_secret_at_least_32_characters_long_xyz'
+// Disable RSA keys in tests so jwtAlgorithm stays HS256 (symmetric).
+process.env.RSA_PRIVATE_KEY_PATH = ''
+process.env.RSA_PUBLIC_KEY_PATH = ''
 
 const { readToken, generateToken } = await import('../../lib/jwt-encryption.js')
 const jwt = await import('jsonwebtoken')

@@ -1,4 +1,5 @@
 import dotenv from 'dotenv'
+import { readFileSync } from 'fs'
 
 // Load environment variables (idempotent — safe to call multiple times)
 dotenv.config()
@@ -46,6 +47,22 @@ const determineSecureCookies = () => {
 }
 
 const secureCookiesEnabled = determineSecureCookies()
+
+/**
+ * Read an RSA key from a file path given in an environment variable.
+ * Returns the key string (PEM) on success, or null if the path is unset / unreadable.
+ * Logs a warning on failure so the server falls back to HS256 gracefully.
+ */
+function _readRsaKey(envName) {
+  const path = process.env[envName]
+  if (!path) return null
+  try {
+    return readFileSync(path, 'utf8').trim()
+  } catch (err) {
+    console.warn(`⚠️ ${envName}="${path}" — could not read key file: ${err.message}`)
+    return null
+  }
+}
 const sameSitePolicy = process.env.COOKIE_SAMESITE || (secureCookiesEnabled ? 'strict' : 'lax')
 const cookieDomain = process.env.COOKIE_DOMAIN || undefined
 
@@ -70,11 +87,25 @@ const config = {
 
   // Security
   jwtSecret: process.env.JWT_SECRET,
+  // RSA key pair for RS256 (asymmetric JWT signing — 2026 OWASP recommendation).
+  // Store file *paths* in env; keys are read from disk at startup.
+  // If either path is missing or unreadable, RS256 is disabled and HS256 is used.
+  rsaPrivateKey: _readRsaKey('RSA_PRIVATE_KEY_PATH') || null,
+  rsaPublicKey: _readRsaKey('RSA_PUBLIC_KEY_PATH') || null,
   csrfSecret: process.env.CSRF_SECRET,
-  bcryptRounds: parseInt(process.env.BCRYPT_ROUNDS) || 14,
+  bcryptRounds: parseInt(process.env.BCRYPT_ROUNDS) || 12, // 2^12 = 4096 work factor (OWASP min 2^10)
   jwtAccessTokenExpiry: process.env.JWT_ACCESS_TOKEN_EXPIRY || '15m',
   jwtRefreshTokenExpiry: process.env.JWT_REFRESH_TOKEN_EXPIRY || '7d',
-  jwtAlgorithm: 'HS256',
+  // Prefer RS256 (asymmetric) when valid RSA keys are provided; fall back to HS256 otherwise.
+  // Keys shorter than 200 chars are clearly invalid (just a header) — skip RS256.
+  jwtAlgorithm: (() => {
+    const priv = _readRsaKey('RSA_PRIVATE_KEY_PATH')
+    const pub = _readRsaKey('RSA_PUBLIC_KEY_PATH')
+    const privLen = (priv || '').length
+    const pubLen = (pub || '').length
+    if (privLen > 200 && pubLen > 100) return 'RS256'
+    return 'HS256'
+  })(),
 
   // Cookie
   cookie: {
@@ -89,12 +120,22 @@ const config = {
   },
 
   // Subpath / deployment
-  subpath: process.env.SUBPATH || process.env.BASE_PATH || (process.env.NODE_ENV === 'production' ? '/tennis' : '/'),
+  // Normalized to always have a trailing slash (or '/' for root) for consistency
+  subpath: (() => {
+    const raw = process.env.SUBPATH || process.env.BASE_PATH || (process.env.NODE_ENV === 'production' ? '/tennis' : '/')
+    return raw ? (raw.endsWith('/') ? raw : `${raw}/`) : '/'
+  })(),
+  // Graceful shutdown timeout in milliseconds (4500ms default)
+  shutdownTimeoutMs: parseInt(process.env.SHUTDOWN_TIMEOUT_MS) || 4500,
   publicDomain: process.env.PUBLIC_DOMAIN,
   trustProxy: envFlagTrue(process.env.TRUST_PROXY) || envFlagTrue(process.env.BEHIND_PROXY) || process.env.NODE_ENV === 'production',
 
   // Database connection pool
-  dbPoolMax: parseInt(process.env.DB_POOL_MAX) || 20,
+  // Default of 10 is reasonable for a single-worker app; increase for PM2 cluster mode.
+  // Each PM2 instance creates its own pool, so total connections = instances * dbPoolMax.
+  dbPoolMax: parseInt(process.env.DB_POOL_MAX) || 10,
+  dbIdleTimeoutMs: parseInt(process.env.DB_IDLE_TIMEOUT_MS) || 30000,
+  dbConnectionTimeoutMs: parseInt(process.env.DB_CONNECTION_TIMEOUT_MS) || 2000,
 
   // Redis
   redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
@@ -102,7 +143,27 @@ const config = {
   cachePreloadInterval: parseInt(process.env.CACHE_PRELOAD_INTERVAL) || 240000,
 
   // CORS
-  allowedOrigins: process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [],
+  // Validate each origin: must be a valid http(s) URL, trimmed, no empty strings.
+  allowedOrigins: (() => {
+    if (!process.env.ALLOWED_ORIGINS) return []
+    return process.env.ALLOWED_ORIGINS
+      .split(',')
+      .map(o => o.trim())
+      .filter(o => o !== '')
+      .map(o => {
+        // Strip path and query from configured origins for comparison with Origin header.
+        // The browser sends Origin without path (e.g., "https://tennis.example.com"),
+        // but admins may configure origins with paths (e.g., "https://tennis.example.com/tennis").
+        try {
+          const url = new URL(o)
+          return `${url.protocol}//${url.host}`
+        } catch {
+          console.warn(`⚠️ ALLOWED_ORIGINS: ignoring invalid origin "${o}" (must start with http:// or https://)`)
+          return null
+        }
+      })
+      .filter(o => o !== null)
+  })(),
 
   // Rate limiting
   rateLimit: {
@@ -130,7 +191,7 @@ const config = {
   requestTimeoutMs: parseInt(process.env.REQUEST_TIMEOUT_MS) || 30000,
 
   // SSE
-  maxSseClients: parseInt(process.env.MAX_SSE_CLIENTS) || 1000,
+  maxSseClients: parseInt(process.env.MAX_SSE_CLIENTS) || 200, // Reduced from 1000 for security
 
   // FCM push notifications. When serviceAccountPath is unset or the file is
   // missing, the push sender runs in disabled/no-op mode so the server boots

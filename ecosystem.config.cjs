@@ -42,6 +42,8 @@ module.exports = {
 
       // Memory ceiling per worker — restart if exceeded (adjust to your server RAM)
       max_memory_restart: '512M',
+      // Delay between restarts to prevent restart storms
+      restart_delay: 5000,
 
       env: {
         NODE_ENV: 'development',

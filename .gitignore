@@ -35,3 +35,5 @@ docker-compose.yml
 firebase-service-account.json
 logs.txt
 .db-credentials
+keys/
+SECURITY_AUDIT.md

@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { body, param } from 'express-validator'
+import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
 
 export const createPlayerRouter = ({
@@ -21,7 +22,8 @@ export const createPlayerRouter = ({
       'players',
       () => db.getPlayers()
     )
-    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    // Only expose Redis-Cache headers in development for debugging
+    if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(sanitizeResponse(players))
   }))
 

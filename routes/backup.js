@@ -15,6 +15,7 @@ export const createBackupRouter = ({
   conditionalRateLimit,
   criticalLimiter,
   restoreLimiter,
+  strictRestoreLimiter,
   exportLimiter,
   handleValidationErrors,
   rankingsCache,
@@ -29,14 +30,16 @@ export const createBackupRouter = ({
     asyncHandler(async (req, res) => {
       console.log(`📦 BACKUP requested by user: ${req.user.username}`)
       const [players, seasons, matches, users, seasonPlayersMap] = await Promise.all([
-        db.getPlayers(), db.getSeasons(), db.getMatches(), db.getUsersForBackup(), db.getAllSeasonPlayers()
+        db.getPlayers(), db.getSeasons(), db.getMatches(), db.getUsers(), db.getAllSeasonPlayers()
       ])
       const seasonsWithPlayers = seasons.map(s => ({
         ...s, players: seasonPlayersMap.get(s.id) || []
       }))
+      // Strip password_hash from backup response to prevent offline brute-force attacks
+      const safeUsers = users.map(({ password_hash: _ph, ...user }) => user)
       res.json({
         version: '2.2', timestamp: new Date().toISOString(), exportedBy: req.user.username,
-        players, seasons: seasonsWithPlayers, matches, users
+        players, seasons: seasonsWithPlayers, matches, users: safeUsers
       })
       console.log('✅ Backup created successfully (including users)')
     })
@@ -44,7 +47,7 @@ export const createBackupRouter = ({
 
   // ── Full Restore (JSON) ───────────────────────────────────────────────────
   router.post('/restore',
-    authenticateToken, requireAdmin, largeBodyParser, conditionalRateLimit(restoreLimiter),
+    authenticateToken, requireAdmin, largeBodyParser, conditionalRateLimit(strictRestoreLimiter),
     asyncHandler(async (req, res) => {
       const backupData = req.body
       const currentUsername = req.user.username
@@ -119,7 +122,8 @@ export const createBackupRouter = ({
           const newP4 = match.player4_id ? playerIdMap.get(Number(match.player4_id)) : null
           if (newSeasonId && newP1 && newP3) {
             try {
-              const matchType = match.match_type || 'duo'
+              // Validate match_type against whitelist to prevent SQL injection via backup files
+              const matchType = (match.match_type === 'solo' || match.match_type === 'duo') ? match.match_type : 'duo'
               if (match.created_at) {
                 await client.query(
                   `INSERT INTO matches (season_id, play_date, player1_id, player2_id, player3_id, player4_id, team1_score, team2_score, winning_team, match_type, created_at)
@@ -201,7 +205,7 @@ export const createBackupRouter = ({
 
   // ── Simple data restore ───────────────────────────────────────────────────
   router.post('/restore-data',
-    authenticateToken, requireAdmin, largeBodyParser, conditionalRateLimit(restoreLimiter),
+    authenticateToken, requireAdmin, largeBodyParser, conditionalRateLimit(strictRestoreLimiter),
     [
       body('backupData').isObject(), body('clearExisting').optional().isBoolean(),
       body('backupData.version').exists(), body('backupData.data').isObject()
@@ -251,18 +255,20 @@ export const createBackupRouter = ({
           } catch (e) { results.errors.push(`Season ${season.name}: ${e.message}`) }
         }
 
-        // Fetch players from DB (within transaction) for name→id mapping
+        // Fetch players from DB (within transaction) and build a Map for O(1) lookups
+        // instead of O(matches * players) linear search per match
         const playersResult = await client.query('SELECT id, name FROM players')
-        const currentPlayers = playersResult.rows
+        const playerMap = new Map(playersResult.rows.map(p => [p.name, p]))
 
         for (const match of matches) {
           try {
-            const p1 = currentPlayers.find(p => p.name === match.player1_name)
-            const p2 = match.player2_name ? currentPlayers.find(p => p.name === match.player2_name) : null
-            const p3 = currentPlayers.find(p => p.name === match.player3_name)
-            const p4 = match.player4_name ? currentPlayers.find(p => p.name === match.player4_name) : null
+            const p1 = playerMap.get(match.player1_name)
+            const p2 = match.player2_name ? playerMap.get(match.player2_name) : null
+            const p3 = playerMap.get(match.player3_name)
+            const p4 = match.player4_name ? playerMap.get(match.player4_name) : null
             const sid = seasonMapping.get(match.season_name)
-            const matchType = match.match_type || 'duo'
+            // Validate match_type against whitelist to prevent SQL injection via backup files
+            const matchType = (match.match_type === 'solo' || match.match_type === 'duo') ? match.match_type : 'duo'
 
             if (p1 && p3 && sid) {
               await client.query(

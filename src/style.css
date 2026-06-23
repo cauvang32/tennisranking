@@ -502,6 +502,382 @@ body.authenticated .logged-out-only {
   width: 100px;
 }
 
+/* ========== Match Entry Cards (Batch / Parsed) ========== */
+
+/* 2-column grid on desktop, 1-column on mobile */
+.match-cards-container {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: var(--space-md);
+}
+
+/* Individual match card */
+.match-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  transition: box-shadow var(--transition), transform var(--transition);
+}
+
+.match-card:hover {
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+/* Card header: match type badge + delete */
+.match-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--surface-hover);
+  border-bottom: 1px solid var(--border);
+}
+
+.match-type-badge {
+  font-size: 0.625rem;
+  font-weight: 700;
+  color: var(--text-inverse);
+  background: var(--primary);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: var(--font-display);
+}
+
+.match-delete-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius);
+  font-size: 0.875rem;
+  transition: all var(--transition-fast);
+  line-height: 1;
+}
+
+.match-delete-btn:hover {
+  color: var(--error);
+  background: var(--error-light);
+}
+
+/* Teams layout: team 1 | score | team 2 */
+.match-teams {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  gap: var(--space-sm);
+  padding: var(--space-sm);
+  align-items: start;
+}
+
+/* Team sections */
+.match-team {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.match-team.match-team-1 {
+  border-left: 3px solid var(--primary);
+  padding-left: var(--space-xs);
+}
+
+.match-team.match-team-2 {
+  border-left: 3px solid var(--cta);
+  padding-left: var(--space-xs);
+}
+
+.match-team-label {
+  font-size: 0.625rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Player dropdowns within team */
+.match-player-selects {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.match-player-selects .select-field {
+  width: 100%;
+  font-size: 0.75rem;
+  padding: 2px var(--space-xs);
+  min-height: 28px;
+}
+
+.match-player-label {
+  font-size: 0.625rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Score display (center) */
+.match-score {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: var(--space-xs) 0;
+}
+
+.match-score .score-field {
+  width: 32px;
+  text-align: center;
+  font-size: 1.125rem;
+  font-weight: 700;
+  font-family: var(--font-display);
+  color: var(--text);
+  padding: 2px;
+  min-height: 32px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+
+.match-score .score-field:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+}
+
+.score-separator {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  padding: 0 3px;
+}
+
+/* Footer: winner + season + date */
+.match-footer {
+  display: flex;
+  gap: var(--space-xs);
+  padding: var(--space-xs) var(--space-sm);
+  background: var(--surface-hover);
+  border-top: 1px solid var(--border);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.match-footer .select-field,
+.match-footer .input-field {
+  font-size: 0.6875rem;
+  padding: 2px var(--space-xs);
+  min-height: 26px;
+}
+
+.match-winner-select {
+  flex: 1;
+  min-width: 100px;
+}
+
+.match-season-select {
+  flex: 1;
+  min-width: 80px;
+}
+
+.match-date-input {
+  min-width: 80px;
+}
+
+/* Parsed match cards have slightly different styling */
+.parsed-match-card .match-type-badge {
+  background: var(--cta);
+}
+
+/* Mobile: stack everything */
+@media (max-width: 640px) {
+  .match-cards-container {
+    grid-template-columns: 1fr;
+  }
+
+  .match-teams {
+    grid-template-columns: 1fr;
+    gap: var(--space-sm);
+  }
+
+  .match-score {
+    justify-content: center;
+    padding: var(--space-xs);
+  }
+
+  .match-score .score-field {
+    width: 40px;
+    font-size: 1.25rem;
+    min-height: 36px;
+  }
+
+  .match-footer {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .match-footer .select-field,
+  .match-footer .input-field {
+    width: 100%;
+  }
+}
+
+/* Compact batch match form (season selector + date) */
+.batch-form-row {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.batch-form-row .select-field,
+.batch-form-row .input-field {
+  font-size: 0.75rem;
+  padding: 2px var(--space-xs);
+  min-height: 28px;
+}
+
+.batch-form-row label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+/* Compact batch match table rows */
+.batch-table .team-col .select-field {
+  font-size: 0.75rem;
+  padding: 2px var(--space-xs);
+  min-height: 28px;
+}
+
+.batch-table .score-col .input-field {
+  font-size: 0.75rem;
+  padding: 1px;
+  min-height: 28px;
+  width: 40px;
+}
+
+.batch-table .score-col span {
+  font-size: 0.8125rem;
+}
+
+.batch-table .select-field[data-field="winningTeam"] {
+  font-size: 0.75rem;
+  padding: 2px var(--space-xs);
+  min-height: 28px;
+}
+
+/* Compact parsed match table rows */
+.parsed-table .team-col .select-field {
+  font-size: 0.75rem;
+  padding: 2px var(--space-xs);
+  min-height: 28px;
+}
+
+.parsed-table .score-col .input-field {
+  font-size: 0.75rem;
+  padding: 1px;
+  min-height: 28px;
+  width: 40px;
+}
+
+.parsed-table .score-col span {
+  font-size: 0.8125rem;
+}
+
+.parsed-table .select-field[data-field="winningTeam"] {
+  font-size: 0.75rem;
+  padding: 2px var(--space-xs);
+  min-height: 28px;
+}
+
+.parsed-table .select-field[data-field="seasonId"] {
+  font-size: 0.75rem;
+  padding: 2px var(--space-xs);
+  min-height: 28px;
+}
+
+.parsed-table .input-field[data-field="playDate"] {
+  font-size: 0.75rem;
+  padding: 2px var(--space-xs);
+  min-height: 28px;
+}
+
+/* Mobile responsive: stack table columns when narrow */
+@media (max-width: 640px) {
+  .batch-table,
+  .parsed-table {
+    font-size: 0.6875rem;
+  }
+
+  .batch-table td,
+  .parsed-table td {
+    padding: 2px 4px;
+  }
+
+  .batch-table th,
+  .parsed-table th {
+    padding: 2px 4px;
+    font-size: 0.625rem;
+  }
+
+  .batch-table .team-col,
+  .parsed-table .team-col {
+    min-width: 100px;
+  }
+
+  .batch-table .score-col,
+  .parsed-table .score-col {
+    min-width: 60px;
+  }
+
+  .batch-table .score-col .input-field,
+  .parsed-table .score-col .input-field {
+    width: 36px;
+    padding: 1px;
+  }
+
+  .batch-table .team-col .select-field,
+  .parsed-table .team-col .select-field {
+    font-size: 0.6875rem;
+    min-height: 26px;
+    padding: 1px 4px;
+  }
+
+  .batch-table .score-col span {
+    font-size: 0.6875rem;
+  }
+
+  .batch-table .match-type-label,
+  .parsed-table .match-type-label {
+    font-size: 0.5625rem;
+  }
+
+  .batch-table .team-label,
+  .parsed-table .team-label {
+    font-size: 0.5rem;
+  }
+
+  .batch-table .remove-btn,
+  .parsed-table .remove-btn {
+    font-size: 0.6875rem;
+    padding: 2px;
+  }
+
+  /* Stack season/date on mobile */
+  .batch-form-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .batch-form-row .select-field,
+  .batch-form-row .input-field {
+    width: 100%;
+  }
+}
+
 /* Form (Phong độ) Dots */
 .form-dots {
   display: flex;

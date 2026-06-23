@@ -348,22 +348,8 @@
                                         <span style="font-size: 18px;">🤖</span>
                                         <strong style="font-size: 14px;">Kết quả AI trích xuất</strong>
                                     </div>
-                                    <div style="overflow-x: auto;">
-                                        <table class="data-table" id="parsedMatchesTable" style="width: 100%; font-size: 13px;">
-                                            <thead>
-                                                <tr>
-                                                    <th style="width: 80px;">1v2</th>
-                                                    <th style="width: 80px;">3v4</th>
-                                                    <th style="width: 60px;">Tỷ số</th>
-                                                    <th style="width: 60px;">Thắng</th>
-                                                    <th style="width: 120px;">Loại</th>
-                                                    <th style="width: 140px;">Mùa giải</th>
-                                                    <th style="width: 100px;">Ngày</th>
-                                                </tr>
-                                            </thead>
-                                            <tbody id="parsedMatchesBody"></tbody>
-                                        </table>
-                                    </div>
+                                    <!-- Parsed Match Cards Container -->
+                                    <div class="match-cards-container" id="parsedCardsContainer"></div>
                                     <div class="form-actions" style="margin-top: 12px;">
                                         <button class="btn btn-primary" id="confirmParsedMatchesBtn">
                                             <span>✓</span> Xác nhận tất cả
@@ -395,27 +381,14 @@
                                     <button class="type-btn" data-type="solo">1v1</button>
                                 </div>
                             </div>
-                            <div style="display: flex; gap: 8px; margin-bottom: 8px; align-items: center;">
-                                <label style="font-size: 13px;">Mùa giải:</label>
-                                <select id="batchSeasonSelect" class="select-field" style="font-size: 12px; padding: 4px;"></select>
-                                <label style="font-size: 13px;">Ngày:</label>
-                                <input type="date" id="batchDateInput" class="input-field" style="font-size: 12px; padding: 4px;">
+                            <div class="batch-form-row" style="margin-bottom: 8px;">
+                                <label>Mùa giải:</label>
+                                <select id="batchSeasonSelect" class="select-field"></select>
+                                <label>Ngày:</label>
+                                <input type="date" id="batchDateInput" class="input-field">
                             </div>
-                            <div style="overflow-x: auto;">
-                                <table class="data-table" id="batchMatchesTable" style="width: 100%; font-size: 13px;">
-                                    <thead>
-                                        <tr>
-                                            <th style="width: 80px;">1v2</th>
-                                            <th style="width: 80px;">3v4</th>
-                                            <th style="width: 60px;">Tỷ số</th>
-                                            <th style="width: 60px;">Thắng</th>
-                                            <th style="width: 120px;">Loại</th>
-                                            <th style="width: 40px;"></th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="batchMatchesBody"></tbody>
-                                </table>
-                            </div>
+                            <!-- Batch Match Cards Container -->
+                            <div class="match-cards-container" id="batchCardsContainer"></div>
                             <div class="form-actions" style="margin-top: 12px;">
                                 <button type="button" class="btn btn-secondary" id="addBatchMatchBtn">
                                     <span>+</span> Thêm trận

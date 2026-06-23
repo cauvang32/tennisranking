@@ -63,8 +63,8 @@ class TennisDatabasePostgreSQL {
       password: process.env.DB_PASSWORD,
       ssl: buildSSLConfig(),
       max: config.dbPoolMax,
-      idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
+      idleTimeoutMillis: config.dbIdleTimeoutMs,
+      connectionTimeoutMillis: config.dbConnectionTimeoutMs,
     }
     this.pool = null
     this.isConnected = false
@@ -381,7 +381,7 @@ class TennisDatabasePostgreSQL {
 
   // Players CRUD operations
   async getPlayers() {
-    const result = await this.query('SELECT * FROM players ORDER BY name')
+    const result = await this.query('SELECT id, name, created_at FROM players ORDER BY name')
     return result.rows
   }
 
@@ -666,6 +666,35 @@ class TennisDatabasePostgreSQL {
     }
   }
 
+  /**
+   * Get matches with cursor-based pagination (after a specific match ID).
+   * Used for infinite scrolling through match history.
+   */
+  async getMatchesAfterId(afterId, limit) {
+    const query = `
+      SELECT m.id, m.season_id, TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date,
+        m.player1_id, m.player2_id, m.player3_id, m.player4_id,
+        m.team1_score, m.team2_score, m.winning_team,
+        COALESCE(m.match_type, 'duo') as match_type,
+        m.created_at,
+        s.name as season_name,
+        COALESCE(s.lose_money_per_loss, 20000) as lose_money_per_loss,
+        p1.name as player1_name, COALESCE(p2.name, '') as player2_name,
+        p3.name as player3_name, COALESCE(p4.name, '') as player4_name
+      FROM matches m
+      JOIN seasons s ON m.season_id = s.id
+      JOIN players p1 ON m.player1_id = p1.id
+      LEFT JOIN players p2 ON m.player2_id = p2.id
+      JOIN players p3 ON m.player3_id = p3.id
+      LEFT JOIN players p4 ON m.player4_id = p4.id
+      WHERE m.id < $1
+      ORDER BY m.play_date DESC, m.created_at DESC
+      LIMIT $2
+    `
+    const result = await this.query(query, [afterId, limit])
+    return result.rows
+  }
+
   async getMatchesByPlayDate(playDate) {
     const result = await this.query(`
       SELECT m.id, m.season_id, TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date,
@@ -714,11 +743,14 @@ class TennisDatabasePostgreSQL {
 
   async getMatchesByDate(date) {
     const result = await this.query(`
-      SELECT m.*, 
+      SELECT m.id, m.season_id, TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date,
+        m.player1_id, m.player2_id, m.player3_id, m.player4_id,
+        m.team1_score, m.team2_score, m.winning_team,
         COALESCE(m.match_type, 'duo') as match_type,
+        m.created_at,
         s.name as season_name,
         COALESCE(s.lose_money_per_loss, 20000) as lose_money_per_loss,
-        p1.name as player1_name, COALESCE(p2.name, '') as player2_name, 
+        p1.name as player1_name, COALESCE(p2.name, '') as player2_name,
         p3.name as player3_name, COALESCE(p4.name, '') as player4_name
       FROM matches m
       JOIN seasons s ON m.season_id = s.id

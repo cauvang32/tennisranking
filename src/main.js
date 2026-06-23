@@ -5,6 +5,7 @@ import { connectSSE, closeSSE } from './modules/sse-manager.js'
 import { createCacheManager } from './modules/cache-manager.js'
 import { getCSRFToken as moduleGetCSRFToken, makeAuthenticatedRequest as moduleMakeAuthenticatedRequest, resetCSRFToken } from './modules/csrf-handler.js'
 import { detectServerMode as moduleDetectServerMode, checkAuthStatus as moduleCheckAuthStatus, login as moduleLogin, logout as moduleLogout, getApiBaseUrl as moduleGetApiBaseUrl, updateUIForAuthStatus as moduleUpdateUIForAuthStatus } from './modules/auth-manager.js'
+import { normalizeText } from './lib/vietnamese-normalize.js'
 
 // Tennis Ranking System with PostgreSQL Database
 class TennisRankingSystem {
@@ -49,8 +50,8 @@ class TennisRankingSystem {
     this.init()
   }
 
-  // Real-time server data sync using SSE (Server-Sent Events)
-  // Falls back to polling if SSE is unavailable (e.g., old browsers, proxy issues)
+  // Real-time server data sync using SSE (Server-Sent Events).
+  // Polling fallback when SSE is unavailable is handled by sse-manager.js.
   startVersionPolling() {
     this.connectSSE()
   }
@@ -66,25 +67,7 @@ class TennisRankingSystem {
     )
   }
 
-  // Polling fallback when SSE is unavailable
-  startPollingFallback() {
-    if (this.versionPollInterval) return
-
-    this.checkServerVersion()
-    this.versionPollInterval = setInterval(() => {
-      this.checkServerVersion()
-    }, this.CACHE_TTL.versionCheck)
-    console.log('🔄 Polling fallback active (every 15s)')
-  }
-
-  stopPollingFallback() {
-    if (this.versionPollInterval) {
-      clearInterval(this.versionPollInterval)
-      this.versionPollInterval = null
-    }
-  }
-
-  // Stop all version sync (SSE + polling)
+  // Stop all version sync (SSE only — polling is handled by sse-manager.js)
   stopVersionPolling() {
     closeSSE()
   }
@@ -127,33 +110,6 @@ class TennisRankingSystem {
     }
   }
 
-  // Check if server data version has changed
-  async checkServerVersion() {
-    if (!this.serverMode) return
-    
-    try {
-      const response = await fetch(`${this.apiBase}/data-version`, {
-        credentials: 'include'
-      })
-      
-      if (response.ok) {
-        const data = await response.json()
-        const newVersion = data.version
-        
-        // If version changed, invalidate all client cache and reload UI
-        if (this.cache.serverVersion !== null && this.cache.serverVersion !== newVersion) {
-          console.log(`🔄 Server data changed (${this.cache.serverVersion} → ${newVersion}), clearing cache`)
-          this.invalidateCache() // Full clear
-          this.reloadCurrentView() // Update UI immediately
-        }
-        
-        this.cache.serverVersion = newVersion
-      }
-    } catch (error) {
-      // Silently ignore - server might be unavailable
-      console.log('⚠️ Version check failed, using local cache')
-    }
-  }
 
   // Smart cache: check if cached data is still valid
   isCacheValid(cacheKey, type = 'rankings') {
@@ -709,16 +665,30 @@ class TennisRankingSystem {
       const cached = this.getCache('players')
       if (cached) {
         this.players = cached
-        return
+        // Rebuild the normalized index from cached players
+        this.normalizedPlayers = this.players.map(p => ({
+          normalized: normalizeText(p.name).toLowerCase(),
+          id: p.id,
+          name: p.name
+        })).sort((a, b) => a.normalized.localeCompare(b.normalized))
+        return Promise.resolve()
       }
-      
+
       const response = await fetch(`${this.apiBase}/players`)
       if (response.ok) {
         this.players = await response.json()
         this.setCache('players', null, this.players)
+        // Build a sorted normalized index for fast fuzzy matching
+        this.normalizedPlayers = this.players.map(p => ({
+          normalized: normalizeText(p.name).toLowerCase(),
+          id: p.id,
+          name: p.name
+        })).sort((a, b) => a.normalized.localeCompare(b.normalized))
       }
+      return Promise.resolve()
     } catch (error) {
       console.error('Error loading players:', error)
+      return Promise.resolve()
     }
   }
 
@@ -764,9 +734,30 @@ class TennisRankingSystem {
 
   async loadMatches() {
     try {
-      const response = await fetch(`${this.apiBase}/matches`)
-      if (response.ok) {
-        this.matches = await response.json()
+      this.matches = []
+      let nextCursor = null
+      const limit = 50
+
+      do {
+        const url = nextCursor
+          ? `${this.apiBase}/matches?after=${nextCursor}&limit=${limit}`
+          : `${this.apiBase}/matches?limit=${limit}`
+
+        const response = await fetch(url)
+        if (!response.ok) break
+
+        const batch = await response.json()
+        if (!batch || batch.length === 0) break
+
+        this.matches.push(...batch)
+
+        const nextCursorHeader = response.headers.get('X-Next-Cursor')
+        nextCursor = nextCursorHeader ? parseInt(nextCursorHeader) : null
+      } while (nextCursor)
+
+      // Update cache key 'all' so renderMatchHistory picks up fresh data
+      if (this.matches.length > 0) {
+        this.setCache('matches', 'all', this.matches)
       }
     } catch (error) {
       console.error('Error loading matches:', error)
@@ -888,6 +879,7 @@ class TennisRankingSystem {
             batchTypeToggle.querySelector('.type-btn.active')?.classList.remove('active')
             btn.classList.add('active')
             this.batchMatchType = type
+            this.renderBatchMatchesTable()
           })
         })
       }
@@ -1414,17 +1406,17 @@ class TennisRankingSystem {
     }
   }
 
-  switchTab(tabName) {
+  async switchTab(tabName) {
     // First hide all view mode sections
     this.hideAllViewModeSections()
-    
+
     // Update nav buttons (new class)
     document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'))
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'))
 
     const tabBtn = document.querySelector(`.nav-btn[data-tab="${tabName}"]`)
     const tabContent = document.getElementById(`${tabName}-tab`)
-    
+
     if (tabBtn) tabBtn.classList.add('active')
     if (tabContent) tabContent.classList.add('active')
 
@@ -1435,7 +1427,10 @@ class TennisRankingSystem {
       this.setupViewModeUI()
       this.renderRankings()
     } else if (tabName === 'matches') {
-      // Update player selects and set today's date when switching to matches
+      // Always start in single match mode when entering matches tab (fixes broken state on refresh)
+      this.switchToSingleMode()
+      // Ensure players are loaded before updating selects (fixes initial render race)
+      await this.loadPlayers()
       this.updatePlayerSelects()
       this.setTodaysDate()
       this.renderMatchHistory()
@@ -1599,11 +1594,9 @@ class TennisRankingSystem {
       return
     }
     
-    // Get lose money from selected season
+    // Get lose money from selected season (used for display only — computed server-side for DB)
     const selectedSeason = this.seasons.find(s => s.id === seasonId)
-    const loseMoney = selectedSeason?.lose_money_per_loss ?? 20000
-    const winMoney = loseMoney  // Win = Lose in this system
-    
+
     let player1Id, player2Id, player3Id, player4Id, team1Score, team2Score
     
     // Get scores - same inputs for both duo and solo modes
@@ -1686,9 +1679,7 @@ class TennisRankingSystem {
           team1Score,
           team2Score,
           winningTeam,
-          matchType,
-          winMoney,
-          loseMoney
+          matchType
         })
       })
 
@@ -1732,80 +1723,80 @@ class TennisRankingSystem {
   fuzzyMatchPlayer(name, players) {
     if (!name || !players?.length) return null
 
-    const normalized = this.normalizeVietnamese(name).toLowerCase().trim()
+    const normalized = normalizeText(name).toLowerCase().trim()
     if (!normalized) return null
 
-    // Exact match (case-insensitive, accent-normalized)
-    const exact = players.find(p => this.normalizeVietnamese(p.name).toLowerCase() === normalized)
-    if (exact) return exact.id
+    // Use the pre-built normalized index if available (built during loadPlayers).
+    // Falls back to the players array argument for backward compatibility.
+    const index = this.normalizedPlayers || (players && players.map(p => ({
+      normalized: normalizeText(p.name).toLowerCase(),
+      id: p.id,
+      name: p.name
+    })))
+
+    // Exact match via index (O(1) average with Map-like lookup)
+    if (index) {
+      const exact = index.find(e => e.normalized === normalized)
+      if (exact) return exact.id
+    }
 
     // Check if the AI name is a substring of a DB player name
-    const substringMatch = players.find(p => {
-      const dbNorm = this.normalizeVietnamese(p.name).toLowerCase()
+    const substringMatch = index ? index.find(e => {
+      return e.normalized.includes(normalized) || normalized.includes(e.normalized)
+    }) : players.find(p => {
+      const dbNorm = normalizeText(p.name).toLowerCase()
       return dbNorm.includes(normalized) || normalized.includes(dbNorm)
     })
-    if (substringMatch) return substringMatch.id
+    if (substringMatch) return (substringMatch.id !== undefined ? substringMatch.id : substringMatch.id)
 
     // Check first word match (e.g. "Hưng Tâm" matches "Hưng" or "Tâm" individually)
     const words = normalized.split(/\s+/)
     if (words.length >= 2) {
       // Try last word (common Vietnamese nickname)
       const lastWord = words[words.length - 1]
-      const nicknameMatch = players.find(p => {
-        const dbNorm = this.normalizeVietnamese(p.name).toLowerCase()
+      const nicknameMatch = index ? index.find(e => {
+        const dbWords = e.normalized.split(/\s+/)
+        return dbWords.some(w => w === lastWord || lastWord.startsWith(w) || w.startsWith(lastWord))
+      }) : players.find(p => {
+        const dbNorm = normalizeText(p.name).toLowerCase()
         const dbWords = dbNorm.split(/\s+/)
         return dbWords.some(w => w === lastWord || lastWord.startsWith(w) || w.startsWith(lastWord))
       })
-      if (nicknameMatch) return nicknameMatch.id
+      if (nicknameMatch) return (nicknameMatch.id !== undefined ? nicknameMatch.id : nicknameMatch.id)
     }
 
     // Try matching just the first word
     const firstWord = words[0]
-    const firstWordMatch = players.find(p => {
-      const dbNorm = this.normalizeVietnamese(p.name).toLowerCase()
+    const firstWordMatch = index ? index.find(e => {
+      const dbWords = e.normalized.split(/\s+/)
+      return dbWords.some(w => w === firstWord || firstWord.startsWith(w) || w.startsWith(firstWord))
+    }) : players.find(p => {
+      const dbNorm = normalizeText(p.name).toLowerCase()
       const dbWords = dbNorm.split(/\s+/)
       return dbWords.some(w => w === firstWord || firstWord.startsWith(w) || w.startsWith(firstWord))
     })
-    if (firstWordMatch) return firstWordMatch.id
+    if (firstWordMatch) return (firstWordMatch.id !== undefined ? firstWordMatch.id : firstWordMatch.id)
 
-    // Last resort: Levenshtein distance on full names
-    let bestScore = Infinity
-    let bestPlayer = null
-    for (const player of players) {
-      const dbNorm = this.normalizeVietnamese(player.name).toLowerCase()
-      const score = this.levenshteinDistance(normalized, dbNorm)
-      if (score < bestScore && score <= 3) {
-        bestScore = score
-        bestPlayer = player.id
+    // Last resort: Levenshtein distance — only compute if name has >3 words
+    // (short names are unlikely to be typos worth expensive computation)
+    // Also skip if normalized string is too long (>20 chars) to avoid O(m*n) blowup.
+    if (words.length > 3 || normalized.length <= 20) {
+      let bestScore = Infinity
+      let bestPlayer = null
+      const source = index || players
+      for (const player of source) {
+        const entry = index ? player : player
+        const dbNorm = index ? entry.normalized : normalizeText(player.name).toLowerCase()
+        const score = this.levenshteinDistance(normalized, dbNorm)
+        if (score < bestScore && score <= 3) {
+          bestScore = score
+          bestPlayer = entry.id
+        }
       }
+      return bestPlayer
     }
-    return bestPlayer
-  }
 
-  /** Normalize Vietnamese text: remove accents for comparison */
-  normalizeVietnamese(text) {
-    if (!text) return ''
-    const accents = {
-      // Lowercase
-      'à': 'a', 'á': 'a', 'ả': 'a', 'ã': 'a', 'ạ': 'a', 'ă': 'a', 'ằ': 'a', 'ắ': 'a', 'ẳ': 'a', 'ẵ': 'a', 'ặ': 'a',
-      'è': 'e', 'é': 'e', 'ẻ': 'e', 'ẽ': 'e', 'ẹ': 'e', 'ê': 'e', 'ề': 'e', 'ể': 'e', 'ễ': 'e', 'ệ': 'e',
-      'ì': 'i', 'í': 'i', 'ỉ': 'i', 'ĩ': 'i', 'ị': 'i',
-      'ò': 'o', 'ó': 'o', 'ỏ': 'o', 'õ': 'o', 'ọ': 'o', 'ô': 'o', 'ồ': 'o', 'ố': 'o', 'ổ': 'o', 'ỗ': 'o', 'ộ': 'o',
-      'ơ': 'o', 'ờ': 'o', 'ở': 'o', 'ỡ': 'o', 'ợ': 'o',
-      'ù': 'u', 'ú': 'u', 'ủ': 'u', 'ũ': 'u', 'ụ': 'u', 'ư': 'u', 'ừ': 'u', 'ử': 'u', 'ữ': 'u', 'ự': 'u',
-      'ỳ': 'y', 'ý': 'y', 'ỷ': 'y', 'ỹ': 'y', 'ỵ': 'y',
-      'đ': 'd',
-      // Uppercase
-      'À': 'A', 'Á': 'A', 'Ả': 'A', 'Ã': 'A', 'Ạ': 'A', 'Ă': 'A', 'Ằ': 'A', 'Ắ': 'A', 'Ẳ': 'A', 'Ẵ': 'A', 'Ặ': 'A',
-      'È': 'E', 'É': 'E', 'Ẻ': 'E', 'Ẽ': 'E', 'Ẹ': 'E', 'Ê': 'E', 'Ề': 'E', 'Ể': 'E', 'Ễ': 'E', 'Ệ': 'E',
-      'Ì': 'I', 'Í': 'I', 'Ỉ': 'I', 'Ĩ': 'I', 'Ị': 'I',
-      'Ò': 'O', 'Ó': 'O', 'Ỏ': 'O', 'Õ': 'O', 'Ọ': 'O', 'Ô': 'O', 'Ồ': 'O', 'Ố': 'O', 'Ổ': 'O', 'Ỗ': 'O', 'Ộ': 'O',
-      'Ơ': 'O', 'Ờ': 'O', 'Ở': 'O', 'Ỡ': 'O', 'Ợ': 'O',
-      'Ù': 'U', 'Ú': 'U', 'Ủ': 'U', 'Ũ': 'U', 'Ụ': 'U', 'Ư': 'U', 'Ừ': 'U', 'Ử': 'U', 'Ữ': 'U', 'Ự': 'U',
-      'Ỳ': 'Y', 'Ý': 'Y', 'Ỷ': 'Y', 'Ỹ': 'Y', 'Ỵ': 'Y',
-      'Đ': 'D'
-    }
-    return text.replace(/[àáảãạăằắẳẵặèéẻẽêềểễệìíỉĩòóỏõôồốổỗơờởỡờỳýỷỹđÀÁẢÃẠĂẰẮẲẴẶÈÉẺẼÊỀỂỄỆÌÍỈĨÒÓỎÕÔỒỐỔỖỜỞỠỜỲÝỶỸĐ]/g, m => accents[m] || m)
+    return null
   }
 
   /** Simple Levenshtein distance */
@@ -1871,7 +1862,7 @@ class TennisRankingSystem {
   mapTeamToPlayerPair(teamName, players) {
     if (!teamName || !players?.length) return null
 
-    const normalized = this.normalizeVietnamese(teamName).toLowerCase().trim()
+    const normalized = normalizeText(teamName).toLowerCase().trim()
     if (!normalized) return null
 
     const words = normalized.split(/\s+/)
@@ -1879,7 +1870,7 @@ class TennisRankingSystem {
 
     // Score every player against every word
     const playerScores = players.map(player => {
-      const playerNorm = this.normalizeVietnamese(player.name).toLowerCase()
+      const playerNorm = normalizeText(player.name).toLowerCase()
       let totalScore = 0
       for (const word of words) {
         totalScore += this._scoreWordAgainstPlayer(word, playerNorm)
@@ -1897,7 +1888,7 @@ class TennisRankingSystem {
       if (words.length > 1) return false // multi-word → likely a team nickname, skip single-player fallback
       let coverage = 0
       for (const word of words) {
-        if (this._scoreWordAgainstPlayer(word, this.normalizeVietnamese(p.name).toLowerCase()) > 0) {
+        if (this._scoreWordAgainstPlayer(word, normalizeText(p.name).toLowerCase()) > 0) {
           coverage++
         }
       }
@@ -1920,8 +1911,8 @@ class TennisRankingSystem {
         // Check word coverage: how many words are covered by at least one player?
         let coveredWords = 0
         for (const word of words) {
-          const aScore = this._scoreWordAgainstPlayer(word, this.normalizeVietnamese(a.name).toLowerCase())
-          const bScore = this._scoreWordAgainstPlayer(word, this.normalizeVietnamese(b.name).toLowerCase())
+          const aScore = this._scoreWordAgainstPlayer(word, normalizeText(a.name).toLowerCase())
+          const bScore = this._scoreWordAgainstPlayer(word, normalizeText(b.name).toLowerCase())
           if (aScore > 0 || bScore > 0) coveredWords++
         }
 
@@ -2156,124 +2147,85 @@ class TennisRankingSystem {
 
   /** Render the batch matches table */
   renderBatchMatchesTable() {
-    const tbody = document.getElementById('batchMatchesBody')
-    if (!tbody) return
+    const container = document.getElementById('batchCardsContainer')
+    if (!container) return
 
-    tbody.innerHTML = this.batchMatches.map((match, index) => {
+    container.innerHTML = this.batchMatches.map((match, index) => {
       const isSolo = match.matchType === 'solo'
+      const typeLabel = isSolo ? '1v1' : '4v4'
+      const player2Options = isSolo ? '' : `<select class="select-field" data-field="player2Id">${this._buildPlayerOptions(match.player2Id)}</select>`
+      const player4Options = isSolo ? '' : `<select class="select-field" data-field="player4Id">${this._buildPlayerOptions(match.player4Id)}</select>`
 
-      if (isSolo) {
-        return `
-          <tr data-batch-index="${index}" data-match-type="solo">
-            <td><span style="font-size: 11px; color: var(--text-secondary);">Đội 1</span><br>
-              <select class="select-field" data-field="player1Id" style="font-size: 12px; padding: 4px;">
-                ${this._buildPlayerOptions(match.player1Id)}
-              </select>
-            </td>
-            <td><span style="font-size: 11px; color: var(--text-secondary);">Đội 2</span><br>
-              <select class="select-field" data-field="player3Id" style="font-size: 12px; padding: 4px;">
-                ${this._buildPlayerOptions(match.player3Id)}
-              </select>
-            </td>
-            <td>
-              <div style="display: flex; gap: 4px; align-items: center;">
-                <input type="number" class="input-field" data-field="team1Score" value="${match.team1Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
-                <span>-</span>
-                <input type="number" class="input-field" data-field="team2Score" value="${match.team2Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
-              </div>
-            </td>
-            <td>
-              <select class="select-field" data-field="winningTeam" style="font-size: 12px; padding: 4px;">
-                <option value="1" ${match.winningTeam === 1 ? 'selected' : ''}>Đội 1</option>
-                <option value="2" ${match.winningTeam === 2 ? 'selected' : ''}>Đội 2</option>
-              </select>
-            </td>
-            <td><span style="font-size: 12px;">1v1</span></td>
-            <td>
-              <button class="btn btn-ghost btn-sm" data-batch-remove="${index}" style="padding: 2px 6px; font-size: 14px;">✕</button>
-            </td>
-          </tr>
-        `
-      }
-
-      // ── Duo match ──
       return `
-        <tr data-batch-index="${index}" data-match-type="duo">
-          <td>
-            <span style="font-size: 11px; color: var(--text-secondary);">Đội 1</span><br>
-            <select class="select-field" data-field="player1Id" style="font-size: 12px; padding: 4px;">
-              ${this._buildPlayerOptions(match.player1Id)}
-            </select>
-            <select class="select-field" data-field="player2Id" style="font-size: 12px; padding: 4px; margin-top: 2px;">
-              ${this._buildPlayerOptions(match.player2Id)}
-            </select>
-          </td>
-          <td>
-            <span style="font-size: 11px; color: var(--text-secondary);">Đội 2</span><br>
-            <select class="select-field" data-field="player3Id" style="font-size: 12px; padding: 4px;">
-              ${this._buildPlayerOptions(match.player3Id)}
-            </select>
-            <select class="select-field" data-field="player4Id" style="font-size: 12px; padding: 4px; margin-top: 2px;">
-              ${this._buildPlayerOptions(match.player4Id)}
-            </select>
-          </td>
-          <td>
-            <div style="display: flex; gap: 4px; align-items: center;">
-              <input type="number" class="input-field" data-field="team1Score" value="${match.team1Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
-              <span>-</span>
-              <input type="number" class="input-field" data-field="team2Score" value="${match.team2Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
+        <div class="match-card" data-batch-index="${index}" data-match-type="${isSolo ? 'solo' : 'duo'}">
+          <div class="match-card-header">
+            <span class="match-type-badge">${typeLabel}</span>
+            <button class="match-delete-btn" data-batch-remove="${index}" title="Xoá trận đấu">✕</button>
+          </div>
+          <div class="match-teams">
+            <!-- Team 1 -->
+            <div class="match-team match-team-1">
+              <span class="match-team-label">Đội 1</span>
+              <div class="match-player-selects">
+                <select class="select-field" data-field="player1Id">${this._buildPlayerOptions(match.player1Id)}</select>
+                ${player2Options}
+              </div>
             </div>
-          </td>
-          <td>
-            <select class="select-field" data-field="winningTeam" style="font-size: 12px; padding: 4px;">
+            <!-- Score -->
+            <div class="match-score">
+              <input type="number" class="input-field score-field" data-field="team1Score" value="${match.team1Score}" min="0" placeholder="0">
+              <span class="score-separator">:</span>
+              <input type="number" class="input-field score-field" data-field="team2Score" value="${match.team2Score}" min="0" placeholder="0">
+            </div>
+            <!-- Team 2 -->
+            <div class="match-team match-team-2">
+              <span class="match-team-label">Đội 2</span>
+              <div class="match-player-selects">
+                <select class="select-field" data-field="player3Id">${this._buildPlayerOptions(match.player3Id)}</select>
+                ${player4Options}
+              </div>
+            </div>
+          </div>
+          <div class="match-footer">
+            <select class="select-field match-winner-select" data-field="winningTeam">
+              <option value="">Chọn đội thắng</option>
               <option value="1" ${match.winningTeam === 1 ? 'selected' : ''}>Đội 1</option>
               <option value="2" ${match.winningTeam === 2 ? 'selected' : ''}>Đội 2</option>
             </select>
-          </td>
-          <td><span style="font-size: 12px;">4v4</span></td>
-          <td>
-            <button class="btn btn-ghost btn-sm" data-batch-remove="${index}" style="padding: 2px 6px; font-size: 14px;">✕</button>
-          </td>
-        </tr>
+          </div>
+        </div>
       `
     }).join('')
 
     // Wire up remove buttons
-    tbody.querySelectorAll('[data-batch-remove]').forEach(btn => {
+    container.querySelectorAll('[data-batch-remove]').forEach(btn => {
       const idx = parseInt(btn.dataset.batchRemove, 10)
       btn.addEventListener('click', () => this.removeBatchMatchRow(idx))
     })
 
-    // Wire up auto-winner on score input for each batch row
-    tbody.querySelectorAll('tr').forEach(row => {
-      const scoreInputs = ['team1Score', 'team2Score']
-      const team1ScoreInput = row.querySelector(`[data-field="team1Score"]`)
-      const team2ScoreInput = row.querySelector(`[data-field="team2Score"]`)
-      const winningTeamSelect = row.querySelector(`[data-field="winningTeam"]`)
-      const rowMatchIndex = parseInt(row.dataset.batchIndex, 10)
+    // Wire up auto-winner on score input
+    container.querySelectorAll('.match-card').forEach(card => {
+      const team1ScoreInput = card.querySelector('[data-field="team1Score"]')
+      const team2ScoreInput = card.querySelector('[data-field="team2Score"]')
+      const winningTeamSelect = card.querySelector('[data-field="winningTeam"]')
+      const matchIndex = parseInt(card.dataset.batchIndex, 10)
 
       const updateBatchRowWinner = () => {
         if (!winningTeamSelect) return
         const team1Score = parseInt(team1ScoreInput?.value) || 0
         const team2Score = parseInt(team2ScoreInput?.value) || 0
 
-        // Only auto-select if scores differ and at least one is > 0
         if (team1Score !== team2Score && (team1Score > 0 || team2Score > 0)) {
           const winningTeam = team1Score > team2Score ? 1 : 2
           winningTeamSelect.value = winningTeam
-          this.batchMatches[rowMatchIndex].winningTeam = winningTeam
+          this.batchMatches[matchIndex].winningTeam = winningTeam
         } else {
-          // Tied or both 0 — clear manual selection hint
           winningTeamSelect.value = ''
         }
       }
 
-      scoreInputs.forEach(id => {
-        const input = row.querySelector(`[data-field="${id}"]`)
-        if (input) {
-          input.addEventListener('input', updateBatchRowWinner)
-        }
-      })
+      team1ScoreInput?.addEventListener('input', updateBatchRowWinner)
+      team2ScoreInput?.addEventListener('input', updateBatchRowWinner)
     })
   }
 
@@ -2300,8 +2252,8 @@ class TennisRankingSystem {
 
   /** Validate and send all batch matches to the server */
   async confirmBatchMatches() {
-    const tbody = document.getElementById('batchMatchesBody')
-    if (!tbody || !this.batchMatches.length) {
+    const container = document.getElementById('batchCardsContainer')
+    if (!container || !this.batchMatches.length) {
       this.showToast('Vui lòng thêm ít nhất một trận đấu', 'error')
       return
     }
@@ -2317,20 +2269,20 @@ class TennisRankingSystem {
       return
     }
 
-    const rows = tbody.querySelectorAll('tr')
+    const cards = container.querySelectorAll('.match-card')
     const matches = []
 
-    for (const row of rows) {
-      const index = parseInt(row.dataset.batchIndex, 10)
+    for (const card of cards) {
+      const index = parseInt(card.dataset.batchIndex, 10)
       const match = this.batchMatches[index]
 
-      const player1Id = parseInt(row.querySelector('[data-field="player1Id"]')?.value)
-      const player2Id = parseInt(row.querySelector('[data-field="player2Id"]')?.value)
-      const player3Id = parseInt(row.querySelector('[data-field="player3Id"]')?.value)
-      const player4Id = parseInt(row.querySelector('[data-field="player4Id"]')?.value)
-      const team1Score = parseInt(row.querySelector('[data-field="team1Score"]')?.value) || 0
-      const team2Score = parseInt(row.querySelector('[data-field="team2Score"]')?.value) || 0
-      let winningTeam = parseInt(row.querySelector('[data-field="winningTeam"]')?.value)
+      const player1Id = parseInt(card.querySelector('[data-field="player1Id"]')?.value)
+      const player2Id = parseInt(card.querySelector('[data-field="player2Id"]')?.value)
+      const player3Id = parseInt(card.querySelector('[data-field="player3Id"]')?.value)
+      const player4Id = parseInt(card.querySelector('[data-field="player4Id"]')?.value)
+      const team1Score = parseInt(card.querySelector('[data-field="team1Score"]')?.value) || 0
+      const team2Score = parseInt(card.querySelector('[data-field="team2Score"]')?.value) || 0
+      let winningTeam = parseInt(card.querySelector('[data-field="winningTeam"]')?.value)
 
       const isSolo = match.matchType === 'solo'
 
@@ -2414,13 +2366,18 @@ class TennisRankingSystem {
    *  Team nicknames (e.g. "Hưng Tâm") are mapped to player pairs via
    *  mapTeamToPlayerPair so the best matches are pre-selected. */
   renderParsedMatchesTable() {
-    const tbody = document.getElementById('parsedMatchesBody')
-    if (!tbody) return
+    const container = document.getElementById('parsedCardsContainer')
+    if (!container) return
 
-    // Get active seasons for the dropdown
     const activeSeasons = (this.seasons || []).filter(s => s.is_active)
+    const today = new Date().toISOString().split('T')[0]
+    const latestPlayDate = this.playDates?.[0]?.play_date?.split('T')[0] || today
+    const latestSeasonId = activeSeasons.length > 0 ? activeSeasons[0].id : null
+    const seasonOptions = activeSeasons.map(s => {
+      const sel = s.id === latestSeasonId ? ' selected' : ''
+      return `<option value="${s.id}"${sel}>${this.escapeHtml(s.name)}</option>`
+    }).join('')
 
-    // Helper: build <option> strings with a selected attribute
     const buildOptions = (selectedId) => {
       const options = this.players.map(p => {
         const sel = p.id === selectedId ? ' selected' : ''
@@ -2429,66 +2386,56 @@ class TennisRankingSystem {
       return `<option value="">-- Chọn --</option>${options}`
     }
 
-    const today = new Date().toISOString().split('T')[0]
-    // Default to the latest active season and latest play date
-    const latestSeasonId = activeSeasons.length > 0 ? activeSeasons[0].id : null
-    const latestPlayDate = this.playDates?.[0]?.play_date?.split('T')[0] || today
-
-    // Build season options with `selected` on the latest (not `value` on select, which doesn't work)
-    const seasonOptions = activeSeasons.map(s => {
-      const sel = s.id === latestSeasonId ? ' selected' : ''
-      return `<option value="${s.id}"${sel}>${this.escapeHtml(s.name)}</option>`
-    }).join('')
-
-    tbody.innerHTML = this.parsedMatchesBuffer.map((match, index) => {
+    container.innerHTML = this.parsedMatchesBuffer.map((match, index) => {
       const isSolo = match.matchType === 'solo'
+      const typeLabel = isSolo ? '1v1' : '4v4'
 
       if (isSolo) {
-        // ── Solo match: 2 player dropdowns ──────────────────────────
         const player1Id = this.fuzzyMatchPlayer(match.player1Name, this.players)
         const player3Id = this.fuzzyMatchPlayer(match.player3Name, this.players)
 
         return `
-          <tr data-index="${index}" data-match-type="solo">
-            <td><span style="font-size: 11px; color: var(--text-secondary);">Đội 1</span><br>
-              <select class="select-field" data-field="player1Id" style="font-size: 12px; padding: 4px;">
-                ${buildOptions(player1Id)}
-              </select>
-            </td>
-            <td><span style="font-size: 11px; color: var(--text-secondary);">Đội 2</span><br>
-              <select class="select-field" data-field="player3Id" style="font-size: 12px; padding: 4px;">
-                ${buildOptions(player3Id)}
-              </select>
-            </td>
-            <td>
-              <div style="display: flex; gap: 4px; align-items: center;">
-                <input type="number" class="input-field" data-field="team1Score" value="${match.team1Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
-                <span>-</span>
-                <input type="number" class="input-field" data-field="team2Score" value="${match.team2Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
+          <div class="match-card parsed-match-card" data-index="${index}" data-match-type="solo">
+            <div class="match-card-header">
+              <span class="match-type-badge">${typeLabel}</span>
+              <button class="match-delete-btn" data-parsed-remove="${index}" title="Xoá trận đấu">✕</button>
+            </div>
+            <div class="match-teams">
+              <div class="match-team match-team-1">
+                <span class="match-team-label">Đội 1</span>
+                <div class="match-player-selects">
+                  <select class="select-field" data-field="player1Id">${buildOptions(player1Id)}</select>
+                </div>
               </div>
-            </td>
-            <td>
-              <select class="select-field" data-field="winningTeam" style="font-size: 12px; padding: 4px;">
+              <div class="match-score">
+                <input type="number" class="input-field score-field" data-field="team1Score" value="${match.team1Score}" min="0" placeholder="0">
+                <span class="score-separator">:</span>
+                <input type="number" class="input-field score-field" data-field="team2Score" value="${match.team2Score}" min="0" placeholder="0">
+              </div>
+              <div class="match-team match-team-2">
+                <span class="match-team-label">Đội 2</span>
+                <div class="match-player-selects">
+                  <select class="select-field" data-field="player3Id">${buildOptions(player3Id)}</select>
+                </div>
+              </div>
+            </div>
+            <div class="match-footer">
+              <select class="select-field match-winner-select" data-field="winningTeam">
+                <option value="">Chọn đội thắng</option>
                 <option value="1" ${match.winningTeam === 1 ? 'selected' : ''}>Đội 1</option>
                 <option value="2" ${match.winningTeam === 2 ? 'selected' : ''}>Đội 2</option>
               </select>
-            </td>
-            <td><span style="font-size: 12px;">1v1</span></td>
-            <td>
-              <select class="select-field" data-field="seasonId" style="font-size: 12px; padding: 4px;">
+              <select class="select-field match-season-select" data-field="seasonId">
                 <option value="">-- Chọn --</option>
                 ${seasonOptions}
               </select>
-            </td>
-            <td>
-              <input type="date" class="input-field" data-field="playDate" value="${latestPlayDate}" style="font-size: 12px; padding: 4px;">
-            </td>
-          </tr>
+              <input type="date" class="input-field match-date-input" data-field="playDate" value="${latestPlayDate}">
+            </div>
+          </div>
         `
       }
 
-      // ── Duo match: 2 team columns, each with 2 player dropdowns ──
-      // Map team nicknames (e.g. "Hưng Tâm") to pairs of players
+      // ── Duo match ──
       const team1Pair = this.mapTeamToPlayerPair(
         [match.player1Name, match.player2Name].filter(Boolean).join(' '),
         this.players
@@ -2498,12 +2445,11 @@ class TennisRankingSystem {
         this.players
       )
 
-      const team1Player1Id = team1Pair?.player1Id || null
-      const team1Player2Id = team1Pair?.player2Id || null
-      const team2Player1Id = team2Pair?.player1Id || null
-      const team2Player2Id = team2Pair?.player2Id || null
+      const team1P1 = team1Pair?.player1Id || null
+      const team1P2 = team1Pair?.player2Id || null
+      const team2P1 = team2Pair?.player1Id || null
+      const team2P2 = team2Pair?.player2Id || null
 
-      // Build team label showing matched player names (for display)
       const buildTeamLabel = (pair) => {
         if (!pair) return ''
         const names = [pair.player1Id, pair.player2Id]
@@ -2519,83 +2465,94 @@ class TennisRankingSystem {
       const team1Label = this.escapeHtml(buildTeamLabel(team1Pair))
       const team2Label = this.escapeHtml(buildTeamLabel(team2Pair))
 
+      const player2Html = team1P2 ? `<select class="select-field" data-field="player2Id">${buildOptions(team1P2)}</select>` : ''
+      const player4Html = team2P2 ? `<select class="select-field" data-field="player4Id">${buildOptions(team2P2)}</select>` : ''
+      const label1Html = team1Label ? `<span class="match-player-label">${team1Label}</span>` : ''
+      const label2Html = team2Label ? `<span class="match-player-label">${team2Label}</span>` : ''
+
       return `
-        <tr data-index="${index}" data-match-type="duo">
-          <td>
-            <span style="font-size: 11px; color: var(--text-secondary);">Đội 1</span><br>
-            <select class="select-field" data-field="player1Id" style="font-size: 12px; padding: 4px;">
-              ${buildOptions(team1Player1Id)}
-            </select>
-            ${team1Player2Id ? `
-            <select class="select-field" data-field="player2Id" style="font-size: 12px; padding: 4px; margin-top: 2px;">
-              ${buildOptions(team1Player2Id)}
-            </select>
-            <span style="font-size: 10px; color: var(--text-secondary); display: block;">${team1Label}</span>` : ''}
-          </td>
-          <td>
-            <span style="font-size: 11px; color: var(--text-secondary);">Đội 2</span><br>
-            <select class="select-field" data-field="player3Id" style="font-size: 12px; padding: 4px;">
-              ${buildOptions(team2Player1Id)}
-            </select>
-            ${team2Player2Id ? `
-            <select class="select-field" data-field="player4Id" style="font-size: 12px; padding: 4px; margin-top: 2px;">
-              ${buildOptions(team2Player2Id)}
-            </select>
-            <span style="font-size: 10px; color: var(--text-secondary); display: block;">${team2Label}</span>` : ''}
-          </td>
-          <td>
-            <div style="display: flex; gap: 4px; align-items: center;">
-              <input type="number" class="input-field" data-field="team1Score" value="${match.team1Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
-              <span>-</span>
-              <input type="number" class="input-field" data-field="team2Score" value="${match.team2Score}" min="0" style="width: 50px; padding: 4px; font-size: 12px;">
+        <div class="match-card parsed-match-card" data-index="${index}" data-match-type="duo">
+          <div class="match-card-header">
+            <span class="match-type-badge">${typeLabel}</span>
+            <button class="match-delete-btn" data-parsed-remove="${index}" title="Xoá trận đấu">✕</button>
+          </div>
+          <div class="match-teams">
+            <div class="match-team match-team-1">
+              <span class="match-team-label">Đội 1</span>
+              <div class="match-player-selects">
+                <select class="select-field" data-field="player1Id">${buildOptions(team1P1)}</select>
+                ${player2Html}
+                ${label1Html}
+              </div>
             </div>
-          </td>
-          <td>
-            <select class="select-field" data-field="winningTeam" style="font-size: 12px; padding: 4px;">
+            <div class="match-score">
+              <input type="number" class="input-field score-field" data-field="team1Score" value="${match.team1Score}" min="0" placeholder="0">
+              <span class="score-separator">:</span>
+              <input type="number" class="input-field score-field" data-field="team2Score" value="${match.team2Score}" min="0" placeholder="0">
+            </div>
+            <div class="match-team match-team-2">
+              <span class="match-team-label">Đội 2</span>
+              <div class="match-player-selects">
+                <select class="select-field" data-field="player3Id">${buildOptions(team2P1)}</select>
+                ${player4Html}
+                ${label2Html}
+              </div>
+            </div>
+          </div>
+          <div class="match-footer">
+            <select class="select-field match-winner-select" data-field="winningTeam">
+              <option value="">Chọn đội thắng</option>
               <option value="1" ${match.winningTeam === 1 ? 'selected' : ''}>Đội 1</option>
               <option value="2" ${match.winningTeam === 2 ? 'selected' : ''}>Đội 2</option>
             </select>
-          </td>
-          <td><span style="font-size: 12px;">4v4</span></td>
-          <td>
-            <select class="select-field" data-field="seasonId" style="font-size: 12px; padding: 4px;">
+            <select class="select-field match-season-select" data-field="seasonId">
               <option value="">-- Chọn --</option>
               ${seasonOptions}
             </select>
-          </td>
-          <td>
-            <input type="date" class="input-field" data-field="playDate" value="${latestPlayDate}" style="font-size: 12px; padding: 4px;">
-          </td>
-        </tr>
+            <input type="date" class="input-field match-date-input" data-field="playDate" value="${latestPlayDate}">
+          </div>
+        </div>
       `
     }).join('')
+
+    // Wire up remove buttons
+    container.querySelectorAll('[data-parsed-remove]').forEach(btn => {
+      const idx = parseInt(btn.dataset.parsedRemove, 10)
+      btn.addEventListener('click', () => this.removeParsedMatchRow(idx))
+    })
+  }
+
+  /** Remove a parsed match row by index */
+  removeParsedMatchRow(index) {
+    this.parsedMatchesBuffer.splice(index, 1)
+    this.renderParsedMatchesTable()
   }
 
   /** Bulk confirm all parsed matches and create them in the database */
   async confirmParsedMatches() {
-    const tbody = document.getElementById('parsedMatchesBody')
-    if (!tbody || !this.parsedMatchesBuffer.length) {
+    const container = document.getElementById('parsedCardsContainer')
+    if (!container || !this.parsedMatchesBuffer.length) {
       this.showToast('Không có dữ liệu để xác nhận', 'error')
       return
     }
 
-    // Read all row data from the preview table
-    const rows = tbody.querySelectorAll('tr')
+    // Read all data from the preview cards
+    const cards = container.querySelectorAll('.match-card')
     const matches = []
 
-    for (const row of rows) {
-      const index = row.dataset.index
+    for (const card of cards) {
+      const index = card.dataset.index
       const match = this.parsedMatchesBuffer[index]
 
-      const player1Id = parseInt(row.querySelector('[data-field="player1Id"]')?.value)
-      const player2Id = parseInt(row.querySelector('[data-field="player2Id"]')?.value)
-      const player3Id = parseInt(row.querySelector('[data-field="player3Id"]')?.value)
-      const player4Id = parseInt(row.querySelector('[data-field="player4Id"]')?.value)
-      const team1Score = parseInt(row.querySelector('[data-field="team1Score"]')?.value) || 0
-      const team2Score = parseInt(row.querySelector('[data-field="team2Score"]')?.value) || 0
-      const winningTeam = parseInt(row.querySelector('[data-field="winningTeam"]')?.value)
-      const seasonId = parseInt(row.querySelector('[data-field="seasonId"]')?.value)
-      const playDate = row.querySelector('[data-field="playDate"]')?.value
+      const player1Id = parseInt(card.querySelector('[data-field="player1Id"]')?.value)
+      const player2Id = parseInt(card.querySelector('[data-field="player2Id"]')?.value)
+      const player3Id = parseInt(card.querySelector('[data-field="player3Id"]')?.value)
+      const player4Id = parseInt(card.querySelector('[data-field="player4Id"]')?.value)
+      const team1Score = parseInt(card.querySelector('[data-field="team1Score"]')?.value) || 0
+      const team2Score = parseInt(card.querySelector('[data-field="team2Score"]')?.value) || 0
+      const winningTeam = parseInt(card.querySelector('[data-field="winningTeam"]')?.value)
+      const seasonId = parseInt(card.querySelector('[data-field="seasonId"]')?.value)
+      const playDate = card.querySelector('[data-field="playDate"]')?.value
 
       const isSolo = match.matchType === 'solo'
 

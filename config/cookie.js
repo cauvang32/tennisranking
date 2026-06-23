@@ -23,6 +23,7 @@ export const withCookieDefaults = (options = {}) => {
 /**
  * Returns all cookie paths that need to be cleared during logout.
  * Handles subpath + root path cookies for maximum compatibility.
+ * Also clears paths from common historical subpaths (e.g., /tennis → / migration).
  */
 export const getCookiePathsToClear = () => {
   const paths = new Set(['/'])
@@ -35,6 +36,7 @@ export const getCookiePathsToClear = () => {
     paths.add(`${cleanSubpath}/api`)
     paths.add(`${cleanSubpath}/api/`)
   }
+  // Always clear root-level API paths (in case cookies were set there)
   paths.add('/api')
   paths.add('/api/')
   return Array.from(paths)

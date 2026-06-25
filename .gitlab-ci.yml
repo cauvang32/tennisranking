@@ -19,7 +19,7 @@ stages:
 
 variables:
   DEPLOY_PATH: /home/vps/tennisranking
-  GIT_ORIGIN: https://git.quocanh.me/cauvang32/tennisranking
+  GIT_ORIGIN: https://git.quocanh.tech/cauvang32/tennisranking
   NPM_CACHE_DIR: "$CI_PROJECT_DIR/.cache/npm"
   # Note: NODE_ENV=production is set only at deploy time, not globally
   # This ensures devDependencies (like vite) are installed during build

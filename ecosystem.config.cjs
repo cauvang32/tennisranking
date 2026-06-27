@@ -45,6 +45,10 @@ module.exports = {
       // Delay between restarts to prevent restart storms
       restart_delay: 5000,
 
+      // Load all environment variables from .env (PM2 does NOT load .env automatically).
+      // Without this, the app falls back to defaults (e.g. redis://localhost:6379).
+      env_file: '.env',
+
       env: {
         NODE_ENV: 'development',
         RUN_WORKERS: 'false',

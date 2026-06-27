@@ -399,7 +399,7 @@ export async function initRateLimitRedis() {
   // connects asynchronously in the background. We just need to wait for it to
   // become ready and probe SCRIPT LOAD so rate limiting is ready before the
   // first HTTP request arrives.
-  const TIMEOUT_MS = 5000
+  const TIMEOUT_MS = 15000
 
   try {
     // Wait for the IORedis client to become ready (it connects in background).

@@ -84,6 +84,19 @@ const createRedisRateLimitStore = (suffix) => new RedisStore({
 
     try {
       const result = await rateLimitRedis.call(...args)
+
+      // Handle successful results from EVALSHA/EVAL Lua scripts.
+      // rate-limit-redis v4.x expects [totalHits, timeToExpire].
+      // When Redis is under memory pressure, the Lua script may return
+      // [0, 0] (key was evicted between PTTL and INCR).  express-rate-limit
+      // v7.x validates totalHits > 0, so we must return [1, 0] (expired key)
+      // instead of [0, 0].
+      if (Array.isArray(result) && result.length === 2) {
+        const hits = Number(result[0])
+        if (hits < 1) {
+          return [1, 0]
+        }
+      }
       return result
     } catch (err) {
       // rate-limit-redis v4.x expects sendCommand to return arrays for all
@@ -93,11 +106,9 @@ const createRedisRateLimitStore = (suffix) => new RedisStore({
       // library then calls EVALSHA with that dummy SHA, which fails with
       // "NOSCRIPT".  The retryableIncrement catch block reloads the script
       // and retries — but if Redis is still down, sendCommand's catch block
-      // returns [] (below).  parseScriptResponse checks Array.isArray &&
-      // results.length === 2.  [] has length 0 → throws "Expected 2 replies".
-      //
-      // Fix: return [0, 0] (hit=0, ttl=0ms) so the limiter thinks the key
-      // expired immediately — effectively fail-open without crashing.
+      // returns [1, 0] (below).  parseScriptResponse checks Array.isArray &&
+      // results.length === 2.  [1, 0] passes both checks — effectively
+      // fail-open without crashing.
 
       // Configuration errors (WRONGPASS, NOAUTH) — fail-open: return [1, 0]
       // (1 hit, 0ms TTL = expired immediately).  A config error means nobody

@@ -64,7 +64,7 @@ services:
     container_name: tennis-redis
     ports:
       - "6380:6379"
-    command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy allkeys-lru
+    command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy noeviction
     volumes:
       - redis-data:/data
     restart: unless-stopped

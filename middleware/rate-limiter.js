@@ -42,87 +42,101 @@ const REDIS_DOWN_WARN_THRESHOLD = 30 // seconds
 
 const createRedisRateLimitStore = (suffix) => new RedisStore({
   sendCommand: async (...args) => {
-    try {
-      // If Redis is offline, ioredis throws immediately because offlineQueue is false.
-      // rate-limit-redis calls 'SCRIPT LOAD' on startup. If this throws, the app crashes.
-      //
-      // Distinguish "Redis hasn't connected yet" (startup race) from "Redis is truly down"
-      // (actual failure). During startup, Redis may take a few hundred ms to become ready;
-      // instead of immediately falling back to a dummy store, wait up to 3s for readiness.
-      // Only after that timeout do we treat Redis as down.
-      if (args[0] === 'SCRIPT' && args[1] === 'LOAD') {
-        if (rateLimitRedis.status !== 'ready') {
-          // Check whether Redis ever becomes ready within a short window.
-          // This handles the startup race where the rate-limit client connects
-          // before Redis is fully ready (cache client may connect faster because
-          // it uses more aggressive retry settings).
-          const startedDown = Date.now()
-          let becameReady = false
+    // rate-limit-redis v4.x sendCommand receives raw command args:
+    //   args[0] = "SCRIPT", args[1] = "LOAD", args[2] = <lua-script>
+    //   args[0] = "EVALSHA",  args[1] = <sha>, args[2] = <key>, ...
+    //   args[0] = "EVAL",    args[1] = <lua>,  args[2] = <key>, ...
 
-          // Wait up to 3 seconds for Redis to become ready (startup race window)
-          while (Date.now() - startedDown < 3000) {
-            if (rateLimitRedis.status === 'ready' || rateLimitRedis.status === 'connecting') {
-              await new Promise(resolve => setTimeout(resolve, 100))
-              if (rateLimitRedis.status === 'ready') {
-                becameReady = true
-                break
-              }
-            } else {
-              // status is 'end' / 'fault' / 'disconnected' — Redis is truly down
+    // ── SCRIPT LOAD (startup) ──────────────────────────────────────────────
+    if (args[0] === 'SCRIPT' && args[1] === 'LOAD') {
+      if (rateLimitRedis.status !== 'ready') {
+        // Wait up to 3 seconds for Redis to become ready (startup race window).
+        const startedDown = Date.now()
+        let becameReady = false
+
+        while (Date.now() - startedDown < 3000) {
+          if (rateLimitRedis.status === 'ready' || rateLimitRedis.status === 'connecting') {
+            await new Promise(resolve => setTimeout(resolve, 100))
+            if (rateLimitRedis.status === 'ready') {
+              becameReady = true
               break
             }
-          }
-
-          if (!becameReady) {
-            if (!redisDownSince) {
-              redisDownSince = Date.now()
-              console.warn(`⚠️ Redis unavailable for rate limiting — using dummy store (will auto-recover when Redis is back)`)
-            }
-            return 'dummy_sha_to_prevent_startup_crash'
+          } else {
+            // status is 'end' / 'fault' / 'disconnected' — Redis is truly down
+            break
           }
         }
-        // Redis is back online — reset the counter
-        if (redisDownSince) {
-          console.log(`✅ Rate limiter: Redis recovered (${Math.round((Date.now() - redisDownSince) / 1000)}s downtime)`)
-          redisDownSince = null
+
+        if (!becameReady) {
+          if (!redisDownSince) {
+            redisDownSince = Date.now()
+            console.warn(`⚠️ Redis unavailable for rate limiting — requests will NOT be rate-limited until Redis is back`)
+          }
+          return 'dummy_sha_to_prevent_startup_crash'
         }
       }
-      return await rateLimitRedis.call(...args)
-    } catch (err) {
-      // Distinguish transient errors from configuration errors.
-      // Transient errors (connection refused, timeout) → fail-open (let requests through).
-      // Configuration errors (WRONGPASS) → fail-closed (block requests) with a warning.
-      const isTransient = err.message?.includes('ECONNREFUSED') ||
-        err.message?.includes('timeout') ||
-        err.message?.includes('Connection refused') ||
-        err.message?.includes('connect ETIMEDOUT') ||
-        err.message?.includes('getaddrinfo')
+      // Redis is back online — reset the counter
+      if (redisDownSince) {
+        console.log(`✅ Rate limiter: Redis recovered (${Math.round((Date.now() - redisDownSince) / 1000)}s downtime)`)
+        redisDownSince = null
+      }
+    }
 
+    try {
+      const result = await rateLimitRedis.call(...args)
+      return result
+    } catch (err) {
+      // rate-limit-redis v4.x expects sendCommand to return arrays for all
+      // EVALSHA/EVAL results (parseScriptResponse checks Array.isArray(result)).
+      //
+      // When Redis is down, SCRIPT LOAD returns a dummy SHA string.  The
+      // library then calls EVALSHA with that dummy SHA, which fails with
+      // "NOSCRIPT".  The retryableIncrement catch block reloads the script
+      // and retries — but if Redis is still down, sendCommand's catch block
+      // returns [] (below).  parseScriptResponse checks Array.isArray &&
+      // results.length === 2.  [] has length 0 → throws "Expected 2 replies".
+      //
+      // Fix: return [0, 0] (hit=0, ttl=0ms) so the limiter thinks the key
+      // expired immediately — effectively fail-open without crashing.
+
+      // Configuration errors (WRONGPASS, NOAUTH) — return [0, 0] (fail-open).
+      // A config error means nobody can rate-limit correctly anyway.
       const isConfigError = err.message?.includes('WRONGPASS') ||
         err.message?.includes('NOAUTH') ||
         err.message?.includes('invalid password') ||
         err.message?.includes('authentication')
 
       if (isConfigError) {
-        console.error(`⚠️ Rate limiter: Redis configuration error — ${err.message}. All requests will be blocked until fixed.`)
+        console.error(`⚠️ Rate limiter: Redis configuration error — ${err.message}.`)
         if (!redisDownSince) redisDownSince = Date.now()
-        return 'dummy_sha'
+        return [0, 0]
       }
 
-      if (isTransient) {
-        // Fail-open for transient errors: allow requests through without rate limiting
+      // Transient errors (connection refused, timeout, NOSCRIPT, closed, etc.)
+      // — fail-open: return [0, 0] so requests pass through without rate
+      // limiting.  This prevents the "Expected result to be array of values"
+      // and "Expected 2 replies" crashes from taking down PM2 workers.
+      if (err.message?.includes('ECONNREFUSED') ||
+          err.message?.includes('timeout') ||
+          err.message?.includes('Connection refused') ||
+          err.message?.includes('connect ETIMEDOUT') ||
+          err.message?.includes('getaddrinfo') ||
+          err.message?.includes('Connection is closed.') ||
+          err.message?.includes('Connection has errored') ||
+          err.message?.includes('Reconnecting') ||
+          err.message?.includes('NOSCRIPT')) {
         if (!redisDownSince) {
           redisDownSince = Date.now()
           console.warn(`⚠️ Rate limiter: Redis temporarily unavailable — requests will NOT be rate-limited until Redis recovers`)
         }
-        return undefined
+        return [0, 0]
       }
 
-      // Unknown error — fail-closed as safety net
+      // Unknown error — fail-open as safety net (better than crashing workers)
       if (redisDownSince && (Date.now() - redisDownSince) > REDIS_DOWN_WARN_THRESHOLD * 1000) {
-        console.warn(`⚠️ Rate limiter: Redis has been down for ${Math.round((Date.now() - redisDownSince) / 1000)}s — all requests blocked (fail-closed)`)
+        console.warn(`⚠️ Rate limiter: Redis has been down for ${Math.round((Date.now() - redisDownSince) / 1000)}s — requests will NOT be rate-limited (fail-open)`)
       }
-      return 'dummy_sha'
+      return [0, 0]
     }
   },
   prefix: `rate-limit-redis-tennis:${suffix}:`,

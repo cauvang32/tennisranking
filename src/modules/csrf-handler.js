@@ -32,6 +32,12 @@ export async function getCSRFToken(apiBase) {
     console.error('Failed to get CSRF token:', error)
   }
 
+  // If the cached token exists but the fetch failed (e.g. session changed),
+  // clear it so the next request will re-fetch a fresh token.
+  if (cachedCsrfToken) {
+    cachedCsrfToken = null
+  }
+
   return null
 }
 

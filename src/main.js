@@ -393,6 +393,9 @@ class TennisRankingSystem {
       this.isAuthenticated = true
       this.user = result.user
       this.csrfToken = result.csrfToken
+      // Clear the module-level cached token so the next request fetches a
+      // fresh user-specific CSRF token (derived from the new user ID).
+      resetCSRFToken()
       this.updateUIForAuthStatus()
       this.updateScreenshotSectionVisibility()
       await this.loadInitialData()

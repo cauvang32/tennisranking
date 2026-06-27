@@ -84,7 +84,7 @@ export const createInlineAuthRouter = ({
         res.cookie('authToken', token, withCookieDefaults({ httpOnly: true, maxAge: 15 * 60 * 1000 }))
         res.cookie('refreshToken', refreshToken, withCookieDefaults({ httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 }))
 
-        const csrfToken = tokens.create(deriveCSRFSecretFromUser(req.user || { id: 'anonymous' }))
+        const csrfToken = tokens.create(deriveCSRFSecretFromUser(user))
 
         const isAPIClient = !req.headers.accept?.includes('text/html') && req.headers.accept?.includes('application/json')
         const response = {
@@ -175,7 +175,7 @@ export const createInlineAuthRouter = ({
       res.cookie('authToken', generateToken(user), withCookieDefaults({ httpOnly: true, maxAge: 15 * 60 * 1000 }))
       res.json({
         success: true,
-        csrfToken: tokens.create(deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })),
+        csrfToken: tokens.create(deriveCSRFSecretFromUser(user)),
         user
       })
     } catch (error) {

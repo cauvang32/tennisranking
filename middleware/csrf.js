@@ -64,7 +64,7 @@ export const globalCSRFProtection = (req, res, next) => {
   if (matchesApiRoute(req, '/api/devices/register') && !req.cookies.authToken) return next()
 
   // Apply CSRF validation for all other state-changing operations
-  const token = req.get('X-CSRF-Token') || req.body._csrf
+  const token = req.get('X-CSRF-Token') || req.body?._csrf
 
   const secret = deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })
 

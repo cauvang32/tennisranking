@@ -552,6 +552,7 @@ app.use((err, _req, res, _next) => {
 const server = app.listen(PORT, () => {
   console.log(`🎾 Tennis Ranking System Server running on http://localhost:${PORT}`)
   console.log(`🗄️ Using PostgreSQL database for data storage`)
+  console.log(`🔌 Redis URL configured: ${config.redisUrl}`)
   if (process.send) process.send('ready') // PM2 wait_ready
 })
 

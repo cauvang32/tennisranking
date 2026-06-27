@@ -47,7 +47,6 @@ module.exports = {
 
       // Load all environment variables from .env (PM2 does NOT load .env automatically).
       // Without this, the app falls back to defaults (e.g. redis://localhost:6379).
-      env_file: '.env',
 
       env: {
         NODE_ENV: 'development',

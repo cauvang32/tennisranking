@@ -290,9 +290,9 @@ const corsOptions = {
     if (allowedOrigins.includes(origin) || (allowDevOrigins && localNetworkRegex.test(origin))) {
       callback(null, true)
     } else {
-      if (isDevelopment) console.log('CORS: Origin blocked:', origin)
-      // Return 403 instead of proceeding without CORS headers
-      return res.status(403).json({ error: 'Not allowed by CORS' })
+      console.warn(`⚠️ CORS request blocked from origin: ${origin}`)
+      // Deny CORS — browser will block the response; no crash on the server side
+      callback(null, false)
     }
   },
   credentials: true,

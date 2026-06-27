@@ -441,5 +441,11 @@ export async function initRateLimitRedis() {
  * Disconnect rate-limit Redis client (for graceful shutdown).
  */
 export async function disconnectRateLimitRedis() {
-  try { await rateLimitRedis.quit() } catch { /* ignore */ }
+  try {
+    rateLimitRedis.removeAllListeners('close')
+    rateLimitRedis.removeAllListeners('end')
+    rateLimitRedis.removeAllListeners('reconnecting')
+    rateLimitRedis.removeAllListeners('error')
+    await rateLimitRedis.quit()
+  } catch { /* ignore */ }
 }

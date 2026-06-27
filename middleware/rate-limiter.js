@@ -89,15 +89,40 @@ const createRedisRateLimitStore = (suffix) => new RedisStore({
       }
       return await rateLimitRedis.call(...args)
     } catch (err) {
-      if (err.message && err.message.includes('enableOfflineQueue')) {
-        // Log warning if Redis has been down for more than threshold
-        if (redisDownSince && (Date.now() - redisDownSince) > REDIS_DOWN_WARN_THRESHOLD * 1000) {
-          console.warn(`⚠️ Rate limiter: Redis has been down for ${Math.round((Date.now() - redisDownSince) / 1000)}s — rate limiting is disabled (fail-closed)`)
-        }
-        // For EVALSHA or other commands when offline, just throw an error that rate-limit-redis will catch and fail-open
-        throw new Error('Redis offline')
+      // Distinguish transient errors from configuration errors.
+      // Transient errors (connection refused, timeout) → fail-open (let requests through).
+      // Configuration errors (WRONGPASS) → fail-closed (block requests) with a warning.
+      const isTransient = err.message?.includes('ECONNREFUSED') ||
+        err.message?.includes('timeout') ||
+        err.message?.includes('Connection refused') ||
+        err.message?.includes('connect ETIMEDOUT') ||
+        err.message?.includes('getaddrinfo')
+
+      const isConfigError = err.message?.includes('WRONGPASS') ||
+        err.message?.includes('NOAUTH') ||
+        err.message?.includes('invalid password') ||
+        err.message?.includes('authentication')
+
+      if (isConfigError) {
+        console.error(`⚠️ Rate limiter: Redis configuration error — ${err.message}. All requests will be blocked until fixed.`)
+        if (!redisDownSince) redisDownSince = Date.now()
+        return 'dummy_sha'
       }
-      throw err
+
+      if (isTransient) {
+        // Fail-open for transient errors: allow requests through without rate limiting
+        if (!redisDownSince) {
+          redisDownSince = Date.now()
+          console.warn(`⚠️ Rate limiter: Redis temporarily unavailable — requests will NOT be rate-limited until Redis recovers`)
+        }
+        return undefined
+      }
+
+      // Unknown error — fail-closed as safety net
+      if (redisDownSince && (Date.now() - redisDownSince) > REDIS_DOWN_WARN_THRESHOLD * 1000) {
+        console.warn(`⚠️ Rate limiter: Redis has been down for ${Math.round((Date.now() - redisDownSince) / 1000)}s — all requests blocked (fail-closed)`)
+      }
+      return 'dummy_sha'
     }
   },
   prefix: `rate-limit-redis-tennis:${suffix}:`,
@@ -340,11 +365,45 @@ export function logRateLimitConfig() {
  * Call this from server.js after the cache client connects so both
  * Redis clients start at roughly the same time, avoiding the startup race.
  */
-export function initRateLimitRedis() {
-  // If already created (module load), just ensure it's connecting.
-  // If not yet created (lazy mode), create it now.
-  if (!rateLimitRedisCreated) {
-    createRateLimitRedisClient()
+export async function initRateLimitRedis() {
+  // The rateLimitRedis client was created at module load (line 23) and already
+  // connects asynchronously in the background. We just need to wait for it to
+  // become ready and probe SCRIPT LOAD so rate limiting is ready before the
+  // first HTTP request arrives.
+  const TIMEOUT_MS = 5000
+
+  try {
+    // Wait for the IORedis client to become ready (it connects in background).
+    // Use a timeout so server startup is not blocked forever if Redis is down.
+    await Promise.race([
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Redis probe timed out after ' + TIMEOUT_MS + 'ms')), TIMEOUT_MS)
+      ),
+      new Promise((resolve, reject) => {
+        const onReady = () => resolve()
+        const onError = () => reject(new Error('Redis connection failed'))
+        // Already ready?
+        if (rateLimitRedis.status === 'ready') return resolve()
+        // Connecting? Wait for it.
+        if (rateLimitRedis.status === 'connecting') {
+          rateLimitRedis.once('ready', onReady).once('error', onError)
+        } else {
+          // Not yet started — trigger connection, then wait.
+          rateLimitRedis.connect().then(() => {
+            rateLimitRedis.once('ready', onReady).once('error', onError)
+          }).catch(onError)
+        }
+      })
+    ])
+
+    // Probe PING to verify the store will work on first request.
+    await rateLimitRedis.call('PING')
+    console.log('✅ Rate limiter Redis client initialized successfully')
+  } catch (error) {
+    console.warn('⚠️  Rate limiter Redis not ready at startup:', error.message,
+      '— rate limiting will engage on first request (may add ~3s delay)')
+    // Don't throw — let the server start. The 3-second blocking loop on
+    // first request handles recovery gracefully.
   }
   return rateLimitRedis
 }

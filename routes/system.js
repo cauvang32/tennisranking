@@ -113,7 +113,6 @@ export const createSystemRouter = ({
   // ── SSE — Server-Sent Events for real-time updates ────────────────────────
   // Per-IP connection limits prevent a single client from opening all slots.
   // Anonymous connections are allowed — the data version broadcast is public.
-  const maxSsePerIp = Math.max(10, Math.floor(config.maxSseClients / 50)) // ~10 per IP, max 1000 total
   const ipConnections = new Map() // IP -> Set of responses
 
   // Periodic cleanup of stale IP entries (every 5 minutes)
@@ -125,6 +124,8 @@ export const createSystemRouter = ({
   sseCleanupInterval.unref?.()
 
   router.get('/api/events', (req, res) => {
+    // Read maxSsePerIp dynamically from config so runtime env changes take effect.
+    const maxSsePerIp = Math.max(10, Math.floor(config.maxSseClients / 50))
     const clientIP = getRealClientIP(req)
     let ipConns = ipConnections.get(clientIP)
     if (!ipConns) {
@@ -219,5 +220,10 @@ export const createSystemRouter = ({
     })
   })
 
+  // Export interval for graceful shutdown (clears stale SSE references).
+  Object.defineProperty(router, 'sseCleanupInterval', {
+    value: sseCleanupInterval,
+    enumerable: false
+  })
   return router
 }

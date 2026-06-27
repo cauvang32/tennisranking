@@ -37,3 +37,8 @@ logs.txt
 .db-credentials
 keys/
 SECURITY_AUDIT.md
+.findings.json
+.gitignore
+.claude/tracer-findings.json
+.gitignore
+simplification-findings.json

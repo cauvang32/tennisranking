@@ -1,0 +1,8 @@
+[
+  {
+    "file": "server.js",
+    "line": 349,
+    "summary": "subpathNorm computed twice (lines 349, 363) — extract to a utility or variable at module scope",
+    "failure_scenario": "If SUBPATH normalization logic changes (e.g., adding slash-stripping edge cases), both copies must be updated; a single change to one will silently break the other, causing API route mismatches."
+  }
+]

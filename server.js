@@ -28,6 +28,7 @@ import { globalCSRFProtection, deriveCSRFSecretFromUser, tokens } from './middle
 import { createCompressionMiddleware } from './middleware/compression.js'
 import {
   applyGlobalRateLimiting, logRateLimitConfig, disconnectRateLimitRedis,
+  initRateLimitRedis,
   authLimiter, refreshLimiter, initLimiter, smartApiLimiter, conditionalRateLimit,
   createLimiter, deleteLimiter, exportLimiter, criticalLimiter, restoreLimiter,
   strictRestoreLimiter, loginLimiter, deviceRegisterLimiter
@@ -112,6 +113,9 @@ try {
   console.error('❌ Redis initialization failed:', error.message)
   console.warn('⚠️  Server starting without Redis cache')
 }
+
+// Initialize rate limiter Redis client (must connect before accepting requests)
+await initRateLimitRedis()
 
 try {
   await rankingsCache.clearAndPreload(db)
@@ -338,12 +342,14 @@ if (!isDevelopment) {
 // Subpath API normalisation (production + development)
 // Strips the configured subpath (e.g. /tennis) from incoming API requests so that
 // routes defined as /api/... work regardless of whether the client includes the
-// subpath prefix.  Previously this was disabled in development, which caused
-// /tennis/api/... → 404 when the frontend auto-detected the subpath.
+// subpath prefix.
 if (SUBPATH !== '/') {
+  // SUBPATH is normalized to always end with '/' (e.g. /tennis/).
+  // Strip the trailing slash for URL matching to avoid double-slash mismatches.
+  const subpathNorm = SUBPATH.endsWith('/') ? SUBPATH.slice(0, -1) : SUBPATH
   app.use((req, res, next) => {
-    if (req.originalUrl?.startsWith(`${SUBPATH}/api`)) {
-      const normalized = req.originalUrl.slice(SUBPATH.length)
+    if (req.originalUrl?.startsWith(`${subpathNorm}/api`)) {
+      const normalized = req.originalUrl.slice(subpathNorm.length)
       req.url = normalized.startsWith('/') ? normalized : `/${normalized}`
     }
     next()
@@ -354,7 +360,8 @@ if (SUBPATH !== '/') {
 // Skip routes that return user-specific or auth state — ETag only encodes
 // the data version, not the user identity. Without these exclusions an admin's
 // cached response for `/api/players` or `/api/admin/*` would be served to guests.
-const apiCachePaths = SUBPATH !== '/' ? [`${SUBPATH}/api`, '/api'] : ['/api']
+const subpathNorm = SUBPATH.endsWith('/') ? SUBPATH.slice(0, -1) : SUBPATH
+const apiCachePaths = subpathNorm !== '/' ? [`${subpathNorm}/api`, '/api'] : ['/api']
 
 // Routes that must never receive ETag / 304 responses because their bodies vary
 // per-user, per-session, or per-role. Public rankings (GET /rankings/*) are safe
@@ -482,7 +489,8 @@ app.use('/api/devices', createDeviceRouter(routeCtx))
 app.use('/api/admin', createAdminRouter(routeCtx))
 app.use('/api', createBackupRouter(routeCtx))
 app.use('/', createHealthRouter(routeCtx))
-app.use('/', createSystemRouter(routeCtx))
+const systemRouter = createSystemRouter(routeCtx)
+app.use('/', systemRouter)
 
 // ── Inline auth routes (login / logout / refresh / status) ────────────────
 // Extracted from server.js for modularity.
@@ -560,6 +568,7 @@ function gracefulShutdown(signal) {
     sseClients.clear()
     clearInterval(cacheCheckInterval)
     clearInterval(deviceCleanupInterval)
+    if (systemRouter?.sseCleanupInterval) clearInterval(systemRouter.sseCleanupInterval)
     try { await rankingsCache.disconnect() } catch { /* ignore */ }
     try { await disconnectRateLimitRedis() } catch { /* ignore */ }
     try { if (pushSender?.close) await pushSender.close() } catch { /* ignore */ }

@@ -801,9 +801,9 @@ class TennisRankingSystem {
     try {
       // Tab switching (new nav-btn class)
       document.querySelectorAll('.nav-btn').forEach(button => {
-        button.addEventListener('click', (e) => {
+        button.addEventListener('click', async (e) => {
           const tab = e.currentTarget.dataset.tab
-          if (tab) this.switchTab(tab)
+          if (tab) await this.switchTab(tab)
         })
       })
       
@@ -1410,6 +1410,10 @@ class TennisRankingSystem {
     // First hide all view mode sections
     this.hideAllViewModeSections()
 
+    // Save previous active tab for rollback on failure
+    const prevActiveBtn = document.querySelector('.nav-btn.active')
+    const prevActiveContent = document.querySelector('.tab-content.active')
+
     // Update nav buttons (new class)
     document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'))
     document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'))
@@ -1420,30 +1424,40 @@ class TennisRankingSystem {
     if (tabBtn) tabBtn.classList.add('active')
     if (tabContent) tabContent.classList.add('active')
 
-    if (tabName === 'rankings') {
-      // Setup view mode UI when switching to rankings
-      this.updateDateSelector()
-      this.updateSeasonSelector()
-      this.setupViewModeUI()
-      this.renderRankings()
-    } else if (tabName === 'matches') {
-      // Always start in single match mode when entering matches tab (fixes broken state on refresh)
-      this.switchToSingleMode()
-      // Ensure players are loaded before updating selects (fixes initial render race)
-      await this.loadPlayers()
-      this.updatePlayerSelects()
-      this.setTodaysDate()
-      this.renderMatchHistory()
-    } else if (tabName === 'players') {
-      this.renderPlayers()
-    } else if (tabName === 'seasons') {
-      this.renderSeasons()
-    } else if (tabName === 'accounts') {
-      this.renderAccounts()
-      // Also render cache status for admin users
-      if (this.user?.role === 'admin') {
-        this.renderCacheStatus()
+    try {
+      if (tabName === 'rankings') {
+        // Setup view mode UI when switching to rankings
+        this.updateDateSelector()
+        this.updateSeasonSelector()
+        this.setupViewModeUI()
+        await this.renderRankings()
+      } else if (tabName === 'matches') {
+        // Always start in single match mode when entering matches tab (fixes broken state on refresh)
+        this.switchToSingleMode()
+        // Ensure players are loaded before updating selects (fixes initial render race)
+        await this.loadPlayers()
+        this.updatePlayerSelects()
+        this.setTodaysDate()
+        await this.renderMatchHistory()
+      } else if (tabName === 'players') {
+        this.renderPlayers()
+      } else if (tabName === 'seasons') {
+        this.renderSeasons()
+      } else if (tabName === 'accounts') {
+        this.renderAccounts()
+        // Also render cache status for admin users
+        if (this.user?.role === 'admin') {
+          this.renderCacheStatus()
+        }
       }
+    } catch (error) {
+      // Revert UI to previous state so user can retry
+      if (prevActiveBtn) prevActiveBtn.classList.add('active')
+      if (prevActiveContent) prevActiveContent.classList.add('active')
+      if (tabBtn) tabBtn.classList.remove('active')
+      if (tabContent) tabContent.classList.remove('active')
+      this.showToast(`Lỗi khi tải tab ${tabName}`, 'error')
+      console.error(`Tab switch failed for ${tabName}:`, error)
     }
   }
 
@@ -1747,7 +1761,7 @@ class TennisRankingSystem {
       const dbNorm = normalizeText(p.name).toLowerCase()
       return dbNorm.includes(normalized) || normalized.includes(dbNorm)
     })
-    if (substringMatch) return (substringMatch.id !== undefined ? substringMatch.id : substringMatch.id)
+    if (substringMatch) return substringMatch.id
 
     // Check first word match (e.g. "Hưng Tâm" matches "Hưng" or "Tâm" individually)
     const words = normalized.split(/\s+/)
@@ -1762,7 +1776,7 @@ class TennisRankingSystem {
         const dbWords = dbNorm.split(/\s+/)
         return dbWords.some(w => w === lastWord || lastWord.startsWith(w) || w.startsWith(lastWord))
       })
-      if (nicknameMatch) return (nicknameMatch.id !== undefined ? nicknameMatch.id : nicknameMatch.id)
+      if (nicknameMatch) return nicknameMatch.id
     }
 
     // Try matching just the first word
@@ -1775,7 +1789,7 @@ class TennisRankingSystem {
       const dbWords = dbNorm.split(/\s+/)
       return dbWords.some(w => w === firstWord || firstWord.startsWith(w) || w.startsWith(firstWord))
     })
-    if (firstWordMatch) return (firstWordMatch.id !== undefined ? firstWordMatch.id : firstWordMatch.id)
+    if (firstWordMatch) return firstWordMatch.id
 
     // Last resort: Levenshtein distance — only compute if name has >3 words
     // (short names are unlikely to be typos worth expensive computation)

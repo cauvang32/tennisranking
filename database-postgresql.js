@@ -687,7 +687,7 @@ class TennisDatabasePostgreSQL {
       LEFT JOIN players p2 ON m.player2_id = p2.id
       JOIN players p3 ON m.player3_id = p3.id
       LEFT JOIN players p4 ON m.player4_id = p4.id
-      WHERE m.id < $1
+      WHERE m.id > $1
       ORDER BY m.play_date DESC, m.created_at DESC
       LIMIT $2
     `

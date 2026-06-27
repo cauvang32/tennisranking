@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { getRealClientIP } from '../access-logger.js'
 
 /**
  * Health check and performance monitoring routes.
@@ -192,7 +193,7 @@ export const createHealthRouter = ({
   // Exports application-level metrics in Prometheus format for monitoring.
   // Restricted to localhost — Prometheus scrapers typically run on the same host.
   router.get('/metrics', (req, res) => {
-    const clientIP = req.ip
+    const clientIP = getRealClientIP(req)
     if (clientIP !== '127.0.0.1' && clientIP !== '::1' && clientIP !== 'localhost') {
       return res.status(403).json({ error: 'Metrics endpoint restricted to localhost' })
     }

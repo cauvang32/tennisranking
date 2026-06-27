@@ -1,8 +1,12 @@
 import dotenv from 'dotenv'
 import { readFileSync } from 'fs'
+import { fileURLToPath } from 'url'
+import { dirname, join } from 'path'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 // Load environment variables (idempotent — safe to call multiple times)
-dotenv.config()
+dotenv.config({ path: join(__dirname, '../.env') })
 
 // ── Helper utilities ────────────────────────────────────────────────────────
 

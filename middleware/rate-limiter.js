@@ -39,6 +39,7 @@ rateLimitRedis.on('error', () => {
 // Track how long Redis has been down for rate limiting (for logging)
 let redisDownSince = null
 const REDIS_DOWN_WARN_THRESHOLD = 30 // seconds
+let isDisconnecting = false
 
 const createRedisRateLimitStore = (suffix) => new RedisStore({
   sendCommand: async (...args) => {
@@ -68,7 +69,7 @@ const createRedisRateLimitStore = (suffix) => new RedisStore({
         }
 
         if (!becameReady) {
-          if (!redisDownSince) {
+          if (!redisDownSince && !isDisconnecting) {
             redisDownSince = Date.now()
             console.warn(`⚠️ Redis unavailable for rate limiting — requests will NOT be rate-limited until Redis is back`)
           }
@@ -441,6 +442,7 @@ export async function initRateLimitRedis() {
  * Disconnect rate-limit Redis client (for graceful shutdown).
  */
 export async function disconnectRateLimitRedis() {
+  isDisconnecting = true
   try {
     rateLimitRedis.removeAllListeners('close')
     rateLimitRedis.removeAllListeners('end')

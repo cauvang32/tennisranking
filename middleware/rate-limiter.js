@@ -99,8 +99,10 @@ const createRedisRateLimitStore = (suffix) => new RedisStore({
       // Fix: return [0, 0] (hit=0, ttl=0ms) so the limiter thinks the key
       // expired immediately — effectively fail-open without crashing.
 
-      // Configuration errors (WRONGPASS, NOAUTH) — return [0, 0] (fail-open).
-      // A config error means nobody can rate-limit correctly anyway.
+      // Configuration errors (WRONGPASS, NOAUTH) — fail-open: return [1, 0]
+      // (1 hit, 0ms TTL = expired immediately).  A config error means nobody
+      // can rate-limit correctly anyway.  Must be >= 1 because
+      // express-rate-limit v7.x validates totalHits > 0.
       const isConfigError = err.message?.includes('WRONGPASS') ||
         err.message?.includes('NOAUTH') ||
         err.message?.includes('invalid password') ||
@@ -109,13 +111,15 @@ const createRedisRateLimitStore = (suffix) => new RedisStore({
       if (isConfigError) {
         console.error(`⚠️ Rate limiter: Redis configuration error — ${err.message}.`)
         if (!redisDownSince) redisDownSince = Date.now()
-        return [0, 0]
+        return [1, 0]
       }
 
       // Transient errors (connection refused, timeout, NOSCRIPT, closed, etc.)
-      // — fail-open: return [0, 0] so requests pass through without rate
-      // limiting.  This prevents the "Expected result to be array of values"
-      // and "Expected 2 replies" crashes from taking down PM2 workers.
+      // — fail-open: return [1, 0] so requests pass through without rate
+      // limiting.  Must be >= 1 because express-rate-limit v7.x validates
+      // totalHits > 0.  This prevents the "Expected result to be array of
+      // values" / "Expected 2 replies" / "ERR_ERL_INVALID_HITS" crashes from
+      // taking down PM2 workers.
       if (err.message?.includes('ECONNREFUSED') ||
           err.message?.includes('timeout') ||
           err.message?.includes('Connection refused') ||
@@ -129,14 +133,14 @@ const createRedisRateLimitStore = (suffix) => new RedisStore({
           redisDownSince = Date.now()
           console.warn(`⚠️ Rate limiter: Redis temporarily unavailable — requests will NOT be rate-limited until Redis recovers`)
         }
-        return [0, 0]
+        return [1, 0]
       }
 
       // Unknown error — fail-open as safety net (better than crashing workers)
       if (redisDownSince && (Date.now() - redisDownSince) > REDIS_DOWN_WARN_THRESHOLD * 1000) {
         console.warn(`⚠️ Rate limiter: Redis has been down for ${Math.round((Date.now() - redisDownSince) / 1000)}s — requests will NOT be rate-limited (fail-open)`)
       }
-      return [0, 0]
+      return [1, 0]
     }
   },
   prefix: `rate-limit-redis-tennis:${suffix}:`,

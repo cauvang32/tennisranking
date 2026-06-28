@@ -129,7 +129,7 @@ The frontend uses Vietnamese UI labels; code/comments are English. Match types: 
 | Mode | Command | Notes |
 |------|---------|-------|
 | Docker | `docker compose up -d` | App + PG + Redis, recommended. `pm2-runtime` inside container, `dumb-init` PID 1. |
-| PM2 cluster | `npm run build && pm2 start ecosystem.config.cjs --env production` | Requires external PG + Redis. Cluster mode, 2 workers by default. |
+| PM2 cluster | `./scripts/start-with-redis.sh production` | Requires external PG + Redis. **When Redis runs inside Docker with a host port mapping**, use the startup script to wait for Docker's port forwarding to be ready before PM2 boots. Cluster mode, 2 workers by default. |
 | Bare node | `NODE_ENV=production node server.js` | Single process. |
 | Dev | `npm run dev-full` | Vite HMR + Express. |
 
@@ -144,3 +144,4 @@ PM2/cluster is safe because: rate limits use Redis (`rate-limit-redis-tennis:<na
 - **SSE** — request timeout middleware explicitly skips `/api/events`; set `MAX_SSE_CLIENTS` (default 1000).
 - **Trust proxy** — auto-on in production. Off in dev. Affects `req.ip` and rate-limit keying.
 - **CSRF secret derivation** — `HMAC-SHA256(CSRF_SECRET, userId)`. Secret is derived deterministically from the user ID (or `'anonymous'` for guests), with no cookie session ID required.
+- **PM2 + Docker Redis race** — When PM2 workers run on the host but Redis is inside Docker with a port mapping (e.g. `127.0.0.1:6380`), the port forwarding isn't ready when PM2 boots. Use `./scripts/start-with-redis.sh` to wait. The FCM worker avoids this by connecting via Docker internal networking (`redis://tennis-redis:6379`).

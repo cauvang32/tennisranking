@@ -29,30 +29,38 @@ import { getRealClientIP, logError } from '../access-logger.js'
 // construction. The client is created on first use by initRateLimitRedis().
 let rateLimitRedis = null
 const createRateLimitClient = () => {
-  // If a client was previously created but ended/disconnected/faulted,
-  // create a fresh one (the old one is unrecoverable). Only return existing
-  // client if it's in a healthy state (ready, connecting, or reconnecting).
+  // Return existing client if it's in a healthy state.
   if (rateLimitRedis && ['ready', 'connecting', 'reconnecting'].includes(rateLimitRedis.status)) {
     return rateLimitRedis
   }
-  // Discard the old broken client and create a fresh one.
+
+  // If a client was previously created but is in a bad state (end/fault/disconnected),
+  // try to reconnect it instead of creating a brand new one. This is critical when
+  // Docker port forwarding is flaky — the existing client may just need a reconnect.
+  // Creating a brand new client would fail immediately (same port mapping issue).
   if (rateLimitRedis) {
-    try { rateLimitRedis.quit().catch(() => {}) } catch (_) {}
+    // Attempt reconnection (non-blocking). If it succeeds, the client will become
+    // 'ready' and subsequent requests will use it normally. If it fails, the client
+    // stays in 'end' state and the SCRIPT LOAD handler will return a dummy SHA.
+    rateLimitRedis.connect().catch(() => { /* ignore — fail-open handled below */ })
+  } else {
+    // First time — create a new client.
+    // NOTE: enableOfflineQueue defaults to true — commands are queued while
+    // Redis is connecting, so the first HTTP request won't fail even if Redis
+    // isn't ready yet.  IORedis will retry connecting in the background.
+    rateLimitRedis = new IORedis(config.redisUrl, {
+      maxRetriesPerRequest: null,
+      connectTimeout: 5000,
+      retryStrategy(times) {
+        const delay = Math.min(1000 * (2 ** Math.min(times, 5)), 60000)
+        return delay
+      }
+    })
+    rateLimitRedis.on('error', () => {
+      // Suppressed — passOnStoreError: false ensures requests are blocked when Redis is down
+    })
   }
-  // NOTE: enableOfflineQueue defaults to true — commands are queued while
-  // Redis is connecting, so the first HTTP request won't fail even if Redis
-  // isn't ready yet.  IORedis will retry connecting in the background.
-  rateLimitRedis = new IORedis(config.redisUrl, {
-    maxRetriesPerRequest: null,
-    connectTimeout: 5000,
-    retryStrategy(times) {
-      const delay = Math.min(1000 * (2 ** Math.min(times, 5)), 60000)
-      return delay
-    }
-  })
-  rateLimitRedis.on('error', () => {
-    // Suppressed — passOnStoreError: false ensures requests are blocked when Redis is down
-  })
+
   return rateLimitRedis
 }
 
@@ -73,11 +81,12 @@ const createRedisRateLimitStore = (suffix) => new RedisStore({
 
     // ── SCRIPT LOAD (startup) ──────────────────────────────────────────────
     if (args[0] === 'SCRIPT' && args[1] === 'LOAD') {
-      // With offline queue enabled (default), IORedis queues commands while
-      // connecting.  If Redis is truly down (end/fault/disconnected), there's
-      // no point waiting — return a dummy SHA so the library falls through to
-      // the retry path which returns [1, 0] (fail-open).
+      // If the client is in a bad state, try to reconnect it.
+      // This handles the case where Docker port forwarding goes down and
+      // comes back — the client will reconnect automatically and rate
+      // limiting will resume without a server restart.
       if (['end', 'fault'].includes(client.status)) {
+        client.connect().catch(() => { /* ignore — fail-open handled below */ })
         if (!redisDownSince && !isDisconnecting) {
           redisDownSince = Date.now()
           console.warn(`⚠️ Redis unavailable for rate limiting — requests will NOT be rate-limited until Redis is back`)

@@ -20,21 +20,30 @@ import { getRealClientIP, logError } from '../access-logger.js'
 // enableOfflineQueue: false — when Redis is down, commands fail immediately
 // instead of accumulating in memory. passOnStoreError: false on each limiter
 // ensures rate limiting stays enforced even when Redis is down (fail-closed).
-const rateLimitRedis = new IORedis(config.redisUrl, {
-  // Use null (unlimited retries) like the cache client so rate limiting
-  // stays functional during brief Redis hiccups.  passOnStoreError: false
-  // on each limiter ensures requests are still blocked when Redis is truly down.
-  maxRetriesPerRequest: null,
-  enableOfflineQueue: false,
-  connectTimeout: 5000,
-  retryStrategy(times) {
-    const delay = Math.min(1000 * (2 ** Math.min(times, 5)), 60000)
-    return delay
-  }
-})
-rateLimitRedis.on('error', () => {
-  // Suppressed — passOnStoreError: false ensures requests are blocked when Redis is down
-})
+//
+// IMPORTANT: The client is created lazily (lazyRateLimitClient) to avoid a
+// startup race when Redis runs inside Docker with a host port mapping
+// (e.g. 127.0.0.1:6380). Docker's port forwarding takes 10-30s to become
+// ready; creating the client at module load time would cause IORedis to
+// throw "Stream isn't writeable" when RedisStore calls SCRIPT LOAD during
+// construction. The client is created on first use by initRateLimitRedis().
+let rateLimitRedis = null
+const createRateLimitClient = () => {
+  if (rateLimitRedis) return rateLimitRedis
+  rateLimitRedis = new IORedis(config.redisUrl, {
+    maxRetriesPerRequest: null,
+    enableOfflineQueue: false,
+    connectTimeout: 5000,
+    retryStrategy(times) {
+      const delay = Math.min(1000 * (2 ** Math.min(times, 5)), 60000)
+      return delay
+    }
+  })
+  rateLimitRedis.on('error', () => {
+    // Suppressed — passOnStoreError: false ensures requests are blocked when Redis is down
+  })
+  return rateLimitRedis
+}
 
 // Track how long Redis has been down for rate limiting (for logging)
 let redisDownSince = null
@@ -43,6 +52,9 @@ let isDisconnecting = false
 
 const createRedisRateLimitStore = (suffix) => new RedisStore({
   sendCommand: async (...args) => {
+    // Ensure the Redis client exists (created lazily to avoid startup race).
+    const client = createRateLimitClient()
+
     // rate-limit-redis v4.x sendCommand receives raw command args:
     //   args[0] = "SCRIPT", args[1] = "LOAD", args[2] = <lua-script>
     //   args[0] = "EVALSHA",  args[1] = <sha>, args[2] = <key>, ...
@@ -50,15 +62,15 @@ const createRedisRateLimitStore = (suffix) => new RedisStore({
 
     // ── SCRIPT LOAD (startup) ──────────────────────────────────────────────
     if (args[0] === 'SCRIPT' && args[1] === 'LOAD') {
-      if (rateLimitRedis.status !== 'ready') {
+      if (client.status !== 'ready') {
         // Wait up to 3 seconds for Redis to become ready (startup race window).
         const startedDown = Date.now()
         let becameReady = false
 
         while (Date.now() - startedDown < 3000) {
-          if (rateLimitRedis.status === 'ready' || rateLimitRedis.status === 'connecting') {
+          if (client.status === 'ready' || client.status === 'connecting') {
             await new Promise(resolve => setTimeout(resolve, 100))
-            if (rateLimitRedis.status === 'ready') {
+            if (client.status === 'ready') {
               becameReady = true
               break
             }
@@ -84,7 +96,7 @@ const createRedisRateLimitStore = (suffix) => new RedisStore({
     }
 
     try {
-      const result = await rateLimitRedis.call(...args)
+      const result = await client.call(...args)
 
       // Handle successful results from EVALSHA/EVAL Lua scripts.
       // rate-limit-redis v4.x expects [totalHits, timeToExpire].
@@ -395,12 +407,15 @@ export function logRateLimitConfig() {
  * Start the rate-limit Redis client.
  * Call this from server.js after the cache client connects so both
  * Redis clients start at roughly the same time, avoiding the startup race.
+ *
+ * For lazy-created clients (host PM2 with Docker Redis), this triggers
+ * the connection. For already-connected clients (Docker FCM worker),
+ * this is a no-op.
  */
 export async function initRateLimitRedis() {
-  // The rateLimitRedis client was created at module load (line 23) and already
-  // connects asynchronously in the background. We just need to wait for it to
-  // become ready and probe SCRIPT LOAD so rate limiting is ready before the
-  // first HTTP request arrives.
+  // Create the client lazily (triggers connection). If the client was
+  // already created by the first HTTP request, it's already connecting.
+  const client = createRateLimitClient()
   const TIMEOUT_MS = 15000
 
   try {
@@ -414,21 +429,21 @@ export async function initRateLimitRedis() {
         const onReady = () => resolve()
         const onError = () => reject(new Error('Redis connection failed'))
         // Already ready?
-        if (rateLimitRedis.status === 'ready') return resolve()
+        if (client.status === 'ready') return resolve()
         // Connecting? Wait for it.
-        if (rateLimitRedis.status === 'connecting') {
-          rateLimitRedis.once('ready', onReady).once('error', onError)
+        if (client.status === 'connecting') {
+          client.once('ready', onReady).once('error', onError)
         } else {
           // Not yet started — trigger connection, then wait.
-          rateLimitRedis.connect().then(() => {
-            rateLimitRedis.once('ready', onReady).once('error', onError)
+          client.connect().then(() => {
+            client.once('ready', onReady).once('error', onError)
           }).catch(onError)
         }
       })
     ])
 
     // Probe PING to verify the store will work on first request.
-    await rateLimitRedis.call('PING')
+    await client.call('PING')
     console.log('✅ Rate limiter Redis client initialized successfully')
   } catch (error) {
     console.warn('⚠️  Rate limiter Redis not ready at startup:', error.message,
@@ -436,7 +451,7 @@ export async function initRateLimitRedis() {
     // Don't throw — let the server start. The 3-second blocking loop on
     // first request handles recovery gracefully.
   }
-  return rateLimitRedis
+  return client
 }
 
 /**
@@ -444,11 +459,12 @@ export async function initRateLimitRedis() {
  */
 export async function disconnectRateLimitRedis() {
   isDisconnecting = true
+  const client = createRateLimitClient()
   try {
-    rateLimitRedis.removeAllListeners('close')
-    rateLimitRedis.removeAllListeners('end')
-    rateLimitRedis.removeAllListeners('reconnecting')
-    rateLimitRedis.removeAllListeners('error')
-    await rateLimitRedis.quit()
+    client.removeAllListeners('close')
+    client.removeAllListeners('end')
+    client.removeAllListeners('reconnecting')
+    client.removeAllListeners('error')
+    await client.quit()
   } catch { /* ignore */ }
 }

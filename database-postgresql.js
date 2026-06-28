@@ -918,43 +918,22 @@ class TennisDatabasePostgreSQL {
 
   async getPlayerStatsBySpecificDate(playDate) {
     const result = await this.query(`
-      WITH match_participants AS (
-        SELECT m.id as match_id, m.player1_id as player_id, 1 as team, m.winning_team, m.team1_score, m.team2_score, COALESCE(s.lose_money_per_loss, 20000) as lose_money
-        FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date = $1
-        UNION ALL
-        SELECT m.id, m.player2_id, 1, m.winning_team, m.team1_score, m.team2_score, COALESCE(s.lose_money_per_loss, 20000)
-        FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date = $1 AND m.player2_id IS NOT NULL
-        UNION ALL
-        SELECT m.id, m.player3_id, 2, m.winning_team, m.team1_score, m.team2_score, COALESCE(s.lose_money_per_loss, 20000)
-        FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date = $1
-        UNION ALL
-        SELECT m.id, m.player4_id, 2, m.winning_team, m.team1_score, m.team2_score, COALESCE(s.lose_money_per_loss, 20000)
-        FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date = $1 AND m.player4_id IS NOT NULL
-      ),
-      player_stats AS (
-        SELECT
-          p.id, p.name,
-          COUNT(CASE WHEN mp.team = mp.winning_team THEN 1 END) as wins,
-          COUNT(CASE WHEN mp.team != mp.winning_team THEN 1 END) as losses,
-          COUNT(mp.match_id) as total_matches,
-          COALESCE(SUM(CASE WHEN mp.team != mp.winning_team THEN mp.lose_money ELSE 0 END), 0) as money_lost,
-          -- NEW: score_difference (rounds won - rounds lost)
-          COALESCE(SUM(
-            CASE WHEN mp.team = 1
-              THEN mp.team1_score - mp.team2_score
-              ELSE mp.team2_score - mp.team1_score
-            END
-          ), 0) as score_difference
-        FROM players p
-        INNER JOIN match_participants mp ON mp.player_id = p.id
-        GROUP BY p.id, p.name
-      )
       SELECT
-        id, name, wins, losses, total_matches, money_lost, score_difference,
-        (wins * 4 + losses * 1) as points,
-        CASE WHEN (wins + losses) > 0 THEN ROUND((wins * 100.0) / (wins + losses), 1) ELSE 0 END as win_percentage
-      FROM player_stats
-      ORDER BY points DESC, score_difference DESC, win_percentage DESC, name ASC
+        ds.player_id as id,
+        p.name,
+        ds.wins,
+        ds.losses,
+        ds.total_matches,
+        ds.money_lost,
+        ds.score_difference,
+        ds.points,
+        CASE WHEN (ds.wins + ds.losses) > 0
+             THEN ROUND((ds.wins * 100.0) / (ds.wins + ds.losses), 1)
+             ELSE 0 END as win_percentage
+      FROM player_daily_stats ds
+      JOIN players p ON p.id = ds.player_id
+      WHERE ds.play_date = $1
+      ORDER BY ds.points DESC, ds.score_difference DESC, win_percentage DESC, p.name ASC
     `, [playDate])
     return result.rows
   }

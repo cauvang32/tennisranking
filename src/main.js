@@ -2881,14 +2881,17 @@ class TennisRankingSystem {
     const tbody = container.querySelector('tbody')
     if (!tbody) return
     
-    tbody.innerHTML = rankings.length === 0 
-      ? '<tr><td colspan="9" style="text-align: center; padding: 2rem; color: var(--text-muted);">Không có dữ liệu</td></tr>'
+    const diffColor = (val) => val > 0 ? 'positive' : (val < 0 ? 'negative' : '')
+    const diffLabel = (val) => (val > 0 ? '+' : '') + (val ?? 0)
+    tbody.innerHTML = rankings.length === 0
+      ? '<tr><td colspan="10" style="text-align: center; padding: 2rem; color: var(--text-muted);">Không có dữ liệu</td></tr>'
       : rankings.map((player, index) => {
         const balanceClass = player.money_balance > 0 ? 'positive' : (player.money_balance < 0 ? 'negative' : '')
-        const balanceValue = player.money_balance || (player.money_won || 0) - (player.money_lost || 0)
-        const formHtml = this.renderForm(player.form || player.recent_form || [])
-        const points = player.points || 0
+        const balanceValue = player.money_balance ?? (player.money_won ?? 0) - (player.money_lost ?? 0)
+        const formHtml = this.renderForm(player.form ?? player.recent_form ?? [])
+        const points = player.points ?? 0
         const pointsClass = points > 0 ? 'positive' : (points < 0 ? 'negative' : '')
+        const scoreDiff = player.score_difference ?? 0
         return `
           <tr>
             <td class="col-rank">${this.getRankEmoji(index + 1)}${index + 1}</td>
@@ -2899,6 +2902,7 @@ class TennisRankingSystem {
             <td>${player.losses || 0}</td>
             <td>${player.win_percentage || 0}%</td>
             <td class="col-points ${pointsClass}">${points}</td>
+            <td class="col-difference ${diffColor(scoreDiff)}">${diffLabel(scoreDiff)}</td>
             <td class="col-balance ${balanceClass}">${this.formatMoney(balanceValue)}</td>
           </tr>
         `

@@ -502,6 +502,21 @@ body.authenticated .logged-out-only {
   width: 100px;
 }
 
+.data-table .col-difference {
+  text-align: center;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.data-table .col-difference.positive {
+  color: var(--success);
+}
+
+.data-table .col-difference.negative {
+  color: var(--error);
+}
+
 /* ========== Match Entry Cards (Batch / Parsed) ========== */
 
 /* 2-column grid on desktop, 1-column on mobile */

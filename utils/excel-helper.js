@@ -97,6 +97,7 @@ export const RANKINGS_COLUMNS = [
   { header: 'Thua', key: 'losses', width: 10 },
   { header: 'Tổng trận', key: 'total_matches', width: 15 },
   { header: 'Điểm', key: 'points', width: 10 },
+  { header: 'Hiệu Số', key: 'score_difference', width: 12 },
   { header: 'Tỷ lệ thắng (%)', key: 'win_percentage', width: 15 },
   { header: 'Tiền thua (VND)', key: 'money_lost', width: 20 },
   { header: 'Phong độ gần đây', key: 'form_text', width: 30 }
@@ -111,6 +112,7 @@ export const RANKINGS_SIMPLE_COLUMNS = [
   { header: 'Thua', key: 'losses', width: 10 },
   { header: 'Tổng trận', key: 'total_matches', width: 15 },
   { header: 'Điểm', key: 'points', width: 10 },
+  { header: 'Hiệu Số', key: 'score_difference', width: 12 },
   { header: 'Tỷ lệ thắng (%)', key: 'win_percentage', width: 15 },
   { header: 'Tiền thua (VND)', key: 'money_lost', width: 20 }
 ]

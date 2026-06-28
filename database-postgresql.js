@@ -822,19 +822,21 @@ class TennisDatabasePostgreSQL {
   // Summary tables are updated automatically via PostgreSQL trigger on matches
   async getPlayerStatsLifetime() {
     const result = await this.query(`
-      SELECT 
+      SELECT
         p.id, p.name,
         COALESCE(pls.wins, 0)::int as wins,
         COALESCE(pls.losses, 0)::int as losses,
         COALESCE(pls.total_matches, 0)::int as total_matches,
         COALESCE(pls.money_lost, 0)::bigint as money_lost,
         COALESCE(pls.points, 0)::int as points,
+        COALESCE(pls.score_difference, 0) as score_difference,
         CASE WHEN COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0) > 0
              THEN ROUND((COALESCE(pls.wins, 0) * 100.0) / (COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0)), 1)
              ELSE 0 END as win_percentage
       FROM players p
       LEFT JOIN player_lifetime_stats pls ON pls.player_id = p.id
       ORDER BY COALESCE(pls.points, 0) DESC,
+               COALESCE(pls.score_difference, 0) DESC,
                CASE WHEN COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0) > 0
                     THEN ROUND((COALESCE(pls.wins, 0) * 100.0) / (COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0)), 1)
                     ELSE 0 END DESC,
@@ -845,12 +847,13 @@ class TennisDatabasePostgreSQL {
 
   async getPlayerStatsBySeason(seasonId) {
     const result = await this.query(`
-      SELECT 
+      SELECT
         p.id, p.name,
         COALESCE(pss.wins, 0)::int as wins,
         COALESCE(pss.losses, 0)::int as losses,
         COALESCE(pss.total_matches, 0)::int as total_matches,
         COALESCE(pss.points, 0)::int as points,
+        COALESCE(pss.score_difference, 0) as score_difference,
         CASE WHEN COALESCE(pss.wins, 0) + COALESCE(pss.losses, 0) > 0
              THEN ROUND((COALESCE(pss.wins, 0) * 100.0) / (COALESCE(pss.wins, 0) + COALESCE(pss.losses, 0)), 1)
              ELSE 0 END as win_percentage,
@@ -859,6 +862,7 @@ class TennisDatabasePostgreSQL {
       INNER JOIN season_players sp ON sp.player_id = p.id AND sp.season_id = $1
       LEFT JOIN player_season_stats pss ON pss.player_id = p.id AND pss.season_id = $1
       ORDER BY COALESCE(pss.points, 0) DESC,
+               COALESCE(pss.score_difference, 0) DESC,
                CASE WHEN COALESCE(pss.wins, 0) + COALESCE(pss.losses, 0) > 0
                     THEN ROUND((COALESCE(pss.wins, 0) * 100.0) / (COALESCE(pss.wins, 0) + COALESCE(pss.losses, 0)), 1)
                     ELSE 0 END DESC,
@@ -871,16 +875,17 @@ class TennisDatabasePostgreSQL {
     const result = await this.query(`
       WITH match_participants AS (
         -- Unpivot: one row per player per match (index-friendly = joins)
-        SELECT m.id as match_id, m.player1_id as player_id, 1 as team, m.winning_team, COALESCE(s.lose_money_per_loss, 20000) as lose_money
+        -- Also carry score columns for difference calculation
+        SELECT m.id as match_id, m.player1_id as player_id, 1 as team, m.winning_team, m.team1_score, m.team2_score, COALESCE(s.lose_money_per_loss, 20000) as lose_money
         FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date <= $1
         UNION ALL
-        SELECT m.id, m.player2_id, 1, m.winning_team, COALESCE(s.lose_money_per_loss, 20000)
+        SELECT m.id, m.player2_id, 1, m.winning_team, m.team1_score, m.team2_score, COALESCE(s.lose_money_per_loss, 20000)
         FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date <= $1 AND m.player2_id IS NOT NULL
         UNION ALL
-        SELECT m.id, m.player3_id, 2, m.winning_team, COALESCE(s.lose_money_per_loss, 20000)
+        SELECT m.id, m.player3_id, 2, m.winning_team, m.team1_score, m.team2_score, COALESCE(s.lose_money_per_loss, 20000)
         FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date <= $1
         UNION ALL
-        SELECT m.id, m.player4_id, 2, m.winning_team, COALESCE(s.lose_money_per_loss, 20000)
+        SELECT m.id, m.player4_id, 2, m.winning_team, m.team1_score, m.team2_score, COALESCE(s.lose_money_per_loss, 20000)
         FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date <= $1 AND m.player4_id IS NOT NULL
       ),
       player_stats AS (
@@ -889,17 +894,24 @@ class TennisDatabasePostgreSQL {
           COUNT(CASE WHEN mp.team = mp.winning_team THEN 1 END) as wins,
           COUNT(CASE WHEN mp.team != mp.winning_team THEN 1 END) as losses,
           COUNT(mp.match_id) as total_matches,
-          COALESCE(SUM(CASE WHEN mp.team != mp.winning_team THEN mp.lose_money ELSE 0 END), 0) as money_lost
+          COALESCE(SUM(CASE WHEN mp.team != mp.winning_team THEN mp.lose_money ELSE 0 END), 0) as money_lost,
+          -- NEW: score_difference (rounds won - rounds lost)
+          COALESCE(SUM(
+            CASE WHEN mp.team = 1
+              THEN mp.team1_score - mp.team2_score
+              ELSE mp.team2_score - mp.team1_score
+            END
+          ), 0) as score_difference
         FROM players p
         INNER JOIN match_participants mp ON mp.player_id = p.id
         GROUP BY p.id, p.name
       )
       SELECT
-        id, name, wins, losses, total_matches, money_lost,
+        id, name, wins, losses, total_matches, money_lost, score_difference,
         (wins * 4 + losses * 1) as points,
         CASE WHEN (wins + losses) > 0 THEN ROUND((wins * 100.0) / (wins + losses), 1) ELSE 0 END as win_percentage
       FROM player_stats
-      ORDER BY points DESC, win_percentage DESC, name ASC
+      ORDER BY points DESC, score_difference DESC, win_percentage DESC, name ASC
     `, [playDate])
     return result.rows
   }
@@ -907,16 +919,16 @@ class TennisDatabasePostgreSQL {
   async getPlayerStatsBySpecificDate(playDate) {
     const result = await this.query(`
       WITH match_participants AS (
-        SELECT m.id as match_id, m.player1_id as player_id, 1 as team, m.winning_team, COALESCE(s.lose_money_per_loss, 20000) as lose_money
+        SELECT m.id as match_id, m.player1_id as player_id, 1 as team, m.winning_team, m.team1_score, m.team2_score, COALESCE(s.lose_money_per_loss, 20000) as lose_money
         FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date = $1
         UNION ALL
-        SELECT m.id, m.player2_id, 1, m.winning_team, COALESCE(s.lose_money_per_loss, 20000)
+        SELECT m.id, m.player2_id, 1, m.winning_team, m.team1_score, m.team2_score, COALESCE(s.lose_money_per_loss, 20000)
         FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date = $1 AND m.player2_id IS NOT NULL
         UNION ALL
-        SELECT m.id, m.player3_id, 2, m.winning_team, COALESCE(s.lose_money_per_loss, 20000)
+        SELECT m.id, m.player3_id, 2, m.winning_team, m.team1_score, m.team2_score, COALESCE(s.lose_money_per_loss, 20000)
         FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date = $1
         UNION ALL
-        SELECT m.id, m.player4_id, 2, m.winning_team, COALESCE(s.lose_money_per_loss, 20000)
+        SELECT m.id, m.player4_id, 2, m.winning_team, m.team1_score, m.team2_score, COALESCE(s.lose_money_per_loss, 20000)
         FROM matches m JOIN seasons s ON m.season_id = s.id WHERE m.play_date = $1 AND m.player4_id IS NOT NULL
       ),
       player_stats AS (
@@ -925,17 +937,24 @@ class TennisDatabasePostgreSQL {
           COUNT(CASE WHEN mp.team = mp.winning_team THEN 1 END) as wins,
           COUNT(CASE WHEN mp.team != mp.winning_team THEN 1 END) as losses,
           COUNT(mp.match_id) as total_matches,
-          COALESCE(SUM(CASE WHEN mp.team != mp.winning_team THEN mp.lose_money ELSE 0 END), 0) as money_lost
+          COALESCE(SUM(CASE WHEN mp.team != mp.winning_team THEN mp.lose_money ELSE 0 END), 0) as money_lost,
+          -- NEW: score_difference (rounds won - rounds lost)
+          COALESCE(SUM(
+            CASE WHEN mp.team = 1
+              THEN mp.team1_score - mp.team2_score
+              ELSE mp.team2_score - mp.team1_score
+            END
+          ), 0) as score_difference
         FROM players p
         INNER JOIN match_participants mp ON mp.player_id = p.id
         GROUP BY p.id, p.name
       )
       SELECT
-        id, name, wins, losses, total_matches, money_lost,
+        id, name, wins, losses, total_matches, money_lost, score_difference,
         (wins * 4 + losses * 1) as points,
         CASE WHEN (wins + losses) > 0 THEN ROUND((wins * 100.0) / (wins + losses), 1) ELSE 0 END as win_percentage
       FROM player_stats
-      ORDER BY points DESC, win_percentage DESC, name ASC
+      ORDER BY points DESC, score_difference DESC, win_percentage DESC, name ASC
     `, [playDate])
     return result.rows
   }
@@ -1195,13 +1214,14 @@ class TennisDatabasePostgreSQL {
    */
   async getPlayerStatsWithFormsLifetime(formLimit = 5) {
     const result = await this.query(`
-      SELECT 
+      SELECT
         p.id, p.name,
         COALESCE(pls.wins, 0)::int as wins,
         COALESCE(pls.losses, 0)::int as losses,
         COALESCE(pls.total_matches, 0)::int as total_matches,
         COALESCE(pls.money_lost, 0)::bigint as money_lost,
         COALESCE(pls.points, 0)::int as points,
+        COALESCE(pls.score_difference, 0) as score_difference,
         CASE WHEN COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0) > 0
              THEN ROUND((COALESCE(pls.wins, 0) * 100.0) / (COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0)), 1)
              ELSE 0 END as win_percentage,
@@ -1209,6 +1229,7 @@ class TennisDatabasePostgreSQL {
       FROM players p
       LEFT JOIN player_lifetime_stats pls ON pls.player_id = p.id
       ORDER BY COALESCE(pls.points, 0) DESC,
+               COALESCE(pls.score_difference, 0) DESC,
                CASE WHEN COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0) > 0
                     THEN ROUND((COALESCE(pls.wins, 0) * 100.0) / (COALESCE(pls.wins, 0) + COALESCE(pls.losses, 0)), 1)
                     ELSE 0 END DESC,

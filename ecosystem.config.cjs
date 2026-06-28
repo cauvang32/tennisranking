@@ -13,7 +13,7 @@ module.exports = {
       exec_mode: 'cluster_mode',
       instances: 2,
       max_memory_restart: '200M',
-      env_production: {
+      env: {
         NODE_ENV: 'production'
       }
     }

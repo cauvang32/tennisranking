@@ -140,7 +140,8 @@ const createRedisRateLimitStore = (suffix) => new RedisStore({
           err.message?.includes('Connection is closed.') ||
           err.message?.includes('Connection has errored') ||
           err.message?.includes('Reconnecting') ||
-          err.message?.includes('NOSCRIPT')) {
+          err.message?.includes('NOSCRIPT') ||
+          err.message?.includes("Stream isn't writeable")) {
         if (!redisDownSince) {
           redisDownSince = Date.now()
           console.warn(`⚠️ Rate limiter: Redis temporarily unavailable — requests will NOT be rate-limited until Redis recovers`)

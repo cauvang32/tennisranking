@@ -44,4 +44,4 @@ while ! (echo "PING" | nc -w1 127.0.0.1 "${REDIS_PORT}" >/dev/null 2>&1); do
 done
 
 echo "✅ Redis is ready on port ${REDIS_PORT} — starting PM2..."
-exec pm2 startOrRestart ecosystem.config.js "$@"
+exec pm2 startOrRestart ecosystem.config.cjs "$@"

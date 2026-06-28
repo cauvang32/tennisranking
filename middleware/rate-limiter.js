@@ -30,9 +30,11 @@ import { getRealClientIP, logError } from '../access-logger.js'
 let rateLimitRedis = null
 const createRateLimitClient = () => {
   if (rateLimitRedis) return rateLimitRedis
+  // NOTE: enableOfflineQueue defaults to true — commands are queued while
+  // Redis is connecting, so the first HTTP request won't fail even if Redis
+  // isn't ready yet.  IORedis will retry connecting in the background.
   rateLimitRedis = new IORedis(config.redisUrl, {
     maxRetriesPerRequest: null,
-    enableOfflineQueue: false,
     connectTimeout: 5000,
     retryStrategy(times) {
       const delay = Math.min(1000 * (2 ** Math.min(times, 5)), 60000)
@@ -62,32 +64,18 @@ const createRedisRateLimitStore = (suffix) => new RedisStore({
 
     // ── SCRIPT LOAD (startup) ──────────────────────────────────────────────
     if (args[0] === 'SCRIPT' && args[1] === 'LOAD') {
-      if (client.status !== 'ready') {
-        // Wait up to 3 seconds for Redis to become ready (startup race window).
-        const startedDown = Date.now()
-        let becameReady = false
-
-        while (Date.now() - startedDown < 3000) {
-          if (client.status === 'ready' || client.status === 'connecting') {
-            await new Promise(resolve => setTimeout(resolve, 100))
-            if (client.status === 'ready') {
-              becameReady = true
-              break
-            }
-          } else {
-            // status is 'end' / 'fault' / 'disconnected' — Redis is truly down
-            break
-          }
+      // With offline queue enabled (default), IORedis queues commands while
+      // connecting.  If Redis is truly down (end/fault/disconnected), there's
+      // no point waiting — return a dummy SHA so the library falls through to
+      // the retry path which returns [1, 0] (fail-open).
+      if (['end', 'fault'].includes(client.status)) {
+        if (!redisDownSince && !isDisconnecting) {
+          redisDownSince = Date.now()
+          console.warn(`⚠️ Redis unavailable for rate limiting — requests will NOT be rate-limited until Redis is back`)
         }
-
-        if (!becameReady) {
-          if (!redisDownSince && !isDisconnecting) {
-            redisDownSince = Date.now()
-            console.warn(`⚠️ Redis unavailable for rate limiting — requests will NOT be rate-limited until Redis is back`)
-          }
-          return 'dummy_sha_to_prevent_startup_crash'
-        }
+        return 'dummy_sha_to_prevent_startup_crash'
       }
+      // 'ready' or 'connecting': let IORedis handle it (queued or will connect).
       // Redis is back online — reset the counter
       if (redisDownSince) {
         console.log(`✅ Rate limiter: Redis recovered (${Math.round((Date.now() - redisDownSince) / 1000)}s downtime)`)
@@ -416,14 +404,14 @@ export async function initRateLimitRedis() {
   // Create the client lazily (triggers connection). If the client was
   // already created by the first HTTP request, it's already connecting.
   const client = createRateLimitClient()
-  const TIMEOUT_MS = 15000
+  const TIMEOUT_MS = 120000  // match start-with-redis.sh: Docker port forwarding can take up to 30s
 
   try {
     // Wait for the IORedis client to become ready (it connects in background).
     // Use a timeout so server startup is not blocked forever if Redis is down.
     await Promise.race([
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('Redis probe timed out after ' + TIMEOUT_MS + 'ms')), TIMEOUT_MS)
+        setTimeout(() => reject(new Error('Redis probe timed out after ' + (TIMEOUT_MS/1000) + 's')), TIMEOUT_MS)
       ),
       new Promise((resolve, reject) => {
         const onReady = () => resolve()

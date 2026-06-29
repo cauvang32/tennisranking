@@ -1,4 +1,4 @@
-import { Router } from 'express'
+import { Router, json as expressJson } from 'express'
 import { body, param, query } from 'express-validator'
 import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
@@ -412,6 +412,7 @@ export const createMatchRouter = ({
     '/parse-image',
     authenticateToken,
     requireEditor,
+    expressJson({ limit: '50mb' }),
     asyncHandler(async (req, res) => {
       const { imageBase64, mimeType } = req.body
 
@@ -420,13 +421,23 @@ export const createMatchRouter = ({
         return
       }
 
-      const parsed = await parseImageMatches(imageBase64)
+      let parsed
+      try {
+        parsed = await parseImageMatches(imageBase64)
+      } catch (error) {
+        console.error('[parse-image] AI parsing failed:', error.message)
+        res.status(502).json({
+          error: `Phân tích hình ảnh thất bại: ${error.message}`
+        })
+        return
+      }
 
       // Guard: parseImageMatches can return objects without .matches
       // (ai-parser.js early returns for LM Studio raw output).
       // Without this, parsed.matches.map() throws a TypeError that
       // results in a generic 500 instead of a helpful message.
       if (!parsed.matches || !Array.isArray(parsed.matches)) {
+        console.warn('[parse-image] Unexpected AI response:', typeof parsed, JSON.stringify(parsed).substring(0, 200))
         res.status(400).json({
           error: 'AI trả về kết quả không hợp lệ — không tìm thấy "matches" array. Vui lòng thử lại với ảnh rõ hơn.'
         })
@@ -436,15 +447,17 @@ export const createMatchRouter = ({
       // Normalize parsed matches into our internal format
       const normalized = parsed.matches.map(m => {
         const names = [m.player1Name, m.player2Name, m.player3Name, m.player4Name].filter(Boolean)
-        let matchType = names.length <= 2 ? 'solo' : 'duo'
+        // Trust the AI's explicit matchType classification (set by normalizeMatch in ai-parser.js).
+        // Only use the route-level heuristic as a fallback when matchType is missing.
+        let matchType = m.matchType || (names.length <= 2 ? 'solo' : 'duo')
         const team1Score = parseInt(m.team1Score) || 0
         const team2Score = parseInt(m.team2Score) || 0
-        const winningTeam = team1Score > team2Score ? 1 : 2
+        const winningTeam = team1Score > team2Score ? 1 : team2Score > team1Score ? 2 : 1
 
-        let player1Name = m.player1Name?.trim() || ''
-        let player2Name = m.player2Name?.trim() || null
-        let player3Name = m.player3Name?.trim() || ''
-        let player4Name = m.player4Name?.trim() || null
+        let player1Name = (typeof m.player1Name === 'string' && m.player1Name.trim()) || ''
+        let player2Name = (typeof m.player2Name === 'string' && m.player2Name.trim()) || null
+        let player3Name = (typeof m.player3Name === 'string' && m.player3Name.trim()) || ''
+        let player4Name = (typeof m.player4Name === 'string' && m.player4Name.trim()) || null
 
         // Handle solo matches: the model may put the two opponents in
         // player1 + player2 (with player3/player4 = null). Our DB format
@@ -458,9 +471,10 @@ export const createMatchRouter = ({
         // it's likely a doubles match where the AI extracted team nicknames
         // instead of individual player names. Reclassify as duo so the
         // frontend's mapTeamToPlayerPair can resolve the nicknames.
-        if (matchType === 'solo' && player1Name && player1Name.split(/\s+/).length > 1) {
+        // Match normalizeMatch's OR logic: EITHER multi-word name → duo.
+        if (matchType === 'solo' && names.length <= 2) {
           const isTeamNickname = (name) => name && name.split(/\s+/).length > 1
-          if (isTeamNickname(player1Name) && isTeamNickname(player3Name)) {
+          if (isTeamNickname(player1Name) || isTeamNickname(player3Name)) {
             matchType = 'duo'
           }
         }

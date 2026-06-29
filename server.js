@@ -313,13 +313,17 @@ const _timeoutMw = createTimeoutMiddleware(config.requestTimeoutMs)
 app.use('/api', (req, res, next) => {
   if (req.path === '/events') return next()
   // Skip socket timeout for /parse-image — it waits on an external AI API
-  // that may take longer than the request timeout.
-  if (req.path === '/matches/parse-image') return next()
+  // that may take longer than the request timeout. Give it 5min instead of
+  // the default 30s, but still enforce a hard cap to prevent connection exhaustion.
+  if (req.path === '/matches/parse-image') {
+    req.socket.setTimeout(300000)
+    return next()
+  }
   _timeoutMw(req, res, next)
 })
 
 // Body parsing
-app.use(express.json({ limit: '50mb' }))
+app.use(express.json({ limit: '1mb' }))
 
 // Static files (production only)
 if (!isDevelopment) {

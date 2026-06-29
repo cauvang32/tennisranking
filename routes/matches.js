@@ -420,60 +420,64 @@ export const createMatchRouter = ({
         return
       }
 
-      try {
-        const parsed = await parseImageMatches(imageBase64)
+      const parsed = await parseImageMatches(imageBase64)
 
-        // Normalize parsed matches into our internal format
-        const normalized = parsed.matches.map(m => {
-          const names = [m.player1Name, m.player2Name, m.player3Name, m.player4Name].filter(Boolean)
-          let matchType = names.length <= 2 ? 'solo' : 'duo'
-          const team1Score = parseInt(m.team1Score) || 0
-          const team2Score = parseInt(m.team2Score) || 0
-          const winningTeam = team1Score > team2Score ? 1 : 2
-
-          let player1Name = m.player1Name?.trim() || ''
-          let player2Name = m.player2Name?.trim() || null
-          let player3Name = m.player3Name?.trim() || ''
-          let player4Name = m.player4Name?.trim() || null
-
-          // Handle solo matches: the model may put the two opponents in
-          // player1 + player2 (with player3/player4 = null). Our DB format
-          // expects player1 + player3 (with player2/player4 = null).
-          if (matchType === 'solo' && player2Name) {
-            player3Name = player2Name
-            player2Name = null
-          }
-
-          // Heuristic: if a solo match has a multi-word name (e.g. "Hải Phong"),
-          // it's likely a doubles match where the AI extracted team nicknames
-          // instead of individual player names. Reclassify as duo so the
-          // frontend's mapTeamToPlayerPair can resolve the nicknames.
-          if (matchType === 'solo' && player1Name && player1Name.split(/\s+/).length > 1) {
-            const isTeamNickname = (name) => name && name.split(/\s+/).length > 1
-            if (isTeamNickname(player1Name) && isTeamNickname(player3Name)) {
-              matchType = 'duo'
-            }
-          }
-
-          return {
-            player1Name,
-            player2Name,
-            player3Name,
-            player4Name,
-            team1Score,
-            team2Score,
-            winningTeam,
-            matchType
-          }
+      // Guard: parseImageMatches can return objects without .matches
+      // (ai-parser.js early returns for LM Studio raw output).
+      // Without this, parsed.matches.map() throws a TypeError that
+      // results in a generic 500 instead of a helpful message.
+      if (!parsed.matches || !Array.isArray(parsed.matches)) {
+        res.status(400).json({
+          error: 'AI trả về kết quả không hợp lệ — không tìm thấy "matches" array. Vui lòng thử lại với ảnh rõ hơn.'
         })
-
-        res.json({ matches: normalized })
-      } catch (err) {
-        console.error('❌ AI parse failed:', err.message)
-        if (!res.headersSent) {
-          res.status(502).json({ error: `Phân tích hình ảnh thất bại: ${err.message}` })
-        }
+        return
       }
+
+      // Normalize parsed matches into our internal format
+      const normalized = parsed.matches.map(m => {
+        const names = [m.player1Name, m.player2Name, m.player3Name, m.player4Name].filter(Boolean)
+        let matchType = names.length <= 2 ? 'solo' : 'duo'
+        const team1Score = parseInt(m.team1Score) || 0
+        const team2Score = parseInt(m.team2Score) || 0
+        const winningTeam = team1Score > team2Score ? 1 : 2
+
+        let player1Name = m.player1Name?.trim() || ''
+        let player2Name = m.player2Name?.trim() || null
+        let player3Name = m.player3Name?.trim() || ''
+        let player4Name = m.player4Name?.trim() || null
+
+        // Handle solo matches: the model may put the two opponents in
+        // player1 + player2 (with player3/player4 = null). Our DB format
+        // expects player1 + player3 (with player2/player4 = null).
+        if (matchType === 'solo' && player2Name) {
+          player3Name = player2Name
+          player2Name = null
+        }
+
+        // Heuristic: if a solo match has a multi-word name (e.g. "Hải Phong"),
+        // it's likely a doubles match where the AI extracted team nicknames
+        // instead of individual player names. Reclassify as duo so the
+        // frontend's mapTeamToPlayerPair can resolve the nicknames.
+        if (matchType === 'solo' && player1Name && player1Name.split(/\s+/).length > 1) {
+          const isTeamNickname = (name) => name && name.split(/\s+/).length > 1
+          if (isTeamNickname(player1Name) && isTeamNickname(player3Name)) {
+            matchType = 'duo'
+          }
+        }
+
+        return {
+          player1Name,
+          player2Name,
+          player3Name,
+          player4Name,
+          team1Score,
+          team2Score,
+          winningTeam,
+          matchType
+        }
+      })
+
+      res.json({ matches: normalized })
     })
   )
 

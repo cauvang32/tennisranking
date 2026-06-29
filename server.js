@@ -312,11 +312,14 @@ app.use(gzipMiddleware)
 const _timeoutMw = createTimeoutMiddleware(config.requestTimeoutMs)
 app.use('/api', (req, res, next) => {
   if (req.path === '/events') return next()
+  // Skip socket timeout for /parse-image — it waits on an external AI API
+  // that may take longer than the request timeout.
+  if (req.path === '/matches/parse-image') return next()
   _timeoutMw(req, res, next)
 })
 
 // Body parsing
-app.use(express.json({ limit: '1mb' }))
+app.use(express.json({ limit: '50mb' }))
 
 // Static files (production only)
 if (!isDevelopment) {

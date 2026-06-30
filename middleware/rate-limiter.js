@@ -129,8 +129,10 @@ const createProxyAwareRateLimiter = ({ storePrefix, essential = false, ...option
     limit: dynamicLimit,
     store,
     // v5: passOnStoreError controls fail-open/fail-closed when Redis is down.
-    // false = fail-closed (requests blocked when Redis is down)
-    passOnStoreError: false,
+    // true = fail-open (requests pass through when Redis is down)
+    // This prevents 429 errors when Redis is temporarily unavailable,
+    // while still enforcing rate limits when Redis IS available.
+    passOnStoreError: true,
     keyGenerator: (req) => getRealClientIP(req),
     skip: (req) =>
       req.path === '/api/health' ||

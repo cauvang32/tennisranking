@@ -34,8 +34,8 @@ export const createInlineAuthRouter = ({
     loginLimiter,
     authLimiter,
     [
-      body('username').trim().escape().isLength({ min: 1, max: 50 }),
-      body('password').trim().escape().isLength({ min: 1, max: 100 })
+      body('username').trim().isLength({ min: 1, max: 50 }),
+      body('password').trim().isLength({ min: 1, max: 100 })
     ],
     handleValidationErrors,
     asyncHandler(async (req, res) => {

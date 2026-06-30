@@ -15,37 +15,49 @@ const __dirname = dirname(__filename)
 // SECURITY: Prioritizes req.ip which respects Express's 'trust proxy' setting.
 // Raw proxy headers are only used as fallback and logged separately for audit.
 export function getRealClientIP(req) {
-  // req.ip is the safest source — it respects app.set('trust proxy', ...) and
-  // strips untrusted hops from X-Forwarded-For automatically.
+  // When behind a reverse proxy (nginx/cloudflare), req.ip resolves to the
+  // proxy's IP — NOT the real client.  So we MUST extract the original client
+  // from proxy headers BEFORE falling back to req.ip.
+  //
+  // Priority:
+  //   1. CF-Connecting-IP  (Cloudflare — most trusted, set by CF itself)
+  //   2. X-Real-IP         (Nginx upstream header — set by our proxy)
+  //   3. X-Forwarded-For   (standard — first entry = original client)
+  //
+  // req.ip is ONLY used as a last resort (direct connection, no proxy).
+  // This matters for rate limiting: without it, every real client gets
+  // keyed by the proxy IP (e.g. 10.31.0.1) instead of their own IP,
+  // making rate limiting effectively invisible to real users.
+
+  const cfIp = req.get('CF-Connecting-IP')
+  if (cfIp && isValidIP(cfIp)) {
+    return cfIp
+  }
+
+  const xRealIP = req.get('X-Real-IP')
+  if (xRealIP && isValidIP(xRealIP)) {
+    return xRealIP
+  }
+
+  const xForwardedFor = req.get('X-Forwarded-For')
+  if (xForwardedFor) {
+    const firstIP = xForwardedFor.split(',')[0].trim()
+    if (isValidIP(firstIP)) {
+      return firstIP
+    }
+  }
+
+  // Direct connection — no proxy involved; req.ip is the real client.
   if (req.ip && isValidIP(req.ip)) {
     return req.ip
   }
 
-  // Fallback sources (only reached if req.ip is unavailable/invalid)
-  const fallbackSources = [
-    req.get('CF-Connecting-IP'),        // Cloudflare (if behind CF)
-    req.get('X-Real-IP'),               // Nginx
-    req.get('X-Forwarded-For'),         // Standard proxy header
-    req.connection?.remoteAddress,      // Direct connection
-    req.socket?.remoteAddress,          // Socket connection
-    'unknown'
-  ]
-
-  for (const ip of fallbackSources) {
-    if (ip && ip !== 'unknown') {
-      // Handle X-Forwarded-For which can contain multiple IPs
-      if (ip.includes(',')) {
-        // Take the first IP (original client)
-        const firstIP = ip.split(',')[0].trim()
-        if (isValidIP(firstIP)) {
-          return firstIP
-        }
-      } else if (isValidIP(ip)) {
-        return ip
-      }
-    }
+  // Ultimate fallback
+  const direct = req.connection?.remoteAddress || req.socket?.remoteAddress
+  if (direct && isValidIP(direct)) {
+    return direct
   }
-  
+
   return 'unknown'
 }
 

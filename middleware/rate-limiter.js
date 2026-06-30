@@ -37,15 +37,11 @@ const createRateLimitClient = () => {
   // If a client was previously created but is in a bad state (end/fault/disconnected),
   // try to reconnect it instead of creating a brand new one. This is critical when
   // Docker port forwarding is flaky — the existing client may just need a reconnect.
-  // Creating a brand new client would fail immediately (same port mapping issue).
   if (rateLimitRedis) {
-    // Attempt reconnection (non-blocking). If it succeeds, the client will become
-    // 'ready' and subsequent requests will use it normally. If it fails, the client
-    // stays in 'end' state and the SCRIPT LOAD handler will return a dummy SHA.
-    rateLimitRedis.connect().catch(() => { /* ignore — fail-open handled below */ })
+    rateLimitRedis.connect().catch(() => { /* ignore — passOnStoreError handles this */ })
   } else {
     // First time — create a new client.
-    // NOTE: enableOfflineQueue defaults to true — commands are queued while
+    // enableOfflineQueue defaults to true — commands are queued while
     // Redis is connecting, so the first HTTP request won't fail even if Redis
     // isn't ready yet.  IORedis will retry connecting in the background.
     rateLimitRedis = new IORedis(config.redisUrl, {
@@ -56,124 +52,17 @@ const createRateLimitClient = () => {
         return delay
       }
     })
-    rateLimitRedis.on('error', () => {
-      // Suppressed — passOnStoreError: false ensures requests are blocked when Redis is down
-    })
   }
 
   return rateLimitRedis
 }
 
-// Track how long Redis has been down for rate limiting (for logging)
-let redisDownSince = null
-const REDIS_DOWN_WARN_THRESHOLD = 30 // seconds
-let isDisconnecting = false
-
+// ── Redis store for rate limiting (v5 compatible) ─────────────────────────
+// rate-limit-redis v5 handles SCRIPT LOAD, EVALSHA retries, and error recovery
+// internally. We just forward raw commands to the Redis client.
+// The library's passOnStoreError option handles fail-open/fail-closed policy.
 const createRedisRateLimitStore = (suffix) => new RedisStore({
-  sendCommand: async (...args) => {
-    // Ensure the Redis client exists (created lazily to avoid startup race).
-    const client = createRateLimitClient()
-
-    // rate-limit-redis v4.x sendCommand receives raw command args:
-    //   args[0] = "SCRIPT", args[1] = "LOAD", args[2] = <lua-script>
-    //   args[0] = "EVALSHA",  args[1] = <sha>, args[2] = <key>, ...
-    //   args[0] = "EVAL",    args[1] = <lua>,  args[2] = <key>, ...
-
-    // ── SCRIPT LOAD (startup) ──────────────────────────────────────────────
-    if (args[0] === 'SCRIPT' && args[1] === 'LOAD') {
-      // If the client is in a bad state, try to reconnect it.
-      // This handles the case where Docker port forwarding goes down and
-      // comes back — the client will reconnect automatically and rate
-      // limiting will resume without a server restart.
-      if (['end', 'fault'].includes(client.status)) {
-        client.connect().catch(() => { /* ignore — fail-open handled below */ })
-        if (!redisDownSince && !isDisconnecting) {
-          redisDownSince = Date.now()
-          console.warn(`⚠️ Redis unavailable for rate limiting — requests will NOT be rate-limited until Redis is back`)
-        }
-        return 'dummy_sha_to_prevent_startup_crash'
-      }
-      // 'ready' or 'connecting': let IORedis handle it (queued or will connect).
-      // Redis is back online — reset the counter
-      if (redisDownSince) {
-        console.log(`✅ Rate limiter: Redis recovered (${Math.round((Date.now() - redisDownSince) / 1000)}s downtime)`)
-        redisDownSince = null
-      }
-    }
-
-    try {
-      const result = await client.call(...args)
-
-      // Handle successful results from EVALSHA/EVAL Lua scripts.
-      // rate-limit-redis v4.x expects [totalHits, timeToExpire].
-      // When Redis is under memory pressure, the Lua script may return
-      // [0, 0] (key was evicted between PTTL and INCR).  express-rate-limit
-      // v7.x validates totalHits > 0, so we must return [1, 0] (expired key)
-      // instead of [0, 0].
-      if (Array.isArray(result) && result.length === 2) {
-        const hits = Number(result[0])
-        if (hits < 1) {
-          return [1, 0]
-        }
-      }
-      return result
-    } catch (err) {
-      // rate-limit-redis v4.x expects sendCommand to return arrays for all
-      // EVALSHA/EVAL results (parseScriptResponse checks Array.isArray(result)).
-      //
-      // When Redis is down, SCRIPT LOAD returns a dummy SHA string.  The
-      // library then calls EVALSHA with that dummy SHA, which fails with
-      // "NOSCRIPT".  The retryableIncrement catch block reloads the script
-      // and retries — but if Redis is still down, sendCommand's catch block
-      // returns [1, 0] (below).  parseScriptResponse checks Array.isArray &&
-      // results.length === 2.  [1, 0] passes both checks — effectively
-      // fail-open without crashing.
-
-      // Configuration errors (WRONGPASS, NOAUTH) — fail-open: return [1, 0]
-      // (1 hit, 0ms TTL = expired immediately).  A config error means nobody
-      // can rate-limit correctly anyway.  Must be >= 1 because
-      // express-rate-limit v7.x validates totalHits > 0.
-      const isConfigError = err.message?.includes('WRONGPASS') ||
-        err.message?.includes('NOAUTH') ||
-        err.message?.includes('invalid password') ||
-        err.message?.includes('authentication')
-
-      if (isConfigError) {
-        console.error(`⚠️ Rate limiter: Redis configuration error — ${err.message}.`)
-        if (!redisDownSince) redisDownSince = Date.now()
-        return [1, 0]
-      }
-
-      // Transient errors (connection refused, timeout, NOSCRIPT, closed, etc.)
-      // — fail-open: return [1, 0] so requests pass through without rate
-      // limiting.  Must be >= 1 because express-rate-limit v7.x validates
-      // totalHits > 0.  This prevents the "Expected result to be array of
-      // values" / "Expected 2 replies" / "ERR_ERL_INVALID_HITS" crashes from
-      // taking down PM2 workers.
-      if (err.message?.includes('ECONNREFUSED') ||
-          err.message?.includes('timeout') ||
-          err.message?.includes('Connection refused') ||
-          err.message?.includes('connect ETIMEDOUT') ||
-          err.message?.includes('getaddrinfo') ||
-          err.message?.includes('Connection is closed.') ||
-          err.message?.includes('Connection has errored') ||
-          err.message?.includes('Reconnecting') ||
-          err.message?.includes('NOSCRIPT') ||
-          err.message?.includes("Stream isn't writeable")) {
-        if (!redisDownSince) {
-          redisDownSince = Date.now()
-          console.warn(`⚠️ Rate limiter: Redis temporarily unavailable — requests will NOT be rate-limited until Redis recovers`)
-        }
-        return [1, 0]
-      }
-
-      // Unknown error — fail-open as safety net (better than crashing workers)
-      if (redisDownSince && (Date.now() - redisDownSince) > REDIS_DOWN_WARN_THRESHOLD * 1000) {
-        console.warn(`⚠️ Rate limiter: Redis has been down for ${Math.round((Date.now() - redisDownSince) / 1000)}s — requests will NOT be rate-limited (fail-open)`)
-      }
-      return [1, 0]
-    }
-  },
+  sendCommand: (command, ...args) => createRateLimitClient().call(command, ...args),
   prefix: `rate-limit-redis-tennis:${suffix}:`,
 })
 
@@ -239,6 +128,8 @@ const createProxyAwareRateLimiter = ({ storePrefix, essential = false, ...option
     legacyHeaders: false,
     limit: dynamicLimit,
     store,
+    // v5: passOnStoreError controls fail-open/fail-closed when Redis is down.
+    // false = fail-closed (requests blocked when Redis is down)
     passOnStoreError: false,
     keyGenerator: (req) => getRealClientIP(req),
     skip: (req) =>

@@ -22,15 +22,15 @@ services:
       - DB_HOST=postgres
       - DB_NAME=${DB_NAME:-tennis_ranking}
       - DB_USER=${DB_USER:-tennis_user}
-      - DB_PASSWORD=${DB_P…ord}
+      - DB_PASSWORD=${DB_PASSWORD}
       - FIREBASE_SERVICE_ACCOUNT_PATH=/etc/tennis-pro/firebase-service-account.json
       # Required config validations:
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
-      - ADMIN_PASSWORD=${ADMI…min}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD}
       - EDITOR_USERNAME=${EDITOR_USERNAME:-editor}
-      - EDITOR_PASSWORD=${EDIT…tor}
-      - JWT_SECRET=${JWT_…ret}
-      - CSRF_SECRET=${CSRF…ret}
+      - EDITOR_PASSWORD=${EDITOR_PASSWORD}
+      - JWT_SECRET=${JWT_SECRET}
+      - CSRF_SECRET=${CSRF_SECRET}
     volumes:
       # Map the production firebase json file path to the container
       - /etc/tennis-pro/firebase-service-account.json:/etc/tennis-pro/firebase-service-account.json
@@ -51,7 +51,7 @@ services:
     environment:
       POSTGRES_DB: ${DB_NAME:-tennis_ranking}
       POSTGRES_USER: ${DB_USER:-tennis_user}
-      POSTGRES_PASSWORD: ${DB_P…ord}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - ./data/postgres-data:/var/lib/postgresql/data
       - ./data/postgres-init:/docker-entrypoint-initdb.d

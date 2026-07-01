@@ -15,22 +15,22 @@ RUN npm run build
 FROM node:22-alpine
 
 # dumb-init for proper PID 1 signal handling in containers
-RUN apk add --no-cache dumb-init
+RUN apk add --no-cache dumb-init curl
 
 WORKDIR /app
 
-# Non-root user
+# Non-root user for security
 RUN addgroup -g 1001 -S nodejs && \
     adduser -S tennisapp -u 1001 -G nodejs
 
-# Install production dependencies only
+# Install production dependencies only (layer cached unless package.json changes)
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 # Copy built frontend from build stage
 COPY --from=build /app/dist ./dist
 
-# Copy server-side source
+# Copy server-side source (only files needed at runtime)
 COPY server.js worker.js database-postgresql.js access-logger.js ./
 COPY ecosystem.config.cjs ./
 COPY config/ ./config/
@@ -42,16 +42,18 @@ COPY migrations/ ./migrations/
 COPY data/postgres-init/ ./data/postgres-init/
 COPY public/ ./public/
 
-# Create logs directory
+# Create logs directory with correct ownership
 RUN mkdir -p /app/logs && chown -R tennisapp:nodejs /app
 
 USER tennisapp
 
 EXPOSE 3001
 
-# Container health check — used by Docker and orchestrators
-HEALTHCHECK --interval=15s --timeout=5s --start-period=30s --retries=3 \
-  CMD node -e "fetch('http://localhost:3001/health').then(r=>{if(!r.ok)throw 1}).catch(()=>process.exit(1))"
+# NOTE: HEALTHCHECK is NOT defined here because the same image is used for
+# both the main app (port 3001) and the FCM worker (port 3002).
+# Each service overrides the healthcheck in docker-compose.yml with the
+# correct port. Docker Compose healthcheck settings take precedence over
+# the Dockerfile HEALTHCHECK instruction.
 
 ENTRYPOINT ["dumb-init", "--"]
 CMD ["npx", "pm2-runtime", "ecosystem.config.cjs", "--env", "production"]

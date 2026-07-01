@@ -6,6 +6,16 @@ services:
     container_name: tennis-worker
     command: ["node", "worker.js"]
     restart: unless-stopped
+    # Worker exposes a health endpoint on port 3002 (not 3001 which is the main app).
+    # Override here with the correct port. curl is installed in the image.
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3002/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 45s
+      retries: 3
+    expose:
+      - "3002"
     environment:
       - RUN_WORKERS=true
       - REDIS_URL=redis://tennis-redis:6379/0
@@ -35,6 +45,42 @@ services:
   # ── Node.js Application (PM2 cluster inside container) ───────────────────────
   # FCM workers are handled exclusively by the tennis-worker service above.
   # The main app explicitly disables its own FCM workers to prevent double-sends.
+  tennis-app:
+    build: .
+    container_name: tennis-app
+    ports:
+      - "127.0.0.1:3001:3001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    environment:
+      - RUN_WORKERS=false
+      - REDIS_URL=redis://tennis-redis:6379/0
+      - DB_HOST=postgres
+      - DB_NAME=${DB_NAME:-tennis_ranking}
+      - DB_USER=${DB_USER:-tennis_user}
+      - DB_PASSWORD=${DB_PASSWORD:-tennis_password}
+      - FIREBASE_SERVICE_ACCOUNT_PATH=/etc/tennis-pro/firebase-service-account.json
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      - EDITOR_USERNAME=${EDITOR_USERNAME:-editor}
+      - EDITOR_PASSWORD=${EDITOR_PASSWORD:-editor}
+      - JWT_SECRET=${JWT_SECRET:-secret}
+      - CSRF_SECRET=${CSRF_SECRET:-secret}
+      - NODE_ENV=production
+    volumes:
+      - /etc/tennis-pro/firebase-service-account.json:/etc/tennis-pro/firebase-service-account.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - tennis-network
 
   # ── PostgreSQL Database ─────────────────────────────────────────────────────
   postgres:

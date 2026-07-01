@@ -1,6 +1,7 @@
 import { Router } from 'express'
 import { body, param } from 'express-validator'
 import bcrypt from 'bcryptjs'
+import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
 
 export const createAuthRouter = ({

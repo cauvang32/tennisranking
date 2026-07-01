@@ -49,11 +49,9 @@ USER tennisapp
 
 EXPOSE 3001
 
-# NOTE: HEALTHCHECK is NOT defined here because the same image is used for
-# both the main app (port 3001) and the FCM worker (port 3002).
-# Each service overrides the healthcheck in docker-compose.yml with the
-# correct port. Docker Compose healthcheck settings take precedence over
-# the Dockerfile HEALTHCHECK instruction.
+# NOTE: This image is used ONLY for the FCM worker (tennis-worker service).
+# The main app (tennis-app) runs locally via PM2, not in Docker.
+# The worker exposes a health endpoint on port 3002 for Docker HEALTHCHECK.
 
 ENTRYPOINT ["dumb-init", "--"]
-CMD ["npx", "pm2-runtime", "ecosystem.config.cjs", "--env", "production"]
+CMD ["node", "worker.js"]

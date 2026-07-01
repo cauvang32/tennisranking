@@ -197,17 +197,19 @@ deploy:
     - git fetch origin
     - git reset --hard origin/$CI_DEFAULT_BRANCH
 
-    # ── PM2 app (main server) ──────────────────────────────────────
+    # ── Stop PM2 app first ────────────────────────────────────────
     - pm2 stop tennis || true
+
+    # ── Rebuild & restart Docker FCM worker ───────────────────────
+    - docker compose down tennis-worker || true
+    - docker compose build --no-cache tennis-worker
+    - docker compose up -d tennis-worker
+
+    # ── Restart PM2 app ───────────────────────────────────────────
     - npm install --production=false
     - npm run build
     - pm2 delete tennis || true
     - bash scripts/start-with-redis.sh
-
-    # ── Docker FCM worker (rebuild & restart) ──────────────────────
-    - docker compose down tennis-worker || true
-    - docker compose build --no-cache tennis-worker
-    - docker compose up -d tennis-worker
   environment:
     name: production
     url: https://hungsanity.com/tennis
@@ -248,17 +250,19 @@ rollback:
     - git config --global --add safe.directory "$DEPLOY_PATH"
     - git reset --hard HEAD~1
 
-    # ── PM2 app (main server) ──────────────────────────────────────
+    # ── Stop PM2 app first ────────────────────────────────────────
     - pm2 stop tennis || true
+
+    # ── Rebuild & restart Docker FCM worker ───────────────────────
+    - docker compose down tennis-worker || true
+    - docker compose build --no-cache tennis-worker
+    - docker compose up -d tennis-worker
+
+    # ── Restart PM2 app ───────────────────────────────────────────
     - npm install --production=false
     - npm run build
     - pm2 delete tennis || true
     - bash scripts/start-with-redis.sh
-
-    # ── Docker FCM worker (rebuild & restart) ──────────────────────
-    - docker compose down tennis-worker || true
-    - docker compose build --no-cache tennis-worker
-    - docker compose up -d tennis-worker
 
     - echo "⚠️ Rollback completed - Pipeline marked as warning"
     - exit 99

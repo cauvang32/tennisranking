@@ -42,3 +42,4 @@ SECURITY_AUDIT.md
 .claude/tracer-findings.json
 .gitignore
 simplification-findings.json
+migrations/.env

@@ -380,8 +380,8 @@ class TennisDatabasePostgreSQL {
   }
 
   // Players CRUD operations
-  async getPlayers() {
-    const result = await this.query('SELECT id, name, created_at FROM players ORDER BY name')
+  async getPlayers(limit = 100) {
+    const result = await this.query('SELECT id, name, created_at FROM players ORDER BY name LIMIT $1', [limit])
     return result.rows
   }
 
@@ -414,8 +414,8 @@ class TennisDatabasePostgreSQL {
   }
 
   // Seasons CRUD operations
-  async getSeasons() {
-    const result = await this.query(`SELECT ${SEASON_SELECT_COLS} FROM seasons ORDER BY is_active DESC, start_date DESC`)
+  async getSeasons(limit = 50) {
+    const result = await this.query(`SELECT ${SEASON_SELECT_COLS} FROM seasons ORDER BY is_active DESC, start_date DESC LIMIT $1`, [limit])
     return result.rows
   }
 
@@ -441,15 +441,18 @@ class TennisDatabasePostgreSQL {
       
       const seasonId = result.rows[0].id
       
-      // Add players to the season
+      // Add players to the season (batch insert for performance)
       if (playerIds && playerIds.length > 0) {
+        const values = playerIds.map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`)
+        const params = []
         for (const playerId of playerIds) {
-          await client.query(`
-            INSERT INTO season_players (season_id, player_id, added_by)
-            VALUES ($1, $2, 'creator')
-            ON CONFLICT (season_id, player_id) DO NOTHING
-          `, [seasonId, playerId])
+          params.push(seasonId, playerId, 'creator')
         }
+        await client.query(`
+          INSERT INTO season_players (season_id, player_id, added_by)
+          VALUES ${values}
+          ON CONFLICT (season_id, player_id) DO NOTHING
+        `, params)
       }
       
       await client.query('COMMIT')
@@ -565,12 +568,17 @@ class TennisDatabasePostgreSQL {
       // Remove all existing players
       await client.query('DELETE FROM season_players WHERE season_id = $1', [seasonId])
       
-      // Add new players
-      for (const playerId of playerIds) {
+      // Add new players (batch insert for performance)
+      if (playerIds.length > 0) {
+        const values = playerIds.map((_, i) => `($${i * 3 + 1}, $${i * 3 + 2}, $${i * 3 + 3})`)
+        const params = []
+        for (const playerId of playerIds) {
+          params.push(seasonId, playerId, addedBy)
+        }
         await client.query(`
           INSERT INTO season_players (season_id, player_id, added_by)
-          VALUES ($1, $2, $3)
-        `, [seasonId, playerId, addedBy])
+          VALUES ${values}
+        `, params)
       }
       
       await client.query('COMMIT')
@@ -1526,13 +1534,10 @@ class TennisDatabasePostgreSQL {
     try {
       await client.query('BEGIN')
       
-      // Clear all tables in the correct order (respecting foreign key constraints)
-      await client.query('DELETE FROM matches')
-      await client.query('DELETE FROM season_players')
-      await client.query('DELETE FROM seasons')
-      await client.query('DELETE FROM players')
+      // Use TRUNCATE for faster, cleaner deletion (resets sequences automatically)
+      await client.query('TRUNCATE matches, season_players, seasons, players CASCADE')
       
-      // Reset sequences (PostgreSQL equivalent of SQLite's auto-increment reset)
+      // Reset sequences
       await client.query('ALTER SEQUENCE players_id_seq RESTART WITH 1')
       await client.query('ALTER SEQUENCE seasons_id_seq RESTART WITH 1')
       await client.query('ALTER SEQUENCE matches_id_seq RESTART WITH 1')
@@ -1553,11 +1558,8 @@ class TennisDatabasePostgreSQL {
     try {
       await client.query('BEGIN')
       
-      // Clear all tables in the correct order (respecting foreign key constraints)
-      await client.query('DELETE FROM matches')
-      await client.query('DELETE FROM season_players')
-      await client.query('DELETE FROM seasons')
-      await client.query('DELETE FROM players')
+      // Use TRUNCATE for faster deletion
+      await client.query('TRUNCATE matches, season_players, seasons, players CASCADE')
       
       // Delete all users except the one performing the restore
       if (preserveUserId) {

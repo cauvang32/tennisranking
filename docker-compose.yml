@@ -41,7 +41,7 @@ services:
     image: postgres:15-alpine
     container_name: tennis-postgres
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     environment:
       POSTGRES_DB: ${DB_NAME:-tennis_ranking}
       POSTGRES_USER: ${DB_USER:-tennis_user}
@@ -63,7 +63,7 @@ services:
     image: redis:7-alpine
     container_name: tennis-redis
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy noeviction
     volumes:
       - redis-data:/data

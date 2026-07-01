@@ -32,7 +32,6 @@ export const createInlineAuthRouter = ({
   // ── Login ──────────────────────────────────────────────────────────────
   router.post('/api/auth/login',
     loginLimiter,
-    authLimiter,
     [
       body('username').trim().isLength({ min: 1, max: 50 }),
       body('password').trim().isLength({ min: 1, max: 100 })

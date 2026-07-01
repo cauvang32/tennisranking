@@ -46,7 +46,7 @@ export const createMatchRouter = ({
   ], handleValidationErrors, asyncHandler(async (req, res) => {
     // Apply a default server-side limit to prevent loading all matches into memory.
     // The frontend can override with ?limit=N (max 1000).
-    const limit = req.query.limit ? parseInt(req.query.limit) : 200
+    const limit = req.query.limit ? parseInt(req.query.limit) : 50
     const afterId = req.query.after ? parseInt(req.query.after) : null
 
     // Build query with optional cursor-based pagination
@@ -134,20 +134,32 @@ export const createMatchRouter = ({
     body('matchType').optional().isIn(['solo', 'duo']).withMessage('Match type must be solo or duo')
   ]
 
-  // Helper function to validate players are in season
-  const validatePlayersInSeason = async (seasonId, playerIds) => {
-    const seasonPlayers = await db.getSeasonPlayers(seasonId)
-    const seasonPlayerIds = seasonPlayers.map(p => p.id)
-    
+  // Helper function to validate players are in season.
+  // Accepts a pre-fetched seasonPlayers map (seasonId → Set of playerIds)
+  // to avoid N+1 queries in bulk operations. If not provided, fetches from DB.
+  const validatePlayersInSeason = async (seasonId, playerIds, seasonPlayersMap) => {
+    let seasonPlayerIds
+    if (seasonPlayersMap && seasonPlayersMap.has(seasonId)) {
+      seasonPlayerIds = seasonPlayersMap.get(seasonId)
+    } else if (seasonPlayersMap) {
+      // Season not in map — fetch on demand (shouldn't happen in bulk path)
+      const seasonPlayers = await db.getSeasonPlayers(seasonId)
+      seasonPlayerIds = new Set(seasonPlayers.map(p => p.id))
+    } else {
+      // Legacy call without map — fetch from DB (single-match path)
+      const seasonPlayers = await db.getSeasonPlayers(seasonId)
+      seasonPlayerIds = new Set(seasonPlayers.map(p => p.id))
+    }
+
     // If season has no assigned players, allow all (backward compatibility)
-    if (seasonPlayerIds.length === 0) {
+    if (seasonPlayerIds.size === 0) {
       return { valid: true }
     }
 
-    const invalidPlayers = playerIds.filter(id => id && !seasonPlayerIds.includes(id))
+    const invalidPlayers = playerIds.filter(id => id && !seasonPlayerIds.has(id))
     if (invalidPlayers.length > 0) {
-      return { 
-        valid: false, 
+      return {
+        valid: false,
         error: `Players ${invalidPlayers.join(', ')} are not eligible for this season`
       }
     }
@@ -360,18 +372,36 @@ export const createMatchRouter = ({
       const client = await db.pool.connect()
       let createdCount = 0
 
+      // Batch-validate: collect all unique (seasonId, playerIds) pairs upfront,
+      // fetch season players once per season, then validate all matches.
+      // This avoids N+1 queries where each match triggers a separate DB call.
+      const seasonPlayerIdsSet = new Set()
+      for (const match of matches) {
+        const { seasonId, player1Id, player2Id, player3Id, player4Id, matchType = 'duo' } = match
+        const pIds = matchType === 'duo'
+          ? [player1Id, player2Id, player3Id, player4Id]
+          : [player1Id, player3Id]
+        for (const id of pIds) { if (id) seasonPlayerIdsSet.add(id) }
+      }
+      const allSeasonIds = [...new Set(matches.map(m => m.seasonId))]
+      const seasonPlayersMap = new Map()
+      for (const sid of allSeasonIds) {
+        const sps = await db.getSeasonPlayers(sid)
+        seasonPlayersMap.set(sid, new Set(sps.map(p => p.id)))
+      }
+
       try {
         await client.query('BEGIN')
 
         for (const match of matches) {
           const { seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType = 'duo' } = match
 
-          // Validate players are in season
+          // Validate players are in season (using pre-fetched map)
           const playerIds = matchType === 'duo'
             ? [player1Id, player2Id, player3Id, player4Id]
             : [player1Id, player3Id]
 
-          const validation = await validatePlayersInSeason(seasonId, playerIds)
+          const validation = await validatePlayersInSeason(seasonId, playerIds, seasonPlayersMap)
           if (!validation.valid) {
             await client.query('ROLLBACK')
             res.status(400).json({ error: validation.error })
@@ -418,6 +448,22 @@ export const createMatchRouter = ({
 
       if (!imageBase64) {
         res.status(400).json({ error: 'Vui lòng chọn một hình ảnh để phân tích' })
+        return
+      }
+
+      // Validate image size: base64 string should be reasonable (< 20MB)
+      // A 5MB image = ~6.7MB base64. 20MB base64 ≈ 15MP image, well above phone cameras.
+      const maxBase64Length = 20 * 1024 * 1024 // 20MB
+      if (imageBase64.length > maxBase64Length) {
+        res.status(400).json({
+          error: `Hình ảnh quá lớn (${(imageBase64.length / 1024 / 1024).toFixed(1)}MB). Tối đa 20MB.`
+        })
+        return
+      }
+
+      // Validate MIME type if provided
+      if (mimeType && !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(mimeType.toLowerCase())) {
+        res.status(400).json({ error: 'Định dạng hình ảnh không hợp lệ. Chỉ hỗ trợ PNG, JPEG, WebP, GIF.' })
         return
       }
 

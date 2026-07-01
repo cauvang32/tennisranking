@@ -13,8 +13,8 @@ export const createAuthRouter = ({
   sanitizeResponse
 }) => {
   const router = Router()
-  // 2026 security standard: 14 rounds for bcrypt (configurable via env)
-  const SALT_ROUNDS = parseInt(process.env.BCRYPT_ROUNDS) || 14
+  // Use centralized bcrypt rounds from config (OWASP recommended: 14 rounds)
+  const SALT_ROUNDS = config.bcryptRounds
 
   // Get all users (admin only)
   router.get(

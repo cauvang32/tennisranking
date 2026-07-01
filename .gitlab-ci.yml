@@ -196,11 +196,18 @@ deploy:
     - git remote set-url origin "$GIT_ORIGIN" || git remote add origin "$GIT_ORIGIN"
     - git fetch origin
     - git reset --hard origin/$CI_DEFAULT_BRANCH
+
+    # ── PM2 app (main server) ──────────────────────────────────────
     - pm2 stop tennis || true
     - npm install --production=false
     - npm run build
     - pm2 delete tennis || true
     - bash scripts/start-with-redis.sh
+
+    # ── Docker FCM worker (rebuild & restart) ──────────────────────
+    - docker compose down tennis-worker || true
+    - docker compose build --no-cache tennis-worker
+    - docker compose up -d tennis-worker
   environment:
     name: production
     url: https://hungsanity.com/tennis
@@ -240,11 +247,19 @@ rollback:
     - echo "🔧 Configuring git safe directory..."
     - git config --global --add safe.directory "$DEPLOY_PATH"
     - git reset --hard HEAD~1
+
+    # ── PM2 app (main server) ──────────────────────────────────────
     - pm2 stop tennis || true
     - npm install --production=false
     - npm run build
     - pm2 delete tennis || true
     - bash scripts/start-with-redis.sh
+
+    # ── Docker FCM worker (rebuild & restart) ──────────────────────
+    - docker compose down tennis-worker || true
+    - docker compose build --no-cache tennis-worker
+    - docker compose up -d tennis-worker
+
     - echo "⚠️ Rollback completed - Pipeline marked as warning"
     - exit 99
 

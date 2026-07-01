@@ -380,8 +380,11 @@ class TennisDatabasePostgreSQL {
   }
 
   // Players CRUD operations
-  async getPlayers(limit = 100) {
-    const result = await this.query('SELECT id, name, created_at FROM players ORDER BY name LIMIT $1', [limit])
+  async getPlayers(limit) {
+    const sql = limit != null
+      ? 'SELECT id, name, created_at FROM players ORDER BY name LIMIT $1'
+      : 'SELECT id, name, created_at FROM players ORDER BY name'
+    const result = await this.query(sql, limit != null ? [limit] : [])
     return result.rows
   }
 
@@ -414,8 +417,11 @@ class TennisDatabasePostgreSQL {
   }
 
   // Seasons CRUD operations
-  async getSeasons(limit = 50) {
-    const result = await this.query(`SELECT ${SEASON_SELECT_COLS} FROM seasons ORDER BY is_active DESC, start_date DESC LIMIT $1`, [limit])
+  async getSeasons(limit) {
+    const sql = limit != null
+      ? `SELECT ${SEASON_SELECT_COLS} FROM seasons ORDER BY is_active DESC, start_date DESC LIMIT $1`
+      : `SELECT ${SEASON_SELECT_COLS} FROM seasons ORDER BY is_active DESC, start_date DESC`
+    const result = await this.query(sql, limit != null ? [limit] : [])
     return result.rows
   }
 

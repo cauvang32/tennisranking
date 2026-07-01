@@ -21,7 +21,7 @@ export const createSeasonRouter = ({
   router.get('/', checkAuth, asyncHandler(async (req, res) => {
     const { data: seasons, hit: cacheHit } = await rankingsCache.getOrSet(
       'seasons',
-      () => db.getSeasons()
+      () => db.getSeasons(50)
     )
     res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(sanitizeResponse(seasons))

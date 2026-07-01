@@ -12,14 +12,14 @@ import { getRealClientIP, logError } from '../access-logger.js'
  * - Redis-backed distributed rate limiting (cluster/PM2 safe)
  * - Dynamic scaling based on CPU/RAM pressure
  * - User-aware limits (admin > authenticated > anonymous)
- * - Graceful degradation if Redis is down (fail-closed: requests are blocked)
+ * - Graceful degradation if Redis is down (fail-open: requests pass through)
  */
 
 // ── Dedicated Redis client for rate limiting ────────────────────────────────
 // Separate from cache client so failures are isolated.
-// enableOfflineQueue: false — when Redis is down, commands fail immediately
-// instead of accumulating in memory. passOnStoreError: false on each limiter
-// ensures rate limiting stays enforced even when Redis is down (fail-closed).
+// enableOfflineQueue defaults to true — commands are queued while connecting,
+// not accumulated when Redis is down. passOnStoreError: true on each limiter
+// ensures fail-open behavior: requests pass through when Redis is unavailable.
 //
 // IMPORTANT: The client is created lazily (lazyRateLimitClient) to avoid a
 // startup race when Redis runs inside Docker with a host port mapping
@@ -129,9 +129,11 @@ const createProxyAwareRateLimiter = ({ storePrefix, essential = false, ...option
     limit: dynamicLimit,
     store,
     // v5: passOnStoreError controls fail-open/fail-closed when Redis is down.
-    // false = fail-closed (requests are BLOCKED when Redis is down)
-    // This ensures rate limiting is always enforced, even during Redis outages.
-    passOnStoreError: false,
+    // Essential limiters (auth, login, refresh, device-register) are fail-closed:
+    // requests are BLOCKED when Redis is down, preventing brute-force attacks
+    // during outages. Non-essential limiters are fail-open: requests pass through
+    // to avoid a total site outage when Redis is temporarily unavailable.
+    passOnStoreError: !essential,
     keyGenerator: (req) => getRealClientIP(req),
     skip: (req) =>
       req.path === '/api/health' ||
@@ -356,7 +358,6 @@ export async function initRateLimitRedis() {
  * Disconnect rate-limit Redis client (for graceful shutdown).
  */
 export async function disconnectRateLimitRedis() {
-  isDisconnecting = true
   const client = createRateLimitClient()
   try {
     client.removeAllListeners('close')

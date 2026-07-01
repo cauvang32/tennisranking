@@ -20,7 +20,7 @@ export const createPlayerRouter = ({
   router.get('/', checkAuth, asyncHandler(async (req, res) => {
     const { data: players, hit: cacheHit } = await rankingsCache.getOrSet(
       'players',
-      () => db.getPlayers()
+      () => db.getPlayers(100)
     )
     // Only expose Redis-Cache headers in development for debugging
     if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')

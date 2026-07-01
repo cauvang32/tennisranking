@@ -3,16 +3,24 @@ import http from 'http'
 import DB from './database-postgresql.js'
 import { createPushSender } from './lib/push-sender.js'
 
+// Module-level refs so the health server closure can access them.
+// Assigned inside start() after initialization.
+let db = null
+let pushSender = null
+
 // ── Lightweight health check server (for Docker HEALTHCHECK) ────────────────
 // Separate from the main app so the worker has its own health probe.
 // Checks: process alive, DB reachable, Redis reachable (via pushSender).
 const healthServer = http.createServer((req, res) => {
   if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' })
+    const dbStatus = db?.pool ? 'connected' : 'disconnected'
+    const fcmStatus = pushSender?.enabled ? 'active' : 'disabled'
+    const isReady = dbStatus === 'connected'
+    res.writeHead(isReady ? 200 : 503, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({
-      status: 'healthy',
-      db: db?.pool ? 'connected' : 'disconnected',
-      fcm: pushSender?.enabled ? 'active' : 'disabled',
+      status: isReady ? 'healthy' : 'starting',
+      db: dbStatus,
+      fcm: fcmStatus,
       uptime: process.uptime()
     }))
   } else {
@@ -25,7 +33,7 @@ async function start() {
   console.log('🤖 Starting background FCM worker process...')
 
   // Initialize PostgreSQL database
-  const db = new DB()
+  db = new DB()
   try {
     await db.init()
     console.log('✅ PostgreSQL database connection established')
@@ -35,7 +43,6 @@ async function start() {
   }
 
   // Initialize push sender with workers enabled
-  let pushSender
   try {
     pushSender = await createPushSender({ db, runWorkers: true })
     console.log('🚀 FCM worker queue and background worker engines started successfully')

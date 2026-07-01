@@ -13,49 +13,43 @@ const __dirname = dirname(__filename)
 
 // Enhanced IP detection utility
 // SECURITY: Prioritizes req.ip which respects Express's 'trust proxy' setting.
-// Raw proxy headers are only used as fallback and logged separately for audit.
+// When trust proxy is enabled (production), req.ip correctly resolves to the
+// last trusted hop's client IP. Raw proxy headers are only used as fallback
+// when trust proxy is off (development) or for Cloudflare's CF-Connecting-IP.
+//
+// IMPORTANT: Do NOT trust X-Real-IP or X-Forwarded-For unconditionally —
+// they can be spoofed by attackers when the app is directly accessible
+// (no reverse proxy). Only use them as last-resort fallbacks.
 export function getRealClientIP(req) {
-  // When behind a reverse proxy (nginx/cloudflare), req.ip resolves to the
-  // proxy's IP — NOT the real client.  So we MUST extract the original client
-  // from proxy headers BEFORE falling back to req.ip.
-  //
-  // Priority:
-  //   1. CF-Connecting-IP  (Cloudflare — most trusted, set by CF itself)
-  //   2. X-Real-IP         (Nginx upstream header — set by our proxy)
-  //   3. X-Forwarded-For   (standard — first entry = original client)
-  //
-  // req.ip is ONLY used as a last resort (direct connection, no proxy).
-  // This matters for rate limiting: without it, every real client gets
-  // keyed by the proxy IP (e.g. 10.31.0.1) instead of their own IP,
-  // making rate limiting effectively invisible to real users.
-
-  const cfIp = req.get('CF-Connecting-IP')
-  if (cfIp && isValidIP(cfIp)) {
-    return cfIp
-  }
-
-  const xRealIP = req.get('X-Real-IP')
-  if (xRealIP && isValidIP(xRealIP)) {
-    return xRealIP
-  }
-
-  const xForwardedFor = req.get('X-Forwarded-For')
-  if (xForwardedFor) {
-    const firstIP = xForwardedFor.split(',')[0].trim()
-    if (isValidIP(firstIP)) {
-      return firstIP
-    }
-  }
-
-  // Direct connection — no proxy involved; req.ip is the real client.
+  // req.ip is the safest source — it respects app.set('trust proxy', ...) and
+  // strips untrusted hops from X-Forwarded-For automatically.
   if (req.ip && isValidIP(req.ip)) {
     return req.ip
   }
 
-  // Ultimate fallback
-  const direct = req.connection?.remoteAddress || req.socket?.remoteAddress
-  if (direct && isValidIP(direct)) {
-    return direct
+  // Fallback sources (only reached if req.ip is unavailable/invalid)
+  const fallbackSources = [
+    req.get('CF-Connecting-IP'),        // Cloudflare (if behind CF)
+    req.get('X-Real-IP'),               // Nginx
+    req.get('X-Forwarded-For'),         // Standard proxy header
+    req.connection?.remoteAddress,      // Direct connection
+    req.socket?.remoteAddress,          // Socket connection
+    'unknown'
+  ]
+
+  for (const ip of fallbackSources) {
+    if (ip && ip !== 'unknown') {
+      // Handle X-Forwarded-For which can contain multiple IPs
+      if (ip.includes(',')) {
+        // Take the first IP (original client)
+        const firstIP = ip.split(',')[0].trim()
+        if (isValidIP(firstIP)) {
+          return firstIP
+        }
+      } else if (isValidIP(ip)) {
+        return ip
+      }
+    }
   }
 
   return 'unknown'
@@ -64,14 +58,49 @@ export function getRealClientIP(req) {
 // Validate IP address format
 function isValidIP(ip) {
   if (!ip || ip === 'unknown') return false
-  
+
   // IPv4 validation
   const ipv4Regex = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/
-  
-  // IPv6 validation (basic)
+
+  if (ipv4Regex.test(ip)) return true
+
+  // IPv6 validation — handle full, compressed (::), and IPv4-mapped forms.
+  // Full 8-group: 2001:0db8:85a3:0000:0000:8a2e:0370:7334
+  // Compressed (:: at start/middle/end): 2001:db8::1, ::1, fe80::1, 2001:db8::
+  // IPv4-mapped: ::ffff:192.0.2.1
+  if (ip.includes('::')) {
+    // :: can only appear once in a valid IPv6 address
+    if (ip.split('::').length - 1 > 1) return false
+    const [left, right] = ip.split('::')
+    // Handle IPv4-mapped form (::ffff:192.0.2.1)
+    if (right && right.includes('.')) {
+      const ipv4Match = right.match(/^(.*?):(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
+      if (!ipv4Match) return false
+      const hexSuffix = ipv4Match[1] // e.g. "ffff" (before the IPv4 part)
+      const ipv4Part = ipv4Match[2]  // e.g. "192.0.2.1"
+      if (!ipv4Regex.test(ipv4Part)) return false
+      const hexGroups = hexSuffix ? hexSuffix.split(':').length : 0
+      const totalGroups = (left ? left.split(':').length : 0) + hexGroups
+      if (totalGroups >= 8) return false
+      const hexGroup = /^[0-9a-fA-F]{1,4}$/
+      if (left) for (const g of left.split(':')) if (!hexGroup.test(g)) return false
+      if (hexSuffix) for (const g of hexSuffix.split(':')) if (!hexGroup.test(g)) return false
+      return true
+    }
+    const leftGroups = left ? left.split(':').length : 0
+    const rightGroups = right ? right.split(':').length : 0
+    // Total explicit groups must be < 8 (the :: represents at least one omitted group)
+    if (leftGroups + rightGroups >= 8) return false
+    // Each group must be 1-4 hex digits
+    const hexGroup = /^[0-9a-fA-F]{1,4}$/
+    if (left) for (const g of left.split(':')) if (!hexGroup.test(g)) return false
+    if (right) for (const g of right.split(':')) if (!hexGroup.test(g)) return false
+    return true
+  }
+
+  // Full 8-group form (no compression)
   const ipv6Regex = /^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$/
-  
-  return ipv4Regex.test(ip) || ipv6Regex.test(ip) || ip === '::1' || ip === '::ffff:127.0.0.1'
+  return ipv6Regex.test(ip)
 }
 
 // Create logs directory if it doesn't exist

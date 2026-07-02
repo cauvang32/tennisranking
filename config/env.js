@@ -88,6 +88,9 @@ const config = {
     password: process.env.EDITOR_PASSWORD,
     email: process.env.EDITOR_EMAIL || 'editor@tennis.local'
   },
+  // H3: Allow disabling env-based accounts at runtime (e.g. after creating DB users)
+  disableEnvAdmin: envFlagTrue(process.env.DISABLE_ENV_ADMIN),
+  disableEnvEditor: envFlagTrue(process.env.DISABLE_ENV_EDITOR),
 
   // Security
   jwtSecret: process.env.JWT_SECRET,

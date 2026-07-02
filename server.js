@@ -62,6 +62,8 @@ const __dirname = dirname(__filename)
 const app = express()
 const PORT = config.port
 const SUBPATH = config.subpath
+// L1: Hoist subpathNorm to module scope — computed once, reused in two middleware locations
+const subpathNorm = SUBPATH.endsWith('/') ? SUBPATH.slice(0, -1) : SUBPATH
 const isDevelopment = config.isDevelopment
 
 console.log('🎯 Server subpath configuration:', SUBPATH)
@@ -353,7 +355,6 @@ if (!isDevelopment) {
 if (SUBPATH !== '/') {
   // SUBPATH is normalized to always end with '/' (e.g. /tennis/).
   // Strip the trailing slash for URL matching to avoid double-slash mismatches.
-  const subpathNorm = SUBPATH.endsWith('/') ? SUBPATH.slice(0, -1) : SUBPATH
   app.use((req, res, next) => {
     if (req.originalUrl?.startsWith(`${subpathNorm}/api`)) {
       const normalized = req.originalUrl.slice(subpathNorm.length)
@@ -367,7 +368,6 @@ if (SUBPATH !== '/') {
 // Skip routes that return user-specific or auth state — ETag only encodes
 // the data version, not the user identity. Without these exclusions an admin's
 // cached response for `/api/players` or `/api/admin/*` would be served to guests.
-const subpathNorm = SUBPATH.endsWith('/') ? SUBPATH.slice(0, -1) : SUBPATH
 const apiCachePaths = subpathNorm !== '/' ? [`${subpathNorm}/api`, '/api'] : ['/api']
 
 // Routes that must never receive ETag / 304 responses because their bodies vary

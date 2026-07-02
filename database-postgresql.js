@@ -629,8 +629,9 @@ class TennisDatabasePostgreSQL {
 
   // Matches CRUD operations
   // match_type: 'duo' (4 players) or 'solo' (2 players - player1 vs player3)
-  async addMatch(seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType = 'duo') {
-    const result = await this.query(`
+  async addMatch(seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType = 'duo', client = null) {
+    const queryClient = client || this.pool
+    const result = await queryClient.query(`
       INSERT INTO matches (season_id, play_date, player1_id, player2_id, player3_id, player4_id, team1_score, team2_score, winning_team, match_type) 
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id
     `, [seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType])
@@ -681,10 +682,24 @@ class TennisDatabasePostgreSQL {
   }
 
   /**
-   * Get matches with cursor-based pagination (after a specific match ID).
+   * Get matches with cursor-based pagination using keyset indexing.
+   * Uses (play_date, created_at, id) tuple comparison for correct ordering.
+   * The cursor is a base64-encoded JSON: { playDate, createdAt, id }.
    * Used for infinite scrolling through match history.
    */
-  async getMatchesAfterId(afterId, limit) {
+  async getMatchesAfterCursor(cursor, limit) {
+    // Decode cursor: base64(JSON.stringify({ playDate, createdAt, id }))
+    // Validate cursor format — reject malformed input with a clear error
+    let cursorObj
+    try {
+      cursorObj = JSON.parse(Buffer.from(cursor, 'base64').toString('utf8'))
+    } catch (decodeError) {
+      throw new Error(`Invalid cursor format: ${decodeError.message}`)
+    }
+    const { playDate, createdAt, id } = cursorObj
+    if (!playDate || !createdAt || !id) {
+      throw new Error('Invalid cursor: missing required fields (playDate, createdAt, id)')
+    }
     const query = `
       SELECT m.id, m.season_id, TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date,
         m.player1_id, m.player2_id, m.player3_id, m.player4_id,
@@ -701,11 +716,11 @@ class TennisDatabasePostgreSQL {
       LEFT JOIN players p2 ON m.player2_id = p2.id
       JOIN players p3 ON m.player3_id = p3.id
       LEFT JOIN players p4 ON m.player4_id = p4.id
-      WHERE m.id > $1
-      ORDER BY m.play_date DESC, m.created_at DESC
-      LIMIT $2
+      WHERE (m.play_date, m.created_at, m.id) < ($1, $2, $3)
+      ORDER BY m.play_date DESC, m.created_at DESC, m.id DESC
+      LIMIT $4
     `
-    const result = await this.query(query, [afterId, limit])
+    const result = await this.query(query, [playDate, createdAt, id, limit])
     return result.rows
   }
 

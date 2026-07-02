@@ -180,9 +180,9 @@ export const createHealthRouter = ({
       info: 'Bộ đệm đang hoạt động ổn định'
     }
 
+    // M4: Do not leak NODE_ENV — it reveals deployment architecture to any admin user
     const serverInfo = {
       uptime: process.uptime(),
-      environment: process.env.NODE_ENV || 'production',
       redisConnected: stats.isConnected
     }
 

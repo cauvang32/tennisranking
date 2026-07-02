@@ -59,14 +59,17 @@ export const createInlineAuthRouter = ({
         } catch { /* continue to env-based check */ }
 
         // Fallback to env-based admin/editor
+        // H3: Skip if the respective env account is disabled via DISABLE_ENV_ADMIN/DISABLE_ENV_EDITOR
         if (!user) {
-          if (username === config.admin.username &&
+          if (!config.disableEnvAdmin &&
+              username === config.admin.username &&
               await bcrypt.compare(password, hashedAdminPassword)) {
             user = {
               username: config.admin.username, email: config.admin.email,
               role: 'admin', displayName: 'System Admin'
             }
-          } else if (username === config.editor.username &&
+          } else if (!config.disableEnvEditor &&
+                     username === config.editor.username &&
                      await bcrypt.compare(password, hashedEditorPassword)) {
             user = {
               username: config.editor.username, email: config.editor.email,

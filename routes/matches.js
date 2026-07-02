@@ -1,3 +1,4 @@
+import crypto from 'crypto'
 import { Router, json as expressJson } from 'express'
 import { body, param, query } from 'express-validator'
 import config from '../config/env.js'
@@ -42,23 +43,35 @@ export const createMatchRouter = ({
 
   router.get('/', checkAuth, [
     query('limit').optional().isInt({ min: 1, max: 1000 }).withMessage('Limit must be between 1 and 1000'),
-    query('after').optional().isInt({ min: 1 }).withMessage('Valid after ID required for pagination')
+    query('after').optional().isString().custom((value) => {
+      if (!value) return true // empty string is fine — treated as null
+      // Validate base64-encoded JSON cursor format
+      try {
+        const decoded = JSON.parse(Buffer.from(value, 'base64').toString('utf8'))
+        if (typeof decoded !== 'object' || !decoded.playDate || !decoded.createdAt || typeof decoded.id !== 'number') {
+          return false
+        }
+      } catch { return false }
+      return true
+    }).withMessage('Valid pagination cursor required')
   ], handleValidationErrors, asyncHandler(async (req, res) => {
     // Apply a default server-side limit to prevent loading all matches into memory.
     // The frontend can override with ?limit=N (max 1000).
     const limit = req.query.limit ? parseInt(req.query.limit) : 50
-    const afterId = req.query.after ? parseInt(req.query.after) : null
+    const cursor = req.query.after || null
 
-    // Build query with optional cursor-based pagination
+    // Build query with optional cursor-based pagination (keyset indexing)
     let queryMatches
-    if (afterId) {
-      queryMatches = () => db.getMatchesAfterId(afterId, limit)
+    if (cursor) {
+      queryMatches = () => db.getMatchesAfterCursor(cursor, limit)
     } else {
       queryMatches = () => db.getMatches(limit)
     }
 
     // For bounded requests (with limit), use the cached path
-    const cacheKey = afterId ? `matches:list:${afterId}:${limit}` : `matches:list:${limit}`
+    // Hash cursor to avoid Redis key bloat from long base64 strings
+    const cursorHash = cursor ? crypto.createHash('sha256').update(cursor).digest('hex').substring(0, 16) : null
+    const cacheKey = cursorHash ? `matches:list:cursor:${cursorHash}` : `matches:list:${limit}`
     const { data: matches, hit: cacheHit } = await rankingsCache.getOrSet(
       cacheKey,
       queryMatches
@@ -67,9 +80,15 @@ export const createMatchRouter = ({
     if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
 
     // Add pagination headers for frontend
+    // M1: Use keyset cursor with (play_date, created_at, id) tuple for correct ordering
     if (matches && matches.length > 0) {
-      const lastId = matches[matches.length - 1].id
-      res.set('X-Next-Cursor', String(lastId))
+      const last = matches[matches.length - 1]
+      const cursorObj = {
+        playDate: last.play_date,
+        createdAt: last.created_at,
+        id: last.id
+      }
+      res.set('X-Next-Cursor', Buffer.from(JSON.stringify(cursorObj)).toString('base64'))
     }
 
     return res.json(sanitizeResponse(matches))
@@ -128,8 +147,9 @@ export const createMatchRouter = ({
     body('player2Id').optional({ nullable: true }).isInt().withMessage('Valid player 2 ID is required for duo matches'),
     body('player3Id').isInt().withMessage('Valid player 3 ID is required'),
     body('player4Id').optional({ nullable: true }).isInt().withMessage('Valid player 4 ID is required for duo matches'),
-    body('team1Score').isInt({ min: 0 }).withMessage('Valid team 1 score is required'),
-    body('team2Score').isInt({ min: 0 }).withMessage('Valid team 2 score is required'),
+    // L6: Max 100 prevents overflow in ranking calculations and unreasonable money penalties
+    body('team1Score').isInt({ min: 0, max: 100 }).withMessage('Valid team 1 score is required'),
+    body('team2Score').isInt({ min: 0, max: 100 }).withMessage('Valid team 2 score is required'),
     body('winningTeam').isInt({ min: 1, max: 2 }).withMessage('Winning team must be 1 or 2'),
     body('matchType').optional().isIn(['solo', 'duo']).withMessage('Match type must be solo or duo')
   ]
@@ -309,6 +329,11 @@ export const createMatchRouter = ({
       if (oldDate && oldDate !== playDate) {
         await rankingsCache.invalidateOnMatchChange(oldDate)
       }
+      // Also invalidate player rankings if players changed
+      if (player1Id !== existingMatch.player1_id || player2Id !== existingMatch.player2_id ||
+          player3Id !== existingMatch.player3_id || player4Id !== existingMatch.player4_id) {
+        await rankingsCache.invalidateOnPlayerChange()
+      }
       res.json({ success: true, message: 'Match updated successfully' })
     })
   )
@@ -339,7 +364,8 @@ export const createMatchRouter = ({
       'playdates',
       () => db.getPlayDates()
     )
-    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    // L3: Only expose Redis-Cache diagnostic header in development
+    if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(playDates)
   }))
 
@@ -348,7 +374,8 @@ export const createMatchRouter = ({
       'playdate:latest',
       () => db.getLatestPlayDate()
     )
-    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    // L3: Only expose Redis-Cache diagnostic header in development
+    if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json({ playDate: latestDate })
   }))
 
@@ -393,6 +420,10 @@ export const createMatchRouter = ({
       try {
         await client.query('BEGIN')
 
+        // M6: Collect created match IDs and affected dates — invalidate AFTER commit
+        // to avoid invalidating cache for matches that never committed.
+        const createdMatches = []
+
         for (const match of matches) {
           const { seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType = 'duo' } = match
 
@@ -408,20 +439,50 @@ export const createMatchRouter = ({
             return
           }
 
-          let matchId
-          if (matchType === 'solo') {
-            matchId = await db.addMatch(seasonId, playDate, player1Id, null, player3Id, null, team1Score, team2Score, winningTeam, matchType)
-          } else {
-            matchId = await db.addMatch(seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType)
+          // Validate match payload (scores, winningTeam, matchType, playDate)
+          if (typeof team1Score !== 'number' || team1Score < 0 || team1Score > 100) {
+            await client.query('ROLLBACK')
+            res.status(400).json({ error: `Invalid team1Score: ${team1Score}. Must be between 0 and 100.` })
+            return
+          }
+          if (typeof team2Score !== 'number' || team2Score < 0 || team2Score > 100) {
+            await client.query('ROLLBACK')
+            res.status(400).json({ error: `Invalid team2Score: ${team2Score}. Must be between 0 and 100.` })
+            return
+          }
+          if (winningTeam !== 1 && winningTeam !== 2) {
+            await client.query('ROLLBACK')
+            res.status(400).json({ error: `Invalid winningTeam: ${winningTeam}. Must be 1 or 2.` })
+            return
+          }
+          if (matchType !== 'solo' && matchType !== 'duo') {
+            await client.query('ROLLBACK')
+            res.status(400).json({ error: `Invalid matchType: ${matchType}. Must be 'solo' or 'duo'.` })
+            return
           }
 
-          // Invalidate cache for the new play date
-          await rankingsCache.invalidateOnMatchChange(playDate)
-          fireMatchPush(matchId, match, matchType)
+          let matchId
+          if (matchType === 'solo') {
+            matchId = await db.addMatch(seasonId, playDate, player1Id, null, player3Id, null, team1Score, team2Score, winningTeam, matchType, client)
+          } else {
+            matchId = await db.addMatch(seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, matchType, client)
+          }
+
+          createdMatches.push({ matchId, match, matchType, playDate })
           createdCount++
         }
 
         await client.query('COMMIT')
+
+        // M6: Invalidate cache and fire pushes AFTER successful commit
+        const affectedDates = [...new Set(createdMatches.map(cm => cm.playDate))]
+        for (const date of affectedDates) {
+          await rankingsCache.invalidateOnMatchChange(date)
+        }
+        for (const cm of createdMatches) {
+          fireMatchPush(cm.matchId, cm.match, cm.matchType)
+        }
+
         res.json({ success: true, created: createdCount, total: matches.length })
       } catch (err) {
         await client.query('ROLLBACK')

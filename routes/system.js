@@ -21,6 +21,8 @@ export const createSystemRouter = ({
 }) => {
   const router = Router()
   const SUBPATH = config.subpath
+  // L2: Compute once at module scope — config.maxSseClients is static at startup
+  const MAX_SSE_PER_IP = Math.max(10, Math.floor(config.maxSseClients / 50))
 
   // ── CSRF token endpoint ───────────────────────────────────────────────────
   router.get('/api/csrf-token', (req, res) => {
@@ -102,7 +104,8 @@ export const createSystemRouter = ({
       initData.csrfToken = tokens.create(deriveCSRFSecretFromUser(req.user || { id: 'anonymous' }))
 
       const hitCount = [rankingsHit, playersHit, seasonsHit, activeSeasonsHit, playDatesHit, activeSeasonHit].filter(Boolean).length
-      res.set('Redis-Cache', `${hitCount}/6`)
+      // L7: Only expose Redis-Cache diagnostic header in development
+      if (!config.isProduction) res.set('Redis-Cache', `${hitCount}/6`)
       res.json(initData)
     } catch (error) {
       console.error('Error in init endpoint:', error)
@@ -124,15 +127,13 @@ export const createSystemRouter = ({
   sseCleanupInterval.unref?.()
 
   router.get('/api/events', (req, res) => {
-    // Read maxSsePerIp dynamically from config so runtime env changes take effect.
-    const maxSsePerIp = Math.max(10, Math.floor(config.maxSseClients / 50))
     const clientIP = getRealClientIP(req)
     let ipConns = ipConnections.get(clientIP)
     if (!ipConns) {
       ipConns = new Set()
       ipConnections.set(clientIP, ipConns)
     }
-    if (ipConns.size >= maxSsePerIp) {
+    if (ipConns.size >= MAX_SSE_PER_IP) {
       return res.status(429).json({ error: 'Too many SSE connections from this IP' })
     }
     if (sseClients.size >= config.maxSseClients) {

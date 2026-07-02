@@ -1,6 +1,9 @@
 import { Router } from 'express'
 import express from 'express'
+import crypto from 'crypto'
+import bcrypt from 'bcryptjs'
 import { body } from 'express-validator'
+import config from '../config/env.js'
 
 import { asyncHandler } from '../utils/async-handler.js'
 
@@ -19,7 +22,8 @@ export const createBackupRouter = ({
   exportLimiter,
   handleValidationErrors,
   rankingsCache,
-  formatSecureTimestamp
+  formatSecureTimestamp,
+  sanitizeResponse
 }) => {
   const router = Router()
   const largeBodyParser = express.json({ limit: '50mb' })
@@ -37,10 +41,10 @@ export const createBackupRouter = ({
       }))
       // Strip password_hash from backup response to prevent offline brute-force attacks
       const safeUsers = users.map(({ password_hash: _ph, ...user }) => user)
-      res.json({
+      res.json(sanitizeResponse({
         version: '2.2', timestamp: new Date().toISOString(), exportedBy: req.user.username,
         players, seasons: seasonsWithPlayers, matches, users: safeUsers
-      })
+      }))
       console.log('✅ Backup created successfully (including users)')
     })
   )
@@ -53,6 +57,15 @@ export const createBackupRouter = ({
       const currentUsername = req.user.username
       const currentUserId = req.user.id
       console.log(`🔄 RESTORE requested by user: ${currentUsername}`)
+
+      // H2: Require explicit confirmation to prevent accidental data destruction
+      if (!backupData.confirmRestore) {
+        return res.status(400).json({
+          error: 'Xác nhận cần thiết để khôi phục dữ liệu',
+          requiresConfirmation: true,
+          message: 'Hành động này sẽ ghi đè toàn bộ dữ liệu hiện tại. Gửi lại với confirmRestore: true để xác nhận.'
+        })
+      }
 
       if (!backupData.players || !backupData.seasons || !backupData.matches) {
         return res.status(400).json({ error: 'Invalid backup file structure' })
@@ -144,7 +157,11 @@ export const createBackupRouter = ({
         console.log(`✅ Restored ${matchesRestored} matches (${matchesSkipped} skipped)`)
 
         // Restore users (within transaction)
+        // C2: NEVER trust password_hash from backup — always regenerate with a random password.
+        // A tampered backup could contain a bcrypt hash for a known password (e.g. "admin123"),
+        // allowing the attacker to log in as any restored user.
         if (hasUsers) {
+          const SALT_ROUNDS = config.bcryptRounds
           for (const user of backupData.users) {
             if (user.username === currentUsername) { usersSkipped++; continue }
             const existsUser = await client.query('SELECT COUNT(*) as count FROM users WHERE username = $1', [user.username])
@@ -154,16 +171,16 @@ export const createBackupRouter = ({
               if (parseInt(existsEmail.rows[0].count) > 0) { usersSkipped++; continue }
             }
             try {
-              if (!user.password_hash) {
-                console.warn(`⚠️ Skipping user "${user.username}": no password_hash in backup`)
-                usersSkipped++; continue
-              }
+              // Always generate a random password — never trust the backup's password_hash
+              const randomPassword = crypto.randomBytes(32).toString('hex')
+              const safeHash = await bcrypt.hash(randomPassword, SALT_ROUNDS)
               await client.query(
                 `INSERT INTO users (username, email, password_hash, role, display_name, is_active, created_by, notes)
                  VALUES ($1, $2, $3, $4, $5, $6, 'backup_restore', $7)`,
-                [user.username, user.email, user.password_hash, user.role, user.display_name, user.is_active !== false, user.notes]
+                [user.username, user.email, safeHash, user.role, user.display_name, user.is_active !== false, user.notes]
               )
               usersRestored++
+              console.log(`⚠️ User "${user.username}" restored with random password. Use "Change Password" to set a new one.`)
             } catch (e) { console.error('Error restoring user:', e.message); usersSkipped++ }
           }
           console.log(`✅ Restored ${usersRestored} users (${usersSkipped} skipped)`)

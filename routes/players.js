@@ -36,7 +36,9 @@ export const createPlayerRouter = ({
       body('name')
         .trim()
         .isLength({ min: 1, max: 100 }).withMessage('Player name is required')
-        .matches(/^[a-zA-Z0-9\s\u0080-\uFFFF]+$/).withMessage('Player name contains invalid characters')
+        // C3: Use space + name chars only (not \s which matches \n/\r/\t \u2014 log injection vector)
+        // L5: Allow hyphens, apostrophes, periods for names like "O'Connor", "Mary-Jane", "Dr. Smith"
+        .matches(/^[ a-zA-Z0-9\u00C0-\uFFFF\-.']+$/).withMessage('Player name contains invalid characters')
     ],
     handleValidationErrors,
     asyncHandler(async (req, res) => {

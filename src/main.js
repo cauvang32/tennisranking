@@ -755,7 +755,8 @@ class TennisRankingSystem {
         this.matches.push(...batch)
 
         const nextCursorHeader = response.headers.get('X-Next-Cursor')
-        nextCursor = nextCursorHeader ? parseInt(nextCursorHeader) : null
+        // M1: Cursor is now a base64-encoded JSON with (playDate, createdAt, id)
+        nextCursor = nextCursorHeader || null
       } while (nextCursor)
 
       // Update cache key 'all' so renderMatchHistory picks up fresh data
@@ -3764,10 +3765,10 @@ class TennisRankingSystem {
           
           console.log(`📤 Sending restore request with ${backupData.players.length} players, ${backupData.seasons.length} seasons, ${backupData.matches.length} matches`)
           
-          // Send to server
+          // Send to server with confirmRestore flag (server requires explicit confirmation)
           const response = await this.makeAuthenticatedRequest(`${this.apiBase}/restore`, {
             method: 'POST',
-            body: JSON.stringify(backupData)
+            body: JSON.stringify({ ...backupData, confirmRestore: true })
           })
           
           // Check if response is OK before parsing JSON

@@ -1405,6 +1405,8 @@ class TennisDatabasePostgreSQL {
   }
 
   async deleteUser(userId) {
+    // C1: Invalidate all existing JWTs before deleting the user
+    await this.incrementTokenVersion(userId)
     await this.query('DELETE FROM users WHERE id = $1', [userId])
   }
 

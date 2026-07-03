@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { param } from 'express-validator'
+import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
 
 export const createRankingRouter = ({ db, checkAuth, rankingsCache, handleValidationErrors }) => {
@@ -15,7 +16,7 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache, handleValida
       () => db.getPlayerStatsWithFormsLifetime(5)
     )
 
-    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(rankings)
   }))
 
@@ -32,7 +33,7 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache, handleValida
       () => db.getPlayerStatsWithFormsBySeason(seasonId, 5)
     )
 
-    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(rankings)
   }))
 
@@ -48,7 +49,7 @@ export const createRankingRouter = ({ db, checkAuth, rankingsCache, handleValida
       () => db.getPlayerStatsWithFormsByDate(date, 5)
     )
 
-    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(rankings)
   }))
 

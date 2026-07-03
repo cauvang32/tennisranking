@@ -1,0 +1,162 @@
+[
+  {
+    "id": "C1",
+    "severity": "critical",
+    "file": "database-postgresql.js",
+    "function": "deleteUser()",
+    "summary": "JWT not invalidated on user deletion — existing tokens remain valid until natural expiry (15m access / 7d refresh)",
+    "fix": "Add incrementTokenVersion() call before DELETE in deleteUser()"
+  },
+  {
+    "id": "C2",
+    "severity": "critical",
+    "file": "routes/backup.js",
+    "endpoint": "POST /api/restore",
+    "summary": "Backup restore imports password_hash from JSON without any integrity verification — tampered backup silently resets passwords",
+    "fix": "Add backup signature check or require password re-confirmation after restore"
+  },
+  {
+    "id": "C3",
+    "severity": "critical",
+    "file": "routes/players.js",
+    "summary": "Player name regex allows \\n\\r (via \\s) — enables log injection and breaks log parsing",
+    "fix": "Replace \\s with explicit space character in regex"
+  },
+  {
+    "id": "C4",
+    "severity": "critical",
+    "file": "lib/ai-parser.js",
+    "summary": "AI API error responses may leak API key prefixes or infrastructure details to end users",
+    "fix": "Sanitize error messages: strip Bearer tokens and key patterns before returning to client"
+  },
+  {
+    "id": "H1",
+    "severity": "high",
+    "file": "middleware/csrf.js",
+    "summary": "Login endpoint skips CSRF protection — vulnerable to forced-login CSRF attacks",
+    "fix": "Add one-time CSRF token or double-submit cookie for login endpoint"
+  },
+  {
+    "id": "H2",
+    "severity": "high",
+    "file": "routes/backup.js",
+    "summary": "Backup restore has no secondary confirmation — compromised admin account can wipe all data via restore",
+    "fix": "Add explicit confirmation step (type 'RESTORE' or similar) for destructive operations"
+  },
+  {
+    "id": "H3",
+    "severity": "high",
+    "file": "middleware/auth.js",
+    "summary": "Env-based admin/editor accounts (id=null) skip token revocation check — tokens can never be invalidated server-side",
+    "fix": "Create DB records for env accounts or add Redis-based global token denylist"
+  },
+  {
+    "id": "H4",
+    "severity": "high",
+    "file": "config/env.js",
+    "summary": "ALLOWED_ORIGINS includes path (/tennis) that gets stripped — gives false impression of path-level CORS control",
+    "fix": "Clean up env to use origin-only values; document CORS is origin-level"
+  },
+  {
+    "id": "H5",
+    "severity": "high",
+    "file": "lib/ai-parser.js",
+    "summary": "detectApiFormat() probe failure leaves apiFormat=null forever — all subsequent requests use wrong format",
+    "fix": "Set explicit default on probe failure; add AI_API_FORMAT env override"
+  },
+  {
+    "id": "M1",
+    "severity": "medium",
+    "file": "database-postgresql.js",
+    "function": "getMatchesAfterId()",
+    "summary": "Cursor pagination broken: WHERE m.id > $1 with ORDER BY play_date DESC returns same page repeatedly",
+    "fix": "Use composite cursor (play_date, id) tuple comparison",
+    "pre_existing": true
+  },
+  {
+    "id": "M2",
+    "severity": "medium",
+    "file": "lib/redis-cache.js",
+    "summary": "Redis reconnect loop has no jitter — multiple PM2 workers can cause connection storm on recovery",
+    "fix": "Add random jitter (±25%) to reconnection delays"
+  },
+  {
+    "id": "M3",
+    "severity": "medium",
+    "file": "database-postgresql.js",
+    "summary": "PostgreSQL reconnect loop same issue — no jitter, potential connection storm",
+    "fix": "Add random jitter to reconnection delays"
+  },
+  {
+    "id": "M4",
+    "severity": "medium",
+    "file": "routes/health.js",
+    "summary": "Public /health endpoint exposes PostgreSQL version, Redis status, pool sizes, system memory",
+    "fix": "Return minimal status in production; move diagnostics to admin-only endpoint"
+  },
+  {
+    "id": "M5",
+    "severity": "medium",
+    "file": "access-logger.js",
+    "summary": "getRealClientIP() re-parses headers independently from Express trust proxy — may return different IP than req.ip",
+    "fix": "Use req.ip consistently when trustProxy is enabled"
+  },
+  {
+    "id": "M6",
+    "severity": "medium",
+    "file": "routes/matches.js",
+    "summary": "Bulk create invalidates cache inside loop before COMMIT — rollback leaves cache serving stale data for 4min",
+    "fix": "Move cache invalidation to after successful COMMIT"
+  },
+  {
+    "id": "L1",
+    "severity": "low",
+    "file": "server.js",
+    "summary": "subpathNorm computed twice (lines ~349, ~363) — duplicate expression",
+    "fix": "Extract to module-scoped constant",
+    "pre_existing": true
+  },
+  {
+    "id": "L2",
+    "severity": "low",
+    "file": "routes/system.js",
+    "summary": "maxSsePerIp computed on every SSE connection from static config value",
+    "fix": "Hoist to module scope as constant",
+    "pre_existing": true
+  },
+  {
+    "id": "L3",
+    "severity": "low",
+    "file": "routes/seasons.js",
+    "summary": "Redis-Cache header set unconditionally on GET /seasons and GET /seasons/active (leaked in production)",
+    "fix": "Add if (!config.isProduction) guard"
+  },
+  {
+    "id": "L4",
+    "severity": "low",
+    "file": "lib/ai-parser.js",
+    "summary": "detectApiFormat() probe burns AI API tokens on every server restart",
+    "fix": "Add AI_API_FORMAT env var override; skip probe for known providers"
+  },
+  {
+    "id": "L5",
+    "severity": "low",
+    "file": "routes/players.js",
+    "summary": "Player name regex rejects hyphens and apostrophes — breaks international names",
+    "fix": "Expand regex to include .'\\- characters"
+  },
+  {
+    "id": "L6",
+    "severity": "low",
+    "file": "routes/matches.js",
+    "summary": "Match scores have no maximum validation — could cause integer overflow in rankings",
+    "fix": "Add .isInt({ min: 0, max: 999 })"
+  },
+  {
+    "id": "L7",
+    "severity": "low",
+    "file": "routes/seasons.js",
+    "summary": "Redis-Cache header on GET /seasons/active-one also lacks production guard",
+    "fix": "Add if (!config.isProduction) guard"
+  }
+]

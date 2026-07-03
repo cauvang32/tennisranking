@@ -193,7 +193,9 @@ export const createHealthRouter = ({
   // Exports application-level metrics in Prometheus format for monitoring.
   // Restricted to localhost — Prometheus scrapers typically run on the same host.
   router.get('/metrics', (req, res) => {
-    const clientIP = getRealClientIP(req)
+    // N2: Use req.ip (trust-proxy-aware) instead of getRealClientIP() which
+    // independently parses headers and can be spoofed when behind a proxy.
+    const clientIP = req.ip
     if (clientIP !== '127.0.0.1' && clientIP !== '::1' && clientIP !== 'localhost') {
       return res.status(403).json({ error: 'Metrics endpoint restricted to localhost' })
     }

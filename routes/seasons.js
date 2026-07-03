@@ -1,5 +1,6 @@
 import { Router } from 'express'
 import { body, param } from 'express-validator'
+import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
 
 export const createSeasonRouter = ({
@@ -23,7 +24,7 @@ export const createSeasonRouter = ({
       'seasons',
       () => db.getSeasons(50)
     )
-    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(sanitizeResponse(seasons))
   }))
 
@@ -32,7 +33,7 @@ export const createSeasonRouter = ({
       'seasons:active',
       () => db.getActiveSeasons()
     )
-    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(sanitizeResponse(seasons))
   }))
 
@@ -41,7 +42,7 @@ export const createSeasonRouter = ({
       'season:active',
       () => db.getActiveSeason()
     )
-    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(sanitizeResponse(activeSeason))
   }))
 
@@ -55,7 +56,7 @@ export const createSeasonRouter = ({
       cacheKey,
       () => db.getSeasonPlayers(seasonId)
     )
-    res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
+    if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(sanitizeResponse(players))
   }))
 

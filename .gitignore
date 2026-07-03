@@ -44,3 +44,4 @@ SECURITY_AUDIT.md
 .gitignore
 simplification-findings.json
 migrations/.env
+stats.html

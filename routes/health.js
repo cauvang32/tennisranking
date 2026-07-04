@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import config from '../config/env.js'
 
 /**
  * Health check and performance monitoring routes.

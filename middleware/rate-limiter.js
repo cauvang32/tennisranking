@@ -246,6 +246,13 @@ export const strictRestoreLimiter = createProxyAwareRateLimiter({
   }
 })
 
+// R4: CSP report endpoint limiter — 30 requests per minute per IP.
+// Prevents log flooding via crafted CSP violation reports.
+export const cspReportLimiter = createProxyAwareRateLimiter({
+  windowMs: 60 * 1000, limit: 30, storePrefix: 'csp-report',
+  message: { error: 'Too many CSP reports. Please try again later.' }
+})
+
 // User-aware rate limiter (different limits for authenticated users vs anonymous)
 export const smartApiLimiter = createProxyAwareRateLimiter({
   windowMs: wm,

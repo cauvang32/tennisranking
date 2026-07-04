@@ -1,5 +1,4 @@
 import { Router } from 'express'
-import { getRealClientIP } from '../access-logger.js'
 
 /**
  * Health check and performance monitoring routes.
@@ -36,7 +35,14 @@ export const createHealthRouter = ({
   // ── Public health (load balancer / Docker HEALTHCHECK) ────────────────────
   // Lightweight liveness probe — no DB query to prevent spam-induced DB load.
   // For full diagnostics (DB, cache, proxy info), use admin-only /api/health.
+  // R2: Public health — return minimal response in production to avoid
+  // leaking infrastructure details (uptime, cache internals) to attackers.
+  // For full diagnostics, use admin-only /api/health.
   router.get('/health', (_req, res) => {
+    if (config.isProduction) {
+      return res.status(200).json({ status: 'healthy' })
+    }
+    // Development: full diagnostics
     const cacheStats = rankingsCache.getStats()
     const cacheStatus = cacheStats.isConnected ? 'healthy' : 'degraded'
 
@@ -189,10 +195,9 @@ export const createHealthRouter = ({
     res.json({ success: true, cacheStats: stats, recommendations, serverInfo })
   })
 
-  // ── Prometheus metrics endpoint ────────────────────────────────────────────
-  // Exports application-level metrics in Prometheus format for monitoring.
-  // Restricted to localhost — Prometheus scrapers typically run on the same host.
-  router.get('/metrics', (req, res) => {
+  // R3: Prometheus metrics endpoint — requires admin auth + localhost check.
+  // IP-only check is insufficient behind a reverse proxy; add auth as defense-in-depth.
+  router.get('/metrics', authenticateToken, requireAdmin, (req, res) => {
     // N2: Use req.ip (trust-proxy-aware) instead of getRealClientIP() which
     // independently parses headers and can be spoofed when behind a proxy.
     const clientIP = req.ip

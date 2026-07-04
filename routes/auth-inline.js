@@ -6,6 +6,7 @@
 import { Router } from 'express'
 import { body } from 'express-validator'
 import bcrypt from 'bcryptjs'
+import crypto from 'crypto'
 import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
 import { verifyToken } from '../lib/jwt-encryption.js'
@@ -30,6 +31,27 @@ export const createInlineAuthRouter = ({
   const router = Router()
 
   // ── Login ──────────────────────────────────────────────────────────────
+  // R1: Double-submit CSRF cookie for login.
+  // The login endpoint skips global CSRF middleware (can't require a token
+  // before issuing one). We use a double-submit cookie pattern instead:
+  //  1. A GET /api/auth/login sets a short-lived loginCsrf cookie.
+  //  2. The POST must echo that value in the body as _loginCsrf.
+  //  3. After login the cookie is cleared.
+  // SameSite=Strict on the auth cookies is the primary CSRF defense;
+  // this is a defense-in-depth layer.
+
+  // GET: issue a one-time login CSRF cookie (also serves as a login probe)
+  router.get('/api/auth/login', (req, res) => {
+    const loginToken = crypto.randomUUID()
+    res.cookie('loginCsrf', loginToken, {
+      httpOnly: true,
+      secure: config.cookie.secure,
+      sameSite: 'strict',
+      maxAge: 5 * 60 * 1000  // 5 minutes
+    })
+    res.json({ loginCsrf: loginToken })
+  })
+
   router.post('/api/auth/login',
     loginLimiter,
     [
@@ -40,6 +62,18 @@ export const createInlineAuthRouter = ({
     asyncHandler(async (req, res) => {
       try {
         const { username, password } = req.body
+
+        // R1: Validate double-submit CSRF cookie — enforce unconditionally.
+        // If the cookie is missing, the client skipped the GET /api/auth/login
+        // handshake, which means we cannot verify the request origin -> reject.
+        const loginCsrfCookie = req.cookies?.loginCsrf
+        const loginCsrfBody = req.body._loginCsrf
+        if (!loginCsrfCookie || !loginCsrfBody || loginCsrfBody !== loginCsrfCookie) {
+          return res.status(403).json({ error: 'Invalid login CSRF token' })
+        }
+        // Clear the one-time cookie after successful validation
+        res.clearCookie('loginCsrf')
+
         let user = null, isDbUser = false
 
         // Check database users first

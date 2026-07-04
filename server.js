@@ -31,7 +31,7 @@ import {
   initRateLimitRedis,
   authLimiter, refreshLimiter, initLimiter, smartApiLimiter, conditionalRateLimit,
   createLimiter, deleteLimiter, exportLimiter, criticalLimiter, restoreLimiter,
-  strictRestoreLimiter, loginLimiter, deviceRegisterLimiter
+  strictRestoreLimiter, loginLimiter, deviceRegisterLimiter, cspReportLimiter
 } from './middleware/rate-limiter.js'
 import { buildAuthMiddleware } from './middleware/auth.js'
 import { createTimeoutMiddleware } from './utils/async-handler.js'
@@ -472,7 +472,7 @@ const routeCtx = {
   authenticateToken, checkAuth, requireAdmin, requireEditor,
   conditionalRateLimit, smartApiLimiter,
   authLimiter, refreshLimiter, initLimiter, createLimiter, deleteLimiter, exportLimiter, criticalLimiter, restoreLimiter,
-  strictRestoreLimiter,
+  strictRestoreLimiter, cspReportLimiter,
   deviceRegisterLimiter,
   handleValidationErrors, sanitizeResponse, formatSecureTimestamp,
   // Auth helpers for inline routes

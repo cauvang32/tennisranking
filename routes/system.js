@@ -14,6 +14,7 @@ export const createSystemRouter = ({
   authenticateToken,
   requireAdmin,
   initLimiter,
+  cspReportLimiter,
   rankingsCache,
   sseClients,
   formatSecureTimestamp,
@@ -172,10 +173,10 @@ export const createSystemRouter = ({
     })
   })
 
-  // ── CSP violation report endpoint ─────────────────────────────────────────
+  // R4: CSP violation report endpoint — rate limited to prevent log flooding.
   // Accepts CSP violation reports from browsers. Body is limited to 1KB to
   // prevent log flooding. Only logs valid JSON objects (not raw strings).
-  router.post('/api/csp-report', express.json({ limit: '1kb' }), (req, res) => {
+  router.post('/api/csp-report', cspReportLimiter, express.json({ limit: '1kb' }), (req, res) => {
     const report = req.body?.['csp-report'] || req.body
     if (report && typeof report === 'object') {
       console.warn('⚠️ CSP Violation:', JSON.stringify(report, null, 2))

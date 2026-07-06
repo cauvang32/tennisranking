@@ -43,12 +43,9 @@ export const createInlineAuthRouter = ({
   // GET: issue a one-time login CSRF cookie (also serves as a login probe)
   router.get('/api/auth/login', (req, res) => {
     const loginToken = crypto.randomUUID()
-    res.cookie('loginCsrf', loginToken, {
-      httpOnly: true,
-      secure: config.cookie.secure,
-      sameSite: 'strict',
+    res.cookie('loginCsrf', loginToken, withCookieDefaults({
       maxAge: 5 * 60 * 1000  // 5 minutes
-    })
+    }))
     res.json({ loginCsrf: loginToken })
   })
 

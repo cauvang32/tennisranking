@@ -335,7 +335,7 @@ if (!isDevelopment) {
       res.setHeader('X-Frame-Options', 'DENY')
       const lp = filePath.toLowerCase()
       if (lp.endsWith('.html')) {
-        res.setHeader('Cache-Control', 'public, max-age=3600, must-revalidate')
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
       } else if (/\.(js|css|mjs|cjs|svg|png|jpg|jpeg|gif|ico|webp|avif|woff|woff2|ttf)$/i.test(lp)) {
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
       } else {

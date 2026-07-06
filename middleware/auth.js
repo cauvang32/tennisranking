@@ -97,6 +97,7 @@ export const buildAuthMiddleware = ({
       } catch {
         if (req.cookies.authToken && !res.headersSent) {
           clearCookieAllPaths(res, 'authToken')
+          clearCookieAllPaths(res, 'refreshToken')
         }
       }
     }

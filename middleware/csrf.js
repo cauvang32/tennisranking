@@ -31,14 +31,16 @@ export function deriveCSRFSecretFromUser(user) {
 // ── Route helpers ───────────────────────────────────────────────────────────
 
 const SUBPATH = config.subpath
+const normalizedSubpath = SUBPATH !== '/' ? SUBPATH.replace(/\/+$/, '') : ''
 
 const matchesApiRoute = (req, route) => {
   if (!route) return false
   const { path, originalUrl } = req
+  const normalizedRoute = route.startsWith('/') ? route : `/${route}`
   if (path === route) return true
   const normalized = originalUrl?.split('?')[0]
-  if (normalized === route) return true
-  if (SUBPATH !== '/' && normalized === `${SUBPATH}${route}`) return true
+  if (normalized === route || normalized === normalizedRoute) return true
+  if (normalizedSubpath && (normalized === `${normalizedSubpath}${normalizedRoute}` || normalized === `${normalizedSubpath}${normalizedRoute}/`)) return true
   return false
 }
 

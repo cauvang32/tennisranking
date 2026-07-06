@@ -3,7 +3,8 @@ import { visualizer } from 'rollup-plugin-visualizer'
 
 export default defineConfig(({ mode }) => {
   // Get base path from environment or default
-  const basePath = process.env.BASE_PATH || '/tennis/'
+  const rawBasePath = process.env.BASE_PATH || '/tennis/'
+  const basePath = rawBasePath.endsWith('/') ? rawBasePath : `${rawBasePath}/`
 
   return {
     // Set base path for subpath deployment - use environment variable

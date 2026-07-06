@@ -60,12 +60,15 @@ export const createInlineAuthRouter = ({
       try {
         const { username, password } = req.body
 
-        // R1: Validate double-submit CSRF cookie — enforce unconditionally.
-        // If the cookie is missing, the client skipped the GET /api/auth/login
-        // handshake, which means we cannot verify the request origin -> reject.
+        // R1: Validate either the login bootstrap cookie or the anonymous CSRF token.
+        // The token fallback covers browsers/proxies that do not persist the cookie as expected.
         const loginCsrfCookie = req.cookies?.loginCsrf
         const loginCsrfBody = req.body._loginCsrf
-        if (!loginCsrfCookie || !loginCsrfBody || loginCsrfBody !== loginCsrfCookie) {
+        const anonymousCsrfToken = req.get('X-CSRF-Token') || req.body._csrf
+        const anonymousCsrfSecret = deriveCSRFSecretFromUser({ id: 'anonymous' })
+        const hasValidAnonymousCsrf = anonymousCsrfToken && tokens.verify(anonymousCsrfSecret, anonymousCsrfToken)
+
+        if ((!loginCsrfCookie || !loginCsrfBody || loginCsrfBody !== loginCsrfCookie) && !hasValidAnonymousCsrf) {
           return res.status(403).json({ error: 'Invalid login CSRF token' })
         }
         // Clear the one-time cookie after successful validation

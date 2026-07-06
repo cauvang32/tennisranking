@@ -325,6 +325,7 @@ class TennisRankingSystem {
     try {
       await this.detectServerMode()
       await this.checkAuthStatus()
+      this.updateUIForAuthStatus()
       
       // Wait for DOM to be fully loaded
       if (document.readyState === 'loading') {
@@ -347,6 +348,7 @@ class TennisRankingSystem {
       this.updateFileStatus('✅ Hệ thống đã sẵn sàng', 'success')
     } catch (error) {
       console.error('Error initializing system:', error)
+      this.updateUIForAuthStatus()
       this.updateFileStatus('❌ Lỗi khởi tạo hệ thống. Vui lòng tải lại trang.', 'error')
     }
   }

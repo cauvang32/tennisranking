@@ -1,3 +1,5 @@
+import { getCSRFToken as moduleGetCSRFToken } from './csrf-handler.js'
+
 /**
  * Authentication manager.
  *
@@ -92,13 +94,22 @@ export async function login(apiBase, username, password) {
     }
 
     const { loginCsrf } = await getResponse.json()
+    const csrfToken = await moduleGetCSRFToken(apiBase)
 
     // 2. Perform the POST login request, sending the token in the body
     const response = await fetch(`${apiBase}/auth/login`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {})
+      },
       credentials: 'include',
-      body: JSON.stringify({ username, password, _loginCsrf: loginCsrf })
+      body: JSON.stringify({
+        username,
+        password,
+        _loginCsrf: loginCsrf,
+        ...(csrfToken ? { _csrf: csrfToken } : {})
+      })
     })
 
     const data = await response.json()

@@ -81,11 +81,24 @@ export async function checkAuthStatus(apiBase) {
  */
 export async function login(apiBase, username, password) {
   try {
+    // 1. Fetch the one-time login CSRF token and establish the cookie
+    const getResponse = await fetch(`${apiBase}/auth/login`, {
+      method: 'GET',
+      credentials: 'include'
+    })
+
+    if (!getResponse.ok) {
+      return { success: false, message: 'Không thể khởi tạo phiên đăng nhập (Lỗi CSRF)' }
+    }
+
+    const { loginCsrf } = await getResponse.json()
+
+    // 2. Perform the POST login request, sending the token in the body
     const response = await fetch(`${apiBase}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'include',
-      body: JSON.stringify({ username, password })
+      body: JSON.stringify({ username, password, _loginCsrf: loginCsrf })
     })
 
     const data = await response.json()

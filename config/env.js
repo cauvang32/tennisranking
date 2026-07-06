@@ -158,6 +158,7 @@ const config = {
       .map(o => o.trim())
       .filter(o => o !== '')
       .map(o => {
+        if (o === 'null') return 'null'
         // Strip path and query from configured origins for comparison with Origin header.
         // The browser sends Origin without path (e.g., "https://tennis.example.com"),
         // but admins may configure origins with paths (e.g., "https://tennis.example.com/tennis").

@@ -67,6 +67,11 @@ export default defineConfig(({ mode }) => {
           changeOrigin: true,
           // Don't rewrite the path since server expects /api
           rewrite: (path) => path
+        },
+        '/uploads': {
+          target: 'http://localhost:3001',
+          changeOrigin: true,
+          rewrite: (path) => path
         }
       }
     },

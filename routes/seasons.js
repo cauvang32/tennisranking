@@ -289,5 +289,29 @@ export const createSeasonRouter = ({
     })
   )
 
+  // ── Final Results text ─────────────────────────────────────────────────────
+  router.put(
+    '/:id/results',
+    authenticateToken,
+    requireAdmin,
+    [
+      param('id').isInt().withMessage('Invalid season ID'),
+      body('finalResults').optional().isString().isLength({ max: 10000 }).withMessage('Results text too long (max 10000 chars)')
+    ],
+    handleValidationErrors,
+    asyncHandler(async (req, res) => {
+      const seasonId = parseInt(req.params.id)
+      const season = await db.getSeasonById(seasonId)
+      if (!season) {
+        res.status(404).json({ error: 'Season not found' })
+        return
+      }
+      const { finalResults } = req.body
+      await db.updateSeason(seasonId, season.name, season.start_date, season.end_date, season.auto_end, season.description || '', season.lose_money_per_loss, finalResults)
+      await rankingsCache.invalidateOnSeasonChange()
+      res.json({ success: true, message: 'Final results updated' })
+    })
+  )
+
   return router
 }

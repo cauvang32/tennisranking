@@ -341,11 +341,14 @@ class TennisRankingSystem {
       await this.loadInitialData()
       this.updateUIForAuthStatus()
       
-      // Ensure rankings tab is properly activated
-      this.switchTab('rankings')
-      
-      // System is ready
-      this.updateFileStatus('✅ Hệ thống đã sẵn sàng', 'success')
+     // Ensure rankings tab is properly activated
+     this.switchTab('rankings')
+
+      // Load hero banner dynamically
+      this.loadHeroBanner()
+     
+     // System is ready
+     this.updateFileStatus('✅ Hệ thống đã sẵn sàng', 'success')
     } catch (error) {
       console.error('Error initializing system:', error)
       this.updateUIForAuthStatus()
@@ -1272,18 +1275,27 @@ class TennisRankingSystem {
       const useAutoWinnerBtn = document.getElementById('useAutoWinner')
       if (useManualWinnerBtn && useAutoWinnerBtn) {
         useManualWinnerBtn.addEventListener('click', () => this.toggleWinnerMode(true))
-        useAutoWinnerBtn.addEventListener('click', () => this.toggleWinnerMode(false))
-      }
+       useAutoWinnerBtn.addEventListener('click', () => this.toggleWinnerMode(false))
+     }
 
-      // Match type toggle (Đánh đơn / Đánh đôi)
-      const matchTypeDuoBtn = document.getElementById('matchTypeDuo')
-      const matchTypeSoloBtn = document.getElementById('matchTypeSolo')
-      if (matchTypeDuoBtn && matchTypeSoloBtn) {
-        matchTypeDuoBtn.addEventListener('click', () => this.switchMatchType('duo'))
-        matchTypeSoloBtn.addEventListener('click', () => this.switchMatchType('solo'))
-      }
+     // Match type toggle (Đánh đơn / Đánh đôi)
+     const matchTypeDuoBtn = document.getElementById('matchTypeDuo')
+     const matchTypeSoloBtn = document.getElementById('matchTypeSolo')
+     if (matchTypeDuoBtn && matchTypeSoloBtn) {
+       matchTypeDuoBtn.addEventListener('click', () => this.switchMatchType('duo'))
+       matchTypeSoloBtn.addEventListener('click', () => this.switchMatchType('solo'))
+     }
 
-    } catch (error) {
+      // ── Image Editor Event Listeners ──────────────────────────────────────
+      this.setupImageEditorListeners()
+
+      // ── Season Results Modal Listeners ─────────────────────────────────────
+      this.setupSeasonResultsListeners()
+
+      // ── Cup Bracket System Listeners ───────────────────────────────────────
+      this.setupCupListeners()
+
+   } catch (error) {
       console.error('Error setting up event listeners:', error)
     }
   }
@@ -1452,11 +1464,15 @@ class TennisRankingSystem {
       } else if (tabName === 'accounts') {
         this.renderAccounts()
         // Also render cache status for admin users
-        if (this.user?.role === 'admin') {
-          this.renderCacheStatus()
-        }
-      }
-    } catch (error) {
+         if (this.user?.role === 'admin') {
+         this.renderCacheStatus()
+       }
+      } else if (tabName === 'images') {
+        this.loadSiteImages()
+      } else if (tabName === 'cups') {
+        this.loadCups()
+     }
+   } catch (error) {
       // Revert UI to previous state so user can retry
       if (prevActiveBtn) prevActiveBtn.classList.add('active')
       if (prevActiveContent) prevActiveContent.classList.add('active')
@@ -2794,11 +2810,18 @@ class TennisRankingSystem {
                 ${endedAtInfo}
                 ${endedByInfo}
                 ${descriptionInfo}
+                ${season.final_results ? `<div class="season-final-results"><strong>🏆 Kết quả cuối cùng:</strong><p class="season-results-text">${this.escapeHtml(season.final_results).replace(/\n/g, '<br>')}</p></div>` : ''}
+                ${season.conclusion_image_path ? `<div class="season-conclusion-image"><img src="${this.apiBase}/images/season/${season.id}/conclusion/file" alt="Ảnh tổng kết" style="max-width:100%;max-height:120px;object-fit:contain;border-radius:8px;margin-top:8px;"></div>` : ''}
               </div>
               ${userRole === 'admin' || userRole === 'editor' ? `
                 <div class="season-actions">
+                  <button data-action="view-results" data-id="${season.id}" class="btn btn-sm btn-secondary">📋 Xem kết quả</button>
                   <button data-action="reactivate-season" data-id="${season.id}" class="btn btn-sm btn-primary">✅ Kích hoạt lại</button>
                   <button data-action="delete-season" data-id="${season.id}" class="btn btn-sm btn-danger">🗑️ Xóa</button>
+                </div>
+              ` : (season.final_results || season.conclusion_image_path) ? `
+                <div class="season-actions">
+                  <button data-action="view-results" data-id="${season.id}" class="btn btn-sm btn-secondary">📋 Xem kết quả</button>
                 </div>
               ` : ''}
             </div>`
@@ -2815,12 +2838,14 @@ class TennisRankingSystem {
       container.innerHTML = html
 
       // Add event listeners for season actions
-      if (userRole === 'admin' || userRole === 'editor') {
-        container.querySelectorAll('[data-action]').forEach(button => {
-          button.addEventListener('click', (e) => {
-            const action = e.target.dataset.action
-            const seasonId = parseInt(e.target.dataset.id)
-            
+      container.querySelectorAll('[data-action]').forEach(button => {
+        button.addEventListener('click', (e) => {
+          const action = e.target.dataset.action
+          const seasonId = parseInt(e.target.dataset.id)
+          
+          if (action === 'view-results') {
+            this.showSeasonResultsModal(seasonId)
+          } else if (userRole === 'admin' || userRole === 'editor') {
             if (action === 'end-season') {
               this.endSeason(seasonId)
             } else if (action === 'reactivate-season') {
@@ -2830,9 +2855,9 @@ class TennisRankingSystem {
             } else if (action === 'delete-season') {
               this.deleteSeason(seasonId)
             }
-          })
+          }
         })
-      }
+      })
     } catch (error) {
       console.error('Error rendering seasons:', error)
     }
@@ -5150,6 +5175,800 @@ class TennisRankingSystem {
   // ========== Update File Status (for backward compatibility) ==========
   updateFileStatus(message, type) {
     this.showToast(message.replace(/^[✅❌⚠️]/g, '').trim(), type === 'success' ? 'success' : (type === 'error' ? 'error' : 'warning'))
+  }
+
+  // ========== Hero Banner (dynamic loading) ==========
+  async loadHeroBanner() {
+    if (!this.serverMode) return
+    try {
+      const response = await this.makeAuthenticatedRequest('/images/hero_banner/file')
+      if (response.ok) {
+        const dynamicBanner = document.getElementById('dynamicHeroBanner')
+        const staticBanner = document.querySelector('.hero-banner-image:not(#dynamicHeroBanner)')
+        if (dynamicBanner) {
+          dynamicBanner.style.display = 'block'
+          dynamicBanner.src = `${this.apiBase}/images/hero_banner/file?t=${Date.now()}`
+          if (staticBanner) staticBanner.style.display = 'none'
+        }
+      }
+    } catch { /* fallback to static /image.png */ }
+  }
+
+  // ========== Image Editor ==========
+  setupImageEditorListeners() {
+    document.querySelectorAll('.image-upload-input').forEach(input => {
+      input.addEventListener('change', (e) => this.handleImageUpload(e))
+    })
+    document.querySelectorAll('.image-delete-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const key = e.currentTarget.dataset.key
+        if (key) this.deleteSiteImage(key)
+      })
+    })
+    document.querySelectorAll('.image-alt-input').forEach(input => {
+      let debounceTimer
+      input.addEventListener('input', (e) => {
+        clearTimeout(debounceTimer)
+        debounceTimer = setTimeout(() => {
+          const key = e.currentTarget.dataset.key
+          if (key) this.updateImageMeta(key, { altText: e.currentTarget.value })
+        }, 800)
+      })
+    })
+    const refreshBtn = document.getElementById('refreshImagesBtn')
+    if (refreshBtn) refreshBtn.addEventListener('click', () => this.loadSiteImages())
+    const migrateBtn = document.getElementById('migrateHeroBtn')
+    if (migrateBtn) migrateBtn.addEventListener('click', () => this.migrateHeroBanner())
+  }
+
+  async loadSiteImages() {
+    if (!this.serverMode) return
+    try {
+      const response = await this.makeAuthenticatedRequest('/images')
+      const data = await response.json()
+      if (!data || !Array.isArray(data)) return
+      for (const img of data) {
+        this.renderImageEditor(img)
+      }
+    } catch (error) {
+      console.error('Failed to load site images:', error)
+    }
+  }
+
+  renderImageEditor(img) {
+    const { key, filename, file_size, uploaded_at, alt_text, is_active } = img
+    const previewEl = document.getElementById(`${key}-preview`)
+    if (previewEl) {
+      if (is_active && img.storage_path) {
+        previewEl.innerHTML = `<img src="${this.apiBase}/images/${key}/file" alt="${this.escapeHtml(alt_text || '')}" style="max-width:100%;max-height:200px;object-fit:contain;border-radius:8px;">`
+      } else {
+        previewEl.innerHTML = '<div class="image-preview-placeholder">Chưa có hình ảnh</div>'
+      }
+    }
+    const statusEl = document.getElementById(`${key}-status`)
+    if (statusEl) {
+      statusEl.textContent = is_active ? '✅ Đang hoạt động' : '⏸️ Đã tắt'
+      statusEl.className = `image-status-badge ${is_active ? 'active' : 'inactive'}`
+    }
+    const infoEl = document.getElementById(`${key}-info`)
+    if (infoEl) {
+      const sizeStr = file_size ? `${(file_size / 1024).toFixed(1)} KB` : ''
+      const dateStr = uploaded_at ? new Date(uploaded_at).toLocaleDateString('vi-VN') : ''
+      infoEl.textContent = [sizeStr, dateStr].filter(Boolean).join(' • ')
+    }
+    const altInput = document.querySelector(`.image-alt-input[data-key="${key}"]`)
+    if (altInput) altInput.value = alt_text || ''
+  }
+
+  async handleImageUpload(e) {
+    const input = e.target
+    const key = input.dataset.key
+    if (!input.files || !input.files[0]) return
+    const file = input.files[0]
+    if (file.size > 10 * 1024 * 1024) {
+      this.showToast('File quá lớn (tối đa 10MB)', 'error')
+      input.value = ''
+      return
+    }
+    const allowed = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml']
+    if (!allowed.includes(file.type)) {
+      this.showToast('Định dạng không hợp lệ', 'error')
+      input.value = ''
+      return
+    }
+    try {
+      const formData = new FormData()
+      formData.append('image', file)
+      const altInput = document.querySelector(`.image-alt-input[data-key="${key}"]`)
+      if (altInput) formData.append('altText', altInput.value)
+      const csrfToken = await this.getCSRFToken()
+      const res = await fetch(`${this.apiBase}/images/${key}`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'x-csrf-token': csrfToken }, body: formData
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast(`Hình ảnh "${key}" đã được cập nhật`, 'success')
+        if (key === 'hero_banner') this.loadHeroBanner()
+        this.loadSiteImages()
+      } else {
+        this.showToast(data.error || 'Lỗi khi tải lên', 'error')
+      }
+    } catch (error) {
+      this.showToast('Lỗi kết nối: ' + error.message, 'error')
+    }
+    input.value = ''
+  }
+
+  async deleteSiteImage(key) {
+    if (!confirm(`Bạn có chắc muốn xóa hình ảnh "${key}"?`)) return
+    try {
+      const csrfToken = await this.getCSRFToken()
+      const res = await fetch(`${this.apiBase}/images/${key}`, {
+        method: 'DELETE', credentials: 'include',
+        headers: { 'x-csrf-token': csrfToken }
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast(`Đã xóa hình ảnh "${key}"`, 'success')
+        if (key === 'hero_banner') this.loadHeroBanner()
+        this.loadSiteImages()
+      } else {
+        this.showToast(data.error || 'Lỗi khi xóa', 'error')
+      }
+    } catch (error) {
+      this.showToast('Lỗi kết nối: ' + error.message, 'error')
+    }
+  }
+
+  async updateImageMeta(key, meta) {
+    try {
+      const csrfToken = await this.getCSRFToken()
+      const res = await fetch(`${this.apiBase}/images/${key}/meta`, {
+        method: 'PUT', credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
+        body: JSON.stringify(meta)
+      })
+      const data = await res.json()
+      if (!data.success) this.showToast(data.error || 'Lỗi khi cập nhật', 'error')
+    } catch (error) {
+      console.error('updateImageMeta error:', error)
+    }
+  }
+
+  async migrateHeroBanner() {
+    if (!confirm('Dời banner từ file public/image.png vào hệ thống quản lý?')) return
+    try {
+      const csrfToken = await this.getCSRFToken()
+      const res = await fetch(`${this.apiBase}/images/migrate-hero`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'x-csrf-token': csrfToken }
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast('Đã dời banner thành công!', 'success')
+        this.loadSiteImages()
+        this.loadHeroBanner()
+      } else {
+        this.showToast(data.error || 'Lỗi khi dời banner', 'error')
+      }
+    } catch (error) {
+      this.showToast('Lỗi kết nối: ' + error.message, 'error')
+    }
+  }
+
+  // ========== Season Results ==========
+  setupSeasonResultsListeners() {
+    const saveBtn = document.getElementById('saveSeasonResultsBtn')
+    if (saveBtn) saveBtn.addEventListener('click', () => this.saveSeasonResults())
+    const imageInput = document.getElementById('seasonConclusionImageInput')
+    if (imageInput) imageInput.addEventListener('change', (e) => this.uploadConclusionImage(e))
+    const deleteImgBtn = document.getElementById('deleteConclusionImageBtn')
+    if (deleteImgBtn) deleteImgBtn.addEventListener('click', () => this.deleteConclusionImage())
+  }
+
+  showSeasonResultsModal(seasonId) {
+    const season = this.seasons.find(s => s.id === seasonId)
+    if (!season) return
+    document.getElementById('seasonResultsSeasonId').value = seasonId
+    document.getElementById('seasonResultsModalTitle').textContent = `Kết quả: ${season.name}`
+    document.getElementById('seasonResultsText').value = season.final_results || ''
+    const previewEl = document.getElementById('seasonConclusionImagePreview')
+    const deleteBtn = document.getElementById('deleteConclusionImageBtn')
+    if (season.conclusion_image_path) {
+      previewEl.innerHTML = `<img src="${this.apiBase}/images/season/${seasonId}/conclusion/file" style="max-width:100%;max-height:150px;object-fit:contain;border-radius:8px;">`
+      deleteBtn.style.display = 'inline-block'
+    } else {
+      previewEl.innerHTML = ''
+      deleteBtn.style.display = 'none'
+    }
+    this.showModal('seasonResultsModal')
+  }
+
+  async saveSeasonResults() {
+    const seasonId = parseInt(document.getElementById('seasonResultsSeasonId').value)
+    const text = document.getElementById('seasonResultsText').value.trim()
+    if (!text) {
+      this.showToast('Vui lòng nhập kết quả giải đấu', 'error')
+      return
+    }
+    try {
+      const csrfToken = await this.getCSRFToken()
+      const res = await fetch(`${this.apiBase}/seasons/${seasonId}/results`, {
+        method: 'PUT', credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
+        body: JSON.stringify({ finalResults: text })
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast('Đã lưu kết quả giải đấu', 'success')
+        await this.loadSeasons()
+        this.renderSeasons()
+        this.hideModal('seasonResultsModal')
+      } else {
+        this.showToast(data.error || 'Lỗi khi lưu', 'error')
+      }
+    } catch (error) {
+      this.showToast('Lỗi kết nối: ' + error.message, 'error')
+    }
+  }
+
+  async uploadConclusionImage(e) {
+    const input = e.target
+    const seasonId = parseInt(document.getElementById('seasonResultsSeasonId').value)
+    if (!input.files || !input.files[0]) return
+    const file = input.files[0]
+    if (file.size > 10 * 1024 * 1024) {
+      this.showToast('File quá lớn (tối đa 10MB)', 'error')
+      input.value = ''
+      return
+    }
+    try {
+      const formData = new FormData()
+      formData.append('image', file)
+      formData.append('seasonId', seasonId)
+      const csrfToken = await this.getCSRFToken()
+      const res = await fetch(`${this.apiBase}/images/season/${seasonId}/conclusion`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'x-csrf-token': csrfToken }, body: formData
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast('Đã tải lên ảnh tổng kết', 'success')
+        document.getElementById('seasonConclusionImagePreview').innerHTML =
+          `<img src="${this.apiBase}/images/season/${seasonId}/conclusion/file" style="max-width:100%;max-height:150px;object-fit:contain;border-radius:8px;">`
+        document.getElementById('deleteConclusionImageBtn').style.display = 'inline-block'
+      } else {
+        this.showToast(data.error || 'Lỗi khi tải lên', 'error')
+      }
+    } catch (error) {
+      this.showToast('Lỗi kết nối: ' + error.message, 'error')
+    }
+    input.value = ''
+  }
+
+  async deleteConclusionImage() {
+    const seasonId = parseInt(document.getElementById('seasonResultsSeasonId').value)
+    if (!confirm('Bạn có chắc muốn xóa ảnh tổng kết?')) return
+    try {
+      const csrfToken = await this.getCSRFToken()
+      const res = await fetch(`${this.apiBase}/images/season/${seasonId}/conclusion`, {
+        method: 'DELETE', credentials: 'include',
+        headers: { 'x-csrf-token': csrfToken }
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast('Đã xóa ảnh tổng kết', 'success')
+        document.getElementById('seasonConclusionImagePreview').innerHTML = ''
+        document.getElementById('deleteConclusionImageBtn').style.display = 'none'
+      } else {
+        this.showToast(data.error || 'Lỗi khi xóa', 'error')
+      }
+    } catch (error) {
+      this.showToast('Lỗi kết nối: ' + error.message, 'error')
+    }
+  }
+
+  // ========== Cup Bracket System ========== 
+
+  setupCupListeners() {
+    const createBtn = document.getElementById('createCupBtn')
+    if (createBtn) createBtn.addEventListener('click', () => this.showCreateCupModal())
+    const backBtn = document.getElementById('backToCupsList')
+    if (backBtn) backBtn.addEventListener('click', () => this.backToCupsList())
+  }
+
+  async loadCups() {
+    if (!this.serverMode) return
+    try {
+      const response = await this.makeAuthenticatedRequest('/cups')
+      const data = await response.json()
+      if (!data || !Array.isArray(data)) {
+        document.getElementById('cupsGrid').innerHTML = '<div class="image-editor-card" style="text-align:center;padding:40px;"><p style="color:var(--text-secondary);">Chưa có giải đấu nào</p></div>'
+        return
+      }
+      this.renderCupList(data)
+    } catch (error) {
+      this.showToast('Lỗi khi tải danh sách giải đấu', 'error')
+      console.error('Load cups error:', error)
+    }
+  }
+
+  renderCupList(cups) {
+    const grid = document.getElementById('cupsGrid')
+    if (!grid) return
+    if (cups.length === 0) {
+      grid.innerHTML = '<div class="image-editor-card" style="text-align:center;padding:40px;"><p style="color:var(--text-secondary);">Chưa có giải đấu nào. Nhấn "Tạo Giải Đấu Mới" để bắt đầu.</p></div>'
+      return
+    }
+    const statusLabels = { draft: 'Bản nháp', scheduled: 'Đã lên lịch', in_progress: 'Đang diễn ra', completed: 'Hoàn thành', cancelled: 'Đã hủy' }
+    const statusColors = { draft: '#6b7280', scheduled: '#3b82f6', in_progress: '#f59e0b', completed: '#10b981', cancelled: '#ef4444' }
+    const formatLabels = { single_elimination: 'Loại trực tiếp', double_elimination: 'Loại kép', round_robin: 'Vòng tròn' }
+    grid.innerHTML = cups.map(cup => {
+      const statusLabel = statusLabels[cup.status] || cup.status
+      const statusColor = statusColors[cup.status] || '#6b7280'
+      const formatLabel = formatLabels[cup.format] || cup.format
+      return `
+        <div class="image-editor-card" style="cursor:pointer;" onclick="app.showCupDetail(${cup.id})">
+          <div class="image-editor-header">
+            <h3>🏆 ${this.escapeHtml(cup.name)}</h3>
+            <span class="image-status-badge" style="background:${statusColor};color:#fff;">${statusLabel}</span>
+          </div>
+          <div style="padding:12px 0;">
+            <p style="font-size:13px;color:var(--text-secondary);margin:4px 0;">Định dạng: ${formatLabel}</p>
+            <p style="font-size:13px;color:var(--text-secondary);margin:4px 0;">Số đội: ${cup.num_teams}</p>
+            ${cup.season_id ? `<p style="font-size:13px;color:var(--text-secondary);margin:4px 0;">Mùa giải: ${this.escapeHtml(cup.season_name || 'ID ' + cup.season_id)}</p>` : ''}
+            <p style="font-size:12px;color:var(--text-secondary);margin:8px 0 0;">Tạo: ${new Date(cup.created_at).toLocaleDateString('vi-VN')}</p>
+          </div>
+        </div>
+      `
+    }).join('')
+  }
+
+  async showCupDetail(cupId) {
+    try {
+      const response = await this.makeAuthenticatedRequest(`/cups/${cupId}`)
+      const cup = await response.json()
+      if (!cup) return this.showToast('Không tìm thấy giải đấu', 'error')
+
+      // Load participants and bracket
+      const [partRes, bracketRes] = await Promise.all([
+        this.makeAuthenticatedRequest(`/cups/${cupId}/participants`),
+        this.makeAuthenticatedRequest(`/cups/${cupId}/bracket`)
+      ])
+      const participants = await partRes.json()
+      const matches = await bracketRes.json()
+
+      document.getElementById('cupsGrid').style.display = 'none'
+      document.getElementById('createCupBtn').style.display = 'none'
+      document.getElementById('cupDetail').style.display = 'block'
+
+      const statusLabels = { draft: 'Bản nháp', scheduled: 'Đã lên lịch', in_progress: 'Đang diễn ra', completed: 'Hoàn thành', cancelled: 'Đã hủy' }
+      const formatLabels = { single_elimination: 'Loại trực tiếp', double_elimination: 'Loại kép', round_robin: 'Vòng tròn' }
+
+      let html = `
+        <div class="section-header" style="margin-bottom:20px;">
+          <h2 class="section-title">🏆 ${this.escapeHtml(cup.name)}</h2>
+          <div style="display:flex;gap:8px;">
+            <span class="image-status-badge" style="background:${this.statusColor(cup.status)};color:#fff;">${statusLabels[cup.status] || cup.status}</span>
+            <span style="font-size:12px;color:var(--text-secondary);">${formatLabels[cup.format] || cup.format} | ${cup.num_teams} đội</span>
+          </div>
+        </div>
+      `
+
+      // Regulation
+      if (cup.regulation_text) {
+        html += `<div style="background:var(--card-bg);border-radius:12px;padding:16px;margin-bottom:16px;"><h4 style="margin:0 0 8px;">📋 Quy định</h4><p style="font-size:13px;color:var(--text-secondary);white-space:pre-wrap;">${this.escapeHtml(cup.regulation_text)}</p></div>`
+      }
+
+      // Participants
+      html += `<div style="background:var(--card-bg);border-radius:12px;padding:16px;margin-bottom:16px;">
+        <h4 style="margin:0 0 12px;">👥 Danh sách tham gia (${participants.length}/${cup.num_teams})</h4>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;">
+      `
+      participants.forEach(p => {
+        const name = p.team_name || (p.player1_name + (p.player2_name ? ' & ' + p.player2_name : ''))
+        html += `<div style="background:var(--bg-secondary);border-radius:8px;padding:8px 12px;font-size:13px;">${p.seed ? `#${p.seed} ` : ''}${this.escapeHtml(name)}</div>`
+      })
+      html += `</div></div>`
+
+      // Action buttons
+      if (cup.status === 'draft') {
+        html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:16px 0;">
+          <button class="btn btn-primary btn-sm" onclick="app.shuffleCupSeeds(${cupId})">🔀 Xáo trộn hạt giống</button>
+          <button class="btn btn-success btn-sm" onclick="app.generateCupBracket(${cupId})">📊 Tạo bảng đấu</button>
+          <button class="btn btn-warning btn-sm" onclick="app.changeCupStatus(${cupId},'scheduled')">📅 Lên lịch</button>
+          <button class="btn btn-danger btn-sm" onclick="app.deleteCup(${cupId})">🗑️ Xóa</button>
+        </div>`
+      } else if (cup.status === 'scheduled') {
+        html += `<div style="display:flex;gap:8px;margin:16px 0;">
+          <button class="btn btn-success btn-sm" onclick="app.changeCupStatus(${cupId},'in_progress')">▶️ Bắt đầu</button>
+          <button class="btn btn-warning btn-sm" onclick="app.changeCupStatus(${cupId},'cancelled')">⏹️ Hủy</button>
+        </div>`
+      } else if (cup.status === 'in_progress') {
+        html += `<div style="display:flex;gap:8px;margin:16px 0;">
+          <button class="btn btn-success btn-sm" onclick="app.changeCupStatus(${cupId},'completed')">✅ Hoàn thành</button>
+          <button class="btn btn-warning btn-sm" onclick="app.changeCupStatus(${cupId},'cancelled')">⏹️ Hủy</button>
+        </div>`
+      }
+
+      // Bracket visualization
+      if (matches && matches.length > 0) {
+        html += `<div style="background:var(--card-bg);border-radius:12px;padding:16px;margin-top:16px;">
+          <h4 style="margin:0 0 16px;">📊 Bảng đấu</h4>
+          <div style="overflow-x:auto;">${this.renderBracket(matches, cupId, cup.status)}</div>
+        </div>`
+      }
+
+      document.getElementById('cupDetailContent').innerHTML = html
+    } catch (error) {
+      this.showToast('Lỗi khi tải chi tiết giải đấu', 'error')
+      console.error('Cup detail error:', error)
+    }
+  }
+
+  renderBracket(matches, cupId, cupStatus) {
+    if (!matches || matches.length === 0) return '<p style="color:var(--text-secondary);">Chưa có bảng đấu</p>'
+    // Group by round
+    const rounds = {}
+    matches.forEach(m => {
+      if (!rounds[m.round_number]) rounds[m.round_number] = []
+      rounds[m.round_number].push(m)
+    })
+    const roundNames = { 1: 'Vòng đầu', 2: 'Tứ kết', 3: 'Bán kết', 4: 'Chung kết' }
+    const maxRounds = Math.max(...Object.keys(rounds).map(Number))
+    let html = '<div style="display:flex;gap:32px;padding:16px;">'
+    for (let r = 1; r <= maxRounds; r++) {
+      const roundMatches = rounds[r] || []
+      const rName = roundNames[r] || `Vòng ${r}`
+      html += `<div style="flex:1;min-width:180px;"><h5 style="text-align:center;margin:0 0 12px;color:var(--text-secondary);">${rName}</h5>`
+      roundMatches.forEach(m => {
+        const t1Name = m.t1_team_name || (m.t1_p1_name || 'Chưa xác định')
+        const t2Name = m.t2_team_name || (m.t2_p1_name || 'Chưa xác định')
+        const t1Score = m.team1_score != null ? m.team1_score : '-'
+        const t2Score = m.team2_score != null ? m.team2_score : '-'
+        const isWinner1 = m.winner_participant_id === m.team1_participant_id
+        const isWinner2 = m.winner_participant_id === m.team2_participant_id
+        const statusColor = m.status === 'completed' ? '#10b981' : m.status === 'in_progress' ? '#f59e0b' : '#6b7280'
+        html += `<div style="background:var(--bg-secondary);border-radius:8px;padding:10px;margin-bottom:12px;border-left:3px solid ${statusColor};">
+          <div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px;">Trận ${m.match_number}</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;">
+            <span style="font-size:13px;${isWinner1 ? 'font-weight:bold;color:#10b981;' : ''}">${this.escapeHtml(t1Name)}</span>
+            <span style="font-size:12px;background:var(--card-bg);padding:2px 6px;border-radius:4px;">${t1Score}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;">
+            <span style="font-size:13px;${isWinner2 ? 'font-weight:bold;color:#10b981;' : ''}">${this.escapeHtml(t2Name)}</span>
+            <span style="font-size:12px;background:var(--card-bg);padding:2px 6px;border-radius:4px;">${t2Score}</span>
+          </div>
+          ${cupStatus === 'in_progress' && m.status === 'scheduled' ? `
+            <div style="margin-top:8px;display:flex;gap:4px;">
+              <input type="number" min="0" value="0" class="input-field input-sm" style="width:50px;" id="score1_${m.id}">
+              <input type="number" min="0" value="0" class="input-field input-sm" style="width:50px;" id="score2_${m.id}">
+              <button class="btn btn-sm btn-primary" style="flex:1;padding:4px;" onclick="app.updateMatchScore(${cupId},${m.id})">Ghi điểm</button>
+            </div>
+          ` : ''}
+        </div>`
+      })
+      html += '</div>'
+    }
+    html += '</div>'
+    return html
+  }
+
+  statusColor(status) {
+    const colors = { draft: '#6b7280', scheduled: '#3b82f6', in_progress: '#f59e0b', completed: '#10b981', cancelled: '#ef4444' }
+    return colors[status] || '#6b7280'
+  }
+
+  async showCreateCupModal() {
+    // Load players and seasons for dropdowns
+    const [playersRes, seasonsRes] = await Promise.all([
+      this.makeAuthenticatedRequest('/cups/_players'),
+      this.makeAuthenticatedRequest('/cups/_seasons')
+    ])
+    const players = await playersRes.json()
+    const seasons = await seasonsRes.json()
+
+    const modal = document.getElementById('loginModal')
+    if (!modal) return // fallback: use confirm
+    
+    // Reuse modal pattern
+    const content = modal.querySelector('.modal-content') || modal.querySelector('[class*="modal"]')
+    if (!content) return
+
+    const prevContent = content.innerHTML
+    const modalTitle = modal.querySelector('.modal-title')
+    const prevTitle = modalTitle ? modalTitle.textContent : ''
+
+    if (modalTitle) modalTitle.textContent = '🏆 Tạo Giải Đấu Cúp'
+    content.innerHTML = `
+      <div class="modal-header">
+        <h3 class="modal-title">🏆 Tạo Giải Đấu Cúp</h3>
+        <button class="modal-close" data-dismiss="modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <form id="createCupForm">
+          <div class="form-group">
+            <label>Tên giải đấu *</label>
+            <input type="text" id="cupName" class="input-field" required placeholder="VD: Cúp Vô Địch 2025">
+          </div>
+          <div class="form-group">
+            <label>Lien kết mùa giải (tùy chọn)</label>
+            <select id="cupSeasonId" class="input-field">
+              <option value="">-- Không liên kết --</option>
+              ${(seasons || []).map(s => `<option value="${s.id}">${this.escapeHtml(s.name)}</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Định dạng *</label>
+            <select id="cupFormat" class="input-field">
+              <option value="single_elimination">Loại trực tiếp</option>
+              <option value="round_robin">Vòng tròn</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Số đội *</label>
+            <select id="cupNumTeams" class="input-field">
+              <option value="4">4 đội</option>
+              <option value="8" selected>8 đội</option>
+              <option value="16">16 đội</option>
+              <option value="32">32 đội</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Quy định (tùy chọn)</label>
+            <textarea id="cupRegulation" class="input-field" rows="3" placeholder="Luật chơi, quy định đặc biệt..."></textarea>
+          </div>
+          <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+            <button type="button" class="btn btn-ghost" data-dismiss="modal">Hủy</button>
+            <button type="submit" class="btn btn-primary">Tạo giải đấu</button>
+          </div>
+        </form>
+      </div>
+    `
+
+    // Show modal
+    modal.classList.add('active')
+    modal.style.display = 'flex'
+
+    // Handle submit
+    const form = content.querySelector('#createCupForm')
+    if (form) {
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault()
+        await this.createCup(players)
+        // Restore modal
+        content.innerHTML = prevContent
+        if (modalTitle) modalTitle.textContent = prevTitle
+        modal.classList.remove('active')
+        modal.style.display = ''
+      })
+    }
+  }
+
+  async createCup(players) {
+    try {
+      const name = document.getElementById('cupName').value.trim()
+      if (!name) return this.showToast('Vui lòng nhập tên giải đấu', 'error')
+
+      const seasonId = document.getElementById('cupSeasonId').value || null
+      const format = document.getElementById('cupFormat').value
+      const numTeams = parseInt(document.getElementById('cupNumTeams').value)
+      const regulationText = document.getElementById('cupRegulation').value.trim() || null
+
+      const csrfToken = await this.getCSRFToken()
+      const res = await fetch(`${this.apiBase}/cups`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
+        body: JSON.stringify({ name, seasonId: seasonId ? parseInt(seasonId) : null, format, numTeams, regulationText })
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast('Đã tạo giải đấu mới!', 'success')
+        // Now show participant selection
+        await this.showAddParticipantsModal(data.id, players, numTeams)
+      } else {
+        this.showToast(data.error || 'Lỗi khi tạo giải đấu', 'error')
+      }
+    } catch (error) {
+      this.showToast('Lỗi kết nối: ' + error.message, 'error')
+    }
+  }
+
+  async showAddParticipantsModal(cupId, players, maxTeams) {
+    const modal = document.getElementById('loginModal')
+    if (!modal) return
+    const content = modal.querySelector('.modal-content') || modal.querySelector('[class*="modal"]')
+    if (!content) return
+
+    const prevContent = content.innerHTML
+    const modalTitle = modal.querySelector('.modal-title')
+    const prevTitle = modalTitle ? modalTitle.textContent : ''
+
+    if (modalTitle) modalTitle.textContent = '👥 Thêm Người Tham Gia'
+    content.innerHTML = `
+      <div class="modal-header">
+        <h3 class="modal-title">👥 Thêm Người Tham Gia</h3>
+        <button class="modal-close" data-dismiss="modal">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p style="font-size:13px;color:var(--text-secondary);margin:0 0 12px;">Chọn ${maxTeams} người chơi để tạo đội (mỗi người chơi = 1 đội đánh đơn)</p>
+        <div id="participantSelection" style="max-height:300px;overflow-y:auto;border:1px solid var(--border-color);border-radius:8px;padding:8px;">
+          ${(players || []).map(p => `
+            <label style="display:flex;align-items:center;gap:8px;padding:6px 0;cursor:pointer;">
+              <input type="checkbox" class="participant-cb" value="${p.id}" style="width:16px;height:16px;">
+              <span>${this.escapeHtml(p.name)}</span>
+            </label>
+          `).join('')}
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:12px;">
+          <span id="participantCount" style="font-size:13px;color:var(--text-secondary);">Đã chọn: 0/${maxTeams}</span>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-ghost" data-dismiss="modal">Hủy</button>
+            <button class="btn btn-primary" onclick="app.confirmAddParticipants(${cupId}, ${maxTeams})">Xác nhận</button>
+          </div>
+        </div>
+      </div>
+    `
+
+    modal.classList.add('active')
+    modal.style.display = 'flex'
+
+    // Count checkboxes
+    content.querySelectorAll('.participant-cb').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const checked = content.querySelectorAll('.participant-cb:checked').length
+        document.getElementById('participantCount').textContent = `Đã chọn: ${checked}/${maxTeams}`
+      })
+    })
+  }
+
+  async confirmAddParticipants(cupId, maxTeams) {
+    const modal = document.getElementById('loginModal')
+    if (!modal) return
+    const content = modal.querySelector('.modal-content') || modal.querySelector('[class*="modal"]')
+    if (!content) return
+
+    const selected = Array.from(content.querySelectorAll('.participant-cb:checked')).map(cb => parseInt(cb.value))
+    if (selected.length < 2) return this.showToast('Cần ít nhất 2 người tham gia', 'error')
+    if (selected.length > maxTeams) return this.showToast(`Tối đa ${maxTeams} đội`, 'error')
+
+    try {
+      const csrfToken = await this.getCSRFToken()
+      let added = 0
+      for (let i = 0; i < selected.length; i++) {
+        const res = await fetch(`${this.apiBase}/cups/${cupId}/participants`, {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
+          body: JSON.stringify({ player1Id: selected[i], seed: i + 1 })
+        })
+        const data = await res.json()
+        if (data.success) added++
+      }
+      this.showToast(`Đã thêm ${added}/${selected.length} người tham gia`, 'success')
+      
+      // Close modal and show cup detail
+      modal.classList.remove('active')
+      modal.style.display = ''
+      await this.showCupDetail(cupId)
+    } catch (error) {
+      this.showToast('Lỗi khi thêm người tham gia', 'error')
+    }
+  }
+
+  async shuffleCupSeeds(cupId) {
+    if (!confirm('Xáo trộn hạt giống? Thứ tự đội sẽ được random.')) return
+    try {
+      const csrfToken = await this.getCSRFToken()
+      const res = await fetch(`${this.apiBase}/cups/${cupId}/seed-shuffle`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'x-csrf-token': csrfToken }
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast('Đã xáo trộn hạt giống!', 'success')
+        await this.showCupDetail(cupId)
+      } else {
+        this.showToast(data.error || 'Lỗi khi xáo trộn', 'error')
+      }
+    } catch (error) {
+      this.showToast('Lỗi kết nối', 'error')
+    }
+  }
+
+  async generateCupBracket(cupId) {
+    if (!confirm('Tạo bảng đấu? Hành động này sẽ chuyển giải đấu sang trạng thái "Đã lên lịch".')) return
+    try {
+      const csrfToken = await this.getCSRFToken()
+      const res = await fetch(`${this.apiBase}/cups/${cupId}/generate-bracket`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'x-csrf-token': csrfToken }
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast(`Đã tạo bảng đấu! ${data.matchesCount} trận`, 'success')
+        await this.showCupDetail(cupId)
+      } else {
+        this.showToast(data.error || 'Lỗi khi tạo bảng đấu', 'error')
+      }
+    } catch (error) {
+      this.showToast('Lỗi kết nối', 'error')
+    }
+  }
+
+  async changeCupStatus(cupId, newStatus) {
+    const labels = { scheduled: 'lên lịch', in_progress: 'bắt đầu', completed: 'hoàn thành', cancelled: 'hủy' }
+    if (!confirm(`Bạn có chắc muốn ${labels[newStatus] || 'thay đổi trạng thái'} giải đấu?`)) return
+    try {
+      const csrfToken = await this.getCSRFToken()
+      const res = await fetch(`${this.apiBase}/cups/${cupId}/status`, {
+        method: 'PUT', credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
+        body: JSON.stringify({ status: newStatus })
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast('Đã thay đổi trạng thái', 'success')
+        await this.showCupDetail(cupId)
+      } else {
+        this.showToast(data.error || 'Lỗi khi thay đổi trạng thái', 'error')
+      }
+    } catch (error) {
+      this.showToast('Lỗi kết nối', 'error')
+    }
+  }
+
+  async updateMatchScore(cupId, matchId) {
+    const score1El = document.getElementById(`score1_${matchId}`)
+    const score2El = document.getElementById(`score2_${matchId}`)
+    if (!score1El || !score2El) return
+    const s1 = parseInt(score1El.value) || 0
+    const s2 = parseInt(score2El.value) || 0
+
+    try {
+      const csrfToken = await this.getCSRFToken()
+      const res = await fetch(`${this.apiBase}/cups/${cupId}/matches/${matchId}`, {
+        method: 'PUT', credentials: 'include',
+        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
+        body: JSON.stringify({ team1Score: s1, team2Score: s2 })
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast(`Ghi điểm ${s1}-${s2} thành công!`, 'success')
+        await this.showCupDetail(cupId)
+      } else {
+        this.showToast(data.error || 'Lỗi khi ghi điểm', 'error')
+      }
+    } catch (error) {
+      this.showToast('Lỗi kết nối', 'error')
+    }
+  }
+
+  async deleteCup(cupId) {
+    if (!confirm('Bạn có chắc muốn xóa giải đấu này? Hành động này không thể hoàn tác.')) return
+    try {
+      const csrfToken = await this.getCSRFToken()
+      const res = await fetch(`${this.apiBase}/cups/${cupId}`, {
+        method: 'DELETE', credentials: 'include',
+        headers: { 'x-csrf-token': csrfToken }
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast('Đã xóa giải đấu', 'success')
+        this.backToCupsList()
+      } else {
+        this.showToast(data.error || 'Lỗi khi xóa', 'error')
+      }
+    } catch (error) {
+      this.showToast('Lỗi kết nối', 'error')
+    }
+  }
+
+  backToCupsList() {
+    document.getElementById('cupsGrid').style.display = ''
+    document.getElementById('createCupBtn').style.display = ''
+    document.getElementById('cupDetail').style.display = 'none'
+    this.loadCups()
   }
 }
 

@@ -52,6 +52,9 @@ data/postgres-data/
 data/redis-data/
 data/tennis.db
 
+# Uploaded media (managed on host, not baked into image)
+data/uploads/
+
 # CI/CD and tooling
 .github/
 .gitlab-ci.yml

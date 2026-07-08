@@ -51,6 +51,11 @@ const SEASON_SELECT_COLS = `
   CASE WHEN end_date IS NOT NULL THEN TO_CHAR(end_date, 'YYYY-MM-DD') ELSE NULL END as end_date,
   is_active, auto_end, description,
   COALESCE(lose_money_per_loss, 20000) as lose_money_per_loss,
+  final_results,
+  conclusion_image_path,
+  conclusion_image_filename,
+  conclusion_image_content_type,
+  conclusion_image_size,
   created_at, ended_at, ended_by`
 
 class TennisDatabasePostgreSQL {
@@ -355,6 +360,139 @@ class TennisDatabasePostgreSQL {
         END $$;
       `)
 
+      // ── Site images table (self-service image editor) ──────────────────────
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS site_images (
+          id            SERIAL PRIMARY KEY,
+          key           VARCHAR(64) UNIQUE NOT NULL,
+          filename      VARCHAR(255) NOT NULL,
+          storage_path  VARCHAR(512) NOT NULL,
+          content_type  VARCHAR(64) NOT NULL,
+          file_size     INTEGER NOT NULL,
+          alt_text      VARCHAR(255) DEFAULT '',
+          is_active     BOOLEAN DEFAULT true,
+          uploaded_by   VARCHAR(255),
+          uploaded_at   TIMESTAMPTZ DEFAULT NOW(),
+          updated_at    TIMESTAMPTZ DEFAULT NOW()
+        )
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_site_images_key_active ON site_images(key, is_active)
+      `)
+
+      // ── Season result columns (idempotent) ─────────────────────────────────
+      await client.query(`
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_name = 'seasons' AND column_name = 'final_results') THEN
+            ALTER TABLE seasons ADD COLUMN final_results TEXT;
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_name = 'seasons' AND column_name = 'conclusion_image_path') THEN
+            ALTER TABLE seasons ADD COLUMN conclusion_image_path VARCHAR(512);
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_name = 'seasons' AND column_name = 'conclusion_image_filename') THEN
+            ALTER TABLE seasons ADD COLUMN conclusion_image_filename VARCHAR(255);
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_name = 'seasons' AND column_name = 'conclusion_image_content_type') THEN
+            ALTER TABLE seasons ADD COLUMN conclusion_image_content_type VARCHAR(64);
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_name = 'seasons' AND column_name = 'conclusion_image_size') THEN
+            ALTER TABLE seasons ADD COLUMN conclusion_image_size INTEGER;
+          END IF;
+        END $$;
+      `)
+
+      // ── Cup tournament tables ───────────────────────────────────────────────
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS cups (
+          id                SERIAL PRIMARY KEY,
+          name              VARCHAR(255) NOT NULL,
+          season_id         INTEGER REFERENCES seasons(id) ON DELETE SET NULL,
+          format            VARCHAR(20) NOT NULL DEFAULT 'single_elimination',
+          num_teams         INTEGER NOT NULL DEFAULT 8,
+          regulation_text   TEXT,
+          status            VARCHAR(20) DEFAULT 'draft',
+          start_date        DATE,
+          end_date          DATE,
+          created_by        VARCHAR(255),
+          created_at        TIMESTAMPTZ DEFAULT NOW(),
+          updated_at        TIMESTAMPTZ DEFAULT NOW(),
+          CONSTRAINT check_cup_format CHECK (format IN ('single_elimination', 'double_elimination', 'round_robin')),
+          CONSTRAINT check_cup_status CHECK (status IN ('draft', 'scheduled', 'in_progress', 'completed', 'cancelled'))
+        )
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_cups_season ON cups(season_id)
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_cups_status ON cups(status)
+      `)
+
+      // Cup participants
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS cup_participants (
+          id          SERIAL PRIMARY KEY,
+          cup_id      INTEGER NOT NULL REFERENCES cups(id) ON DELETE CASCADE,
+          player1_id  INTEGER NOT NULL REFERENCES players(id),
+          player2_id  INTEGER REFERENCES players(id),
+          team_name   VARCHAR(255),
+          seed        INTEGER,
+          UNIQUE(cup_id, player1_id, player2_id)
+        )
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_cup_participants_cup ON cup_participants(cup_id)
+      `)
+
+      // Cup matches (bracket)
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS cup_matches (
+          id                   SERIAL PRIMARY KEY,
+          cup_id               INTEGER NOT NULL REFERENCES cups(id) ON DELETE CASCADE,
+          round_number         INTEGER NOT NULL,
+          match_number         INTEGER NOT NULL,
+          bracket_position     VARCHAR(32),
+          team1_participant_id INTEGER REFERENCES cup_participants(id),
+          team2_participant_id INTEGER REFERENCES cup_participants(id),
+          team1_score          INTEGER,
+          team2_score          INTEGER,
+          winner_participant_id INTEGER REFERENCES cup_participants(id),
+          play_date            DATE,
+          status               VARCHAR(20) DEFAULT 'scheduled',
+          goal_difference      INTEGER GENERATED ALWAYS AS (COALESCE(team1_score, 0) - COALESCE(team2_score, 0)) STORED,
+          created_at           TIMESTAMPTZ DEFAULT NOW(),
+          updated_at           TIMESTAMPTZ DEFAULT NOW(),
+          CONSTRAINT check_cup_match_status CHECK (status IN ('scheduled', 'in_progress', 'completed', 'forfeited', 'cancelled'))
+        )
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_cup_matches_cup ON cup_matches(cup_id)
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_cup_matches_round ON cup_matches(cup_id, round_number, match_number)
+      `)
+
+      // Cup advancements (auto-advance winners)
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS cup_advancements (
+          id              SERIAL PRIMARY KEY,
+          from_match_id   INTEGER NOT NULL REFERENCES cup_matches(id) ON DELETE CASCADE,
+          to_match_id     INTEGER NOT NULL REFERENCES cup_matches(id) ON DELETE CASCADE,
+          winner_slot     VARCHAR(10) NOT NULL,
+          UNIQUE(from_match_id, to_match_id, winner_slot)
+        )
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_cup_advancements_from ON cup_advancements(from_match_id)
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_cup_advancements_to ON cup_advancements(to_match_id)
+      `)
+
       await client.query('COMMIT')
     } catch (error) {
       await client.query('ROLLBACK')
@@ -471,20 +609,20 @@ class TennisDatabasePostgreSQL {
     }
   }
 
-  async updateSeason(seasonId, name, startDate, endDate, autoEnd, description, loseMoneyPerLoss = null) {
-    if (loseMoneyPerLoss !== null) {
-      await this.query(`
-        UPDATE seasons 
-        SET name = $1, start_date = $2, end_date = $3, auto_end = $4, description = $5, lose_money_per_loss = $6
-        WHERE id = $7
-      `, [name, startDate, endDate, autoEnd, description, loseMoneyPerLoss, seasonId])
-    } else {
-      await this.query(`
-        UPDATE seasons 
-        SET name = $1, start_date = $2, end_date = $3, auto_end = $4, description = $5
-        WHERE id = $6
-      `, [name, startDate, endDate, autoEnd, description, seasonId])
-    }
+  async updateSeason(seasonId, name, startDate, endDate, autoEnd, description, loseMoneyPerLoss = null, finalResults = null) {
+    const sets = []
+    const params = []
+    let idx = 1
+    sets.push(`name = $${idx}`); params.push(name); idx++
+    sets.push(`start_date = $${idx}`); params.push(startDate); idx++
+    sets.push(`end_date = $${idx}`); params.push(endDate); idx++
+    sets.push(`auto_end = $${idx}`); params.push(autoEnd); idx++
+    sets.push(`description = $${idx}`); params.push(description); idx++
+    if (loseMoneyPerLoss !== null) { sets.push(`lose_money_per_loss = $${idx}`); params.push(loseMoneyPerLoss); idx++ }
+    if (finalResults !== null) { sets.push(`final_results = $${idx}`); params.push(finalResults); idx++ }
+    sets.push('updated_at = COALESCE(updated_at, created_at)')
+    params.push(seasonId)
+    await this.query(`UPDATE seasons SET ${sets.join(', ')} WHERE id = $${idx}`)
   }
 
   async endSeason(seasonId, endDate, endedBy) {
@@ -1596,6 +1734,374 @@ class TennisDatabasePostgreSQL {
       
       await client.query('COMMIT')
       console.log('🗑️ All data cleared for restore (preserved current user)')
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  // ── Site Images (self-service image editor) ───────────────────────────────
+  async getSiteImages() {
+    const result = await this.query(`
+      SELECT id, key, filename, storage_path, content_type, file_size,
+             alt_text, is_active, uploaded_by,
+             TO_CHAR(uploaded_at, 'YYYY-MM-DDTHH:MI:SS') as uploaded_at,
+             TO_CHAR(updated_at, 'YYYY-MM-DDTHH:MI:SS') as updated_at
+      FROM site_images
+      ORDER BY
+        CASE key WHEN 'hero_banner' THEN 1 WHEN 'logo' THEN 2 WHEN 'favicon' THEN 3 WHEN 'background' THEN 4 ELSE 5 END,
+        id
+    `)
+    return result.rows
+  }
+
+  async getSiteImageByKey(key) {
+    const result = await this.query(`
+      SELECT id, key, filename, storage_path, content_type, file_size,
+             alt_text, is_active, uploaded_by,
+             TO_CHAR(uploaded_at, 'YYYY-MM-DDTHH:MI:SS') as uploaded_at,
+             TO_CHAR(updated_at, 'YYYY-MM-DDTHH:MI:SS') as updated_at
+      FROM site_images WHERE key = $1
+    `, [key])
+    return result.rows[0] || null
+  }
+
+  async upsertSiteImage({ key, filename, storage_path, content_type, file_size, alt_text = '', uploaded_by }) {
+    await this.query(`
+      INSERT INTO site_images (key, filename, storage_path, content_type, file_size, alt_text, is_active, uploaded_by, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, true, $7, NOW())
+      ON CONFLICT (key) DO UPDATE SET
+        filename = $2, storage_path = $3, content_type = $4, file_size = $5,
+        alt_text = $6, uploaded_by = $7, updated_at = NOW()
+    `, [key, filename, storage_path, content_type, file_size, alt_text, uploaded_by])
+  }
+
+  async updateSiteImageMeta(key, { altText, isActive }) {
+    const updates = []
+    const params = []
+    let idx = 1
+    if (altText !== undefined) { updates.push(`alt_text = $${idx}`); params.push(altText); idx++ }
+    if (isActive !== undefined) { updates.push(`is_active = $${idx}`); params.push(isActive); idx++ }
+    if (updates.length > 0) {
+      updates.push(`updated_at = NOW()`)
+      params.push(key)
+      await this.query(`UPDATE site_images SET ${updates.join(', ')} WHERE key = $${idx}`)
+    }
+  }
+
+  // ── Season conclusion image ────────────────────────────────────────────────
+  async uploadSeasonConclusionImage(seasonId, { filename, storage_path, content_type, file_size }) {
+    await this.query(`
+      UPDATE seasons SET
+        conclusion_image_path = $1,
+        conclusion_image_filename = $2,
+        conclusion_image_content_type = $3,
+        conclusion_image_size = $4
+      WHERE id = $5
+    `, [storage_path, filename, content_type, file_size, seasonId])
+  }
+
+  async deleteSeasonConclusionImage(seasonId) {
+    await this.query(`
+      UPDATE seasons SET
+        conclusion_image_path = NULL,
+        conclusion_image_filename = NULL,
+        conclusion_image_content_type = NULL,
+        conclusion_image_size = NULL
+      WHERE id = $1
+    `, [seasonId])
+  }
+
+  // ── Cup tournaments ────────────────────────────────────────────────────────
+  async getCups() {
+    const result = await this.query(`
+      SELECT id, name, season_id, format, num_teams, regulation_text,
+             status, start_date, end_date, created_by,
+             TO_CHAR(created_at, 'YYYY-MM-DDTHH:MI:SS') as created_at,
+             TO_CHAR(updated_at, 'YYYY-MM-DDTHH:MI:SS') as updated_at
+      FROM cups ORDER BY created_at DESC
+    `)
+    return result.rows
+  }
+
+  async getCupById(cupId) {
+    const result = await this.query(`
+      SELECT id, name, season_id, format, num_teams, regulation_text,
+             status, start_date, end_date, created_by,
+             TO_CHAR(created_at, 'YYYY-MM-DDTHH:MI:SS') as created_at,
+             TO_CHAR(updated_at, 'YYYY-MM-DDTHH:MI:SS') as updated_at
+      FROM cups WHERE id = $1
+    `, [cupId])
+    return result.rows[0] || null
+  }
+
+  async createCup(name, seasonId, format, numTeams, regulationText, createdBy) {
+    const result = await this.query(`
+      INSERT INTO cups (name, season_id, format, num_teams, regulation_text, status, created_by)
+      VALUES ($1, $2, $3, $4, $5, 'draft', $6)
+      RETURNING id
+    `, [name, seasonId || null, format, numTeams, regulationText || null, createdBy])
+    return result.rows[0].id
+  }
+
+  async updateCup(cupId, updates) {
+    const sets = []
+    const params = []
+    let idx = 1
+    for (const key of ['name', 'season_id', 'format', 'num_teams', 'regulation_text', 'status', 'start_date', 'end_date']) {
+      if (updates[key] !== undefined) {
+        sets.push(`${key} = $${idx}`)
+        params.push(updates[key])
+        idx++
+      }
+    }
+    if (sets.length > 0) {
+      sets.push('updated_at = NOW()')
+      params.push(cupId)
+      await this.query(`UPDATE cups SET ${sets.join(', ')} WHERE id = $${idx}`)
+    }
+  }
+
+  async deleteCup(cupId) {
+    await this.query(`DELETE FROM cups WHERE id = $1`, [cupId])
+  }
+
+  async getCupParticipants(cupId) {
+    const result = await this.query(`
+      SELECT cp.id, cp.cup_id, cp.player1_id, cp.player2_id, cp.team_name, cp.seed,
+             p1.name as player1_name, p2.name as player2_name
+      FROM cup_participants cp
+      JOIN players p1 ON cp.player1_id = p1.id
+      LEFT JOIN players p2 ON cp.player2_id = p2.id
+      WHERE cp.cup_id = $1
+      ORDER BY cp.seed ASC, cp.id ASC
+    `, [cupId])
+    return result.rows
+  }
+
+  async addCupParticipant(cupId, player1Id, player2Id, teamName, seed) {
+    const result = await this.query(`
+      INSERT INTO cup_participants (cup_id, player1_id, player2_id, team_name, seed)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (cup_id, player1_id, player2_id) DO NOTHING
+      RETURNING id
+    `, [cupId, player1Id, player2Id, teamName || null, seed || null])
+    return result.rows[0]?.id || null
+  }
+
+  async removeCupParticipant(cupId, participantId) {
+    await this.query(`DELETE FROM cup_participants WHERE id = $1 AND cup_id = $2`, [participantId, cupId])
+  }
+
+  async reorderCupParticipants(cupId, orderedParticipantIds) {
+    if (!orderedParticipantIds || orderedParticipantIds.length === 0) return
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN')
+      for (let i = 0; i < orderedParticipantIds.length; i++) {
+        await client.query(`UPDATE cup_participants SET seed = $1 WHERE id = $2 AND cup_id = $3`,
+          [i + 1, orderedParticipantIds[i], cupId])
+      }
+      await client.query('COMMIT')
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  async getCupBracket(cupId) {
+    const matches = await this.query(`
+      SELECT cm.id, cm.round_number, cm.match_number, cm.bracket_position,
+             cm.team1_participant_id, cm.team2_participant_id,
+             cm.team1_score, cm.team2_score, cm.winner_participant_id,
+             cm.goal_difference,
+             cm.status,
+             TO_CHAR(cm.play_date, 'YYYY-MM-DD') as play_date,
+             cm1.player1_id as t1_p1, cm1.player2_id as t1_p2,
+             cm1.player1_name as t1_p1_name, cm1.player2_name as t1_p2_name,
+             cm1.team_name as t1_team_name,
+             cm2.player1_id as t2_p1, cm2.player2_id as t2_p2,
+             cm2.player1_name as t2_p1_name, cm2.player2_name as t2_p2_name,
+             cm2.team_name as t2_team_name
+      FROM cup_matches cm
+      LEFT JOIN (
+        SELECT cp.id, cp.player1_id, cp.player2_id,
+               p1.name as player1_name, p2.name as player2_name,
+               cp.team_name
+        FROM cup_participants cp
+        JOIN players p1 ON cp.player1_id = p1.id
+        LEFT JOIN players p2 ON cp.player2_id = p2.id
+      ) cm1 ON cm.team1_participant_id = cm1.id
+      LEFT JOIN (
+        SELECT cp.id, cp.player1_id, cp.player2_id,
+               p1.name as player1_name, p2.name as player2_name,
+               cp.team_name
+        FROM cup_participants cp
+        JOIN players p1 ON cp.player1_id = p1.id
+        LEFT JOIN players p2 ON cp.player2_id = p2.id
+      ) cm2 ON cm.team2_participant_id = cm2.id
+      WHERE cm.cup_id = $1
+      ORDER BY cm.round_number ASC, cm.match_number ASC
+    `, [cupId])
+    return matches.rows
+  }
+
+  async generateBracket(cupId) {
+    const cup = await this.getCupById(cupId)
+    if (!cup) throw new Error('Cup not found')
+
+    const participants = await this.getCupParticipants(cupId)
+    const numTeams = participants.length
+
+    if (numTeams < 2) throw new Error('Need at least 2 participants')
+    if (numTeams > cup.num_teams) throw new Error(`Too many participants for ${cup.num_teams}-team format`)
+
+    // Pad to power of 2 with byes
+    let size = 2
+    while (size < numTeams) size *= 2
+
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN')
+
+      // Clear existing bracket
+      await client.query(`DELETE FROM cup_advancements WHERE from_match_id IN (SELECT id FROM cup_matches WHERE cup_id = $1)`, [cupId])
+      await client.query(`DELETE FROM cup_matches WHERE cup_id = $1`, [cupId])
+
+      const rounds = Math.log2(size)
+      const matchesPerRound = size / 2
+
+      // Create first round matches
+      const firstRoundMatches = []
+      for (let i = 0; i < matchesPerRound; i++) {
+        const p1 = participants[i * 2]
+        const p2 = participants[i * 2 + 1]
+
+        const result = await client.query(`
+          INSERT INTO cup_matches (cup_id, round_number, match_number, bracket_position,
+                                   team1_participant_id, team2_participant_id, status)
+          VALUES ($1, 1, $2, $3, $4, $5, $6)
+          RETURNING id
+        `, [
+          cupId,
+          i + 1,
+          i < matchesPerRound / 2 ? 'top' : 'bottom',
+          p1?.id || null,
+          p2?.id || null,
+          (!p1 || !p2) ? 'completed' : 'scheduled'
+        ])
+
+        const matchId = result.rows[0].id
+        firstRoundMatches.push({ matchId, team1: p1, team2: p2 })
+
+        // Auto-complete bye matches
+        if (!p1 && p2) {
+          await client.query(`
+            UPDATE cup_matches SET team1_score = 0, team2_score = 0, winner_participant_id = $1, status = 'completed'
+            WHERE id = $2
+          `, [p2.id, matchId])
+        } else if (p1 && !p2) {
+          await client.query(`
+            UPDATE cup_matches SET team1_score = 0, team2_score = 0, winner_participant_id = $1, status = 'completed'
+            WHERE id = $2
+          `, [p1.id, matchId])
+        }
+      }
+
+      // Create subsequent rounds
+      for (let r = 2; r <= rounds; r++) {
+        const currentMatches = []
+
+        for (let i = 0; i < matchesPerRound / Math.pow(2, r - 1); i++) {
+          const result = await client.query(`
+            INSERT INTO cup_matches (cup_id, round_number, match_number, bracket_position, status)
+            VALUES ($1, $2, $3, $4, 'scheduled')
+            RETURNING id
+          `, [
+            cupId,
+            r,
+            i + 1,
+            i < (matchesPerRound / Math.pow(2, r - 1) / 2) ? 'top' : 'bottom'
+          ])
+          currentMatches.push(result.rows[0].id)
+        }
+
+        // Create advancement rules from previous round to this round
+        const prevRoundMatchesList = r === 2 ? firstRoundMatches : (await client.query(
+          `SELECT id FROM cup_matches WHERE cup_id = $1 AND round_number = $2 ORDER BY match_number`,
+          [cupId, r - 1]
+        )).rows
+
+        let advIdx = 0
+        for (const prevMatch of prevRoundMatchesList) {
+          if (advIdx < currentMatches.length) {
+            const slot = (advIdx % 2 === 0) ? 'team1' : 'team2'
+            const targetMatchId = currentMatches[Math.floor(advIdx / 2)]
+            await client.query(`
+              INSERT INTO cup_advancements (from_match_id, to_match_id, winner_slot)
+              VALUES ($1, $2, $3)
+            `, [prevMatch.id, targetMatchId, slot])
+            advIdx++
+          }
+        }
+      }
+
+      await client.query('COMMIT')
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  async updateCupMatchScore(cupId, matchId, team1Score, team2Score) {
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN')
+
+      const result = await client.query(`
+        UPDATE cup_matches
+        SET team1_score = $1, team2_score = $2, status = 'completed', updated_at = NOW()
+        WHERE id = $3 AND cup_id = $4
+        RETURNING id, team1_participant_id, team2_participant_id, round_number
+      `, [team1Score, team2Score, matchId, cupId])
+
+      if (result.rows.length === 0) {
+        await client.query('ROLLBACK')
+        throw new Error('Match not found')
+      }
+
+      const match = result.rows[0]
+      let winnerId = null
+
+      if (team1Score > team2Score) winnerId = match.team1_participant_id
+      else if (team2Score > team1Score) winnerId = match.team2_participant_id
+
+      if (winnerId) {
+        await client.query(`
+          UPDATE cup_matches SET winner_participant_id = $1 WHERE id = $2
+        `, [winnerId, matchId])
+
+        const advancements = await client.query(`
+          SELECT to_match_id, winner_slot FROM cup_advancements WHERE from_match_id = $1
+        `, [matchId])
+
+        for (const adv of advancements.rows) {
+          await client.query(`
+            UPDATE cup_matches
+            SET ${adv.winner_slot}_participant_id = $1, updated_at = NOW()
+            WHERE id = $2
+          `, [winnerId, adv.to_match_id])
+        }
+      }
+
+      await client.query('COMMIT')
+      return { success: true, winnerId, match }
     } catch (error) {
       await client.query('ROLLBACK')
       throw error

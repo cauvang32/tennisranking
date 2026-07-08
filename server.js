@@ -53,6 +53,8 @@ import { createHealthRouter } from './routes/health.js'
 import { createSystemRouter } from './routes/system.js'
 import { createDeviceRouter } from './routes/devices.js'
 import { createInlineAuthRouter } from './routes/auth-inline.js'
+import { createImageRouter } from './routes/images.js'
+import { createCupRouter } from './routes/cups.js'
 
 // ── Bootstrap ───────────────────────────────────────────────────────────────
 
@@ -344,8 +346,22 @@ if (!isDevelopment) {
     }
   }))
   console.log(`📁 Static files served from: ${SUBPATH}`)
+
+  // Serve uploaded images with long cache headers
+  app.use('/uploads', express.static(join(__dirname, 'data/uploads'), {
+    maxAge: '365d',
+    setHeaders: (res, path) => {
+      res.setHeader('X-Content-Type-Options', 'nosniff')
+    }
+  }))
+  console.log('📁 Upload directory served at /uploads')
 } else {
   console.log('🚧 Development mode: Static files handled by Vite')
+  // Serve uploads in dev too
+  app.use('/uploads', express.static(join(__dirname, 'data/uploads'), {
+    maxAge: '0',
+    setHeaders: (res, path) => { res.setHeader('X-Content-Type-Options', 'nosniff') }
+  }))
 }
 
 // Subpath API normalisation (production + development)
@@ -491,6 +507,8 @@ app.use('/api/rankings', createRankingRouter(routeCtx))
 app.use('/api/export-excel', createExportRouter(routeCtx))
 app.use('/api/auth', createAuthRouter(routeCtx))
 app.use('/api/devices', createDeviceRouter(routeCtx))
+app.use('/api/images', createImageRouter(routeCtx))
+app.use('/api/cups', createCupRouter(routeCtx))
 
 // System & admin routes (newly extracted)
 app.use('/api/admin', createAdminRouter(routeCtx))

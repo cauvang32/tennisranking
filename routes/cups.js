@@ -20,6 +20,25 @@ export const createCupRouter = ({
 
   // ── Public reads (auth required, no admin needed) ──────────────────────
 
+  // Helper endpoints for frontend dropdowns — MUST be defined BEFORE /:id
+  // so Express doesn't match '_players' or '_seasons' as a cup ID.
+  router.get('/_players', checkAuth, asyncHandler(async (req, res) => {
+    const { data: players } = await rankingsCache.getOrSet(
+      'players',
+      () => db.getPlayers(1000)
+    )
+    res.json(sanitizeResponse(players || []))
+  }))
+
+  router.get('/_seasons', checkAuth, asyncHandler(async (req, res) => {
+    const { data: seasons } = await rankingsCache.getOrSet(
+      'seasons',
+      () => db.getSeasons(100)
+    )
+    res.json(sanitizeResponse(seasons || []))
+  }))
+
+  // List all cups
   router.get('/', checkAuth, asyncHandler(async (req, res) => {
     const { data: cups, hit: cacheHit } = await rankingsCache.getOrSet(
       'cups',
@@ -29,6 +48,7 @@ export const createCupRouter = ({
     res.json(sanitizeResponse(cups || []))
   }))
 
+  // Get cup by ID
   router.get('/:id', checkAuth, [
     param('id').isInt().withMessage('Invalid cup ID')
   ], handleValidationErrors, asyncHandler(async (req, res) => {
@@ -423,24 +443,6 @@ export const createCupRouter = ({
       res.json({ success: true, ...result })
     })
   )
-
-  // Get all players (for participant selection dropdown)
-  router.get('/_players', checkAuth, asyncHandler(async (req, res) => {
-    const { data: players } = await rankingsCache.getOrSet(
-      'players',
-      () => db.getPlayers(1000)
-    )
-    res.json(sanitizeResponse(players || []))
-  }))
-
-  // Get all seasons (for season selection dropdown)
-  router.get('/_seasons', checkAuth, asyncHandler(async (req, res) => {
-    const { data: seasons } = await rankingsCache.getOrSet(
-      'seasons',
-      () => db.getSeasons(100)
-    )
-    res.json(sanitizeResponse(seasons || []))
-  }))
 
   return router
 }

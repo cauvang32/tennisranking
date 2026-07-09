@@ -343,7 +343,9 @@ if (!isDevelopment) {
       res.setHeader('X-Frame-Options', 'DENY')
       const lp = filePath.toLowerCase()
       if (lp.endsWith('.html')) {
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+        res.setHeader('Surrogate-Control', 'no-store')
+        res.setHeader('Pragma', 'no-cache')
       } else if (/\.(js|css|mjs|cjs|svg|png|jpg|jpeg|gif|ico|webp|avif|woff|woff2|ttf)$/i.test(lp)) {
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
       } else {
@@ -557,9 +559,23 @@ if (isDevelopment) {
     </body></html>`)
   })
 } else {
-  app.get(SUBPATH, (_req, res) => res.sendFile(join(__dirname, 'dist', 'index.html')))
+  // Serve index-v2.html (renamed to bust Cloudflare's edge cache of the old index.html).
+  // Cloudflare may have cached the old index.html at edge servers; renaming forces
+  // a cache miss. The no-store headers ensure it won't be re-cached.
+  const indexPath = join(__dirname, 'dist', 'index-v2.html')
+  app.get(SUBPATH, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+    res.setHeader('Surrogate-Control', 'no-store')
+    res.setHeader('Pragma', 'no-cache')
+    res.sendFile(indexPath)
+  })
   // Express 5.x requires named splat parameter syntax: {/*splat} instead of bare *
-  app.get(`${SUBPATH}{/*splat}`, (_req, res) => res.sendFile(join(__dirname, 'dist', 'index.html')))
+  app.get(`${SUBPATH}{/*splat}`, (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+    res.setHeader('Surrogate-Control', 'no-store')
+    res.setHeader('Pragma', 'no-cache')
+    res.sendFile(indexPath)
+  })
 }
 
 // Auto-redirect from domain root to subpath (controlled by ALLOW_SUBPATH_REDIRECT env).

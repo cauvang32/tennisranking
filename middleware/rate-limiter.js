@@ -323,6 +323,14 @@ export async function initRateLimitRedis() {
   // Create the client lazily (triggers connection). If the client was
   // already created by the first HTTP request, it's already connecting.
   const client = createRateLimitClient()
+
+  // Raise the socket's maxListeners to prevent the "MaxListenersExceededWarning"
+  // when many rate-limit commands are in-flight simultaneously (each adds a
+  // 'timeout' listener on the underlying socket).
+  if (client.stream) {
+    client.stream.setMaxListeners(100)
+  }
+
   const TIMEOUT_MS = 120000  // match start-with-redis.sh: Docker port forwarding can take up to 30s
 
   try {

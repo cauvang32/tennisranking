@@ -324,9 +324,8 @@ export async function initRateLimitRedis() {
   // already created by the first HTTP request, it's already connecting.
   const client = createRateLimitClient()
 
-  // Raise the socket's maxListeners to prevent the "MaxListenersExceededWarning"
-  // when many rate-limit commands are in-flight simultaneously (each adds a
-  // 'timeout' listener on the underlying socket).
+  // Set maxListeners on the existing stream if already connected.
+  // The global defaultMaxListeners is raised in server.js to cover new connections.
   if (client.stream) {
     client.stream.setMaxListeners(100)
   }

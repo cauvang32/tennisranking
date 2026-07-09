@@ -10,6 +10,12 @@
  * Runs identically under: bare-metal node, PM2 cluster, or Docker.
  */
 
+// Raise global maxListeners to prevent ioredis socket warnings.
+// Each in-flight Redis command adds a 'timeout' listener to the underlying
+// TCP socket. Under concurrent load, 10+ commands exceed Node's default=10.
+import { EventEmitter } from 'events'
+EventEmitter.defaultMaxListeners = 100
+
 import express from 'express'
 import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'

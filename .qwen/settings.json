@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Agent",
+      "Bash(grep *)"
+    ]
+  },
+  "$version": 4
+}

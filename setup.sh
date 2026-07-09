@@ -255,6 +255,11 @@ declare -a MIGRATIONS=(
     "token-version|Add token_version for JWT revocation|migrations/add-token-version.sh"
     "ranking-summary|Add pre-computed ranking stats + triggers|migrations/04-add-ranking-summary.sh"
     "fix-trigger-unnest|Fix unnest syntax in ranking trigger|migrations/05-fix-trigger-unnest.sh"
+    "score-difference|Add score_difference generated column|migrations/06-add-score-difference.sh"
+    "daily-stats|Add player_daily_stats table|migrations/07-add-daily-stats.sh"
+    "site-images|Add site_images table for image editor|migrations/08-add-site-images.sh"
+    "season-results|Add final_results & conclusion image columns to seasons|migrations/09-add-season-results.sh"
+    "cup-tournaments|Add cup tournament tables (cups, participants, matches, advancements)|migrations/10-add-cup-tournaments.sh"
 )
 
 # Track which migrations have been applied
@@ -292,6 +297,43 @@ get_applied_migrations() {
         "SELECT COUNT(*) FROM pg_trigger WHERE tgname = 'matches_cache_invalidation';" 2>/dev/null || echo "0")
     if [ "$has_trig" != "0" ]; then
         applied+=("cache-notify-triggers")
+    fi
+
+    # Check score-difference (migration 06)
+    has_trig=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+        "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'matches' AND column_name = 'score_difference';" 2>/dev/null || echo "0")
+    if [ "$has_trig" != "0" ]; then
+        applied+=("score-difference")
+    fi
+
+    # Check daily-stats (migration 07)
+    has_table=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'player_daily_stats');" 2>/dev/null || echo "false")
+    if [ "$has_table" = "t" ]; then
+        applied+=("daily-stats")
+    fi
+
+    # Check site-images (migration 08)
+    has_table=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'site_images');" 2>/dev/null || echo "false")
+    if [ "$has_table" = "t" ]; then
+        applied+=("site-images")
+    fi
+
+    # Check season-results (migration 09)
+    local has_sr
+    has_sr=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+        "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'seasons' AND column_name IN ('final_results', 'conclusion_image_path');" 2>/dev/null || echo "0")
+    if [ "$has_sr" = "2" ]; then
+        applied+=("season-results")
+    fi
+
+    # Check cup-tournaments (migration 10)
+    local has_cups
+    has_cups=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+        "SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('cups', 'cup_participants', 'cup_matches', 'cup_advancements');" 2>/dev/null || echo "0")
+    if [ "$has_cups" = "4" ]; then
+        applied+=("cup-tournaments")
     fi
 
     echo "${applied[@]}"
@@ -493,6 +535,36 @@ cmd_status() {
                 has=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
                     "SELECT COUNT(*) FROM pg_trigger WHERE tgname = 'matches_cache_invalidation';" 2>/dev/null || echo "0")
                 [ "$has" != "0" ] && applied=true
+                ;;
+            score-difference)
+                local has
+                has=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+                    "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'matches' AND column_name = 'score_difference';" 2>/dev/null || echo "0")
+                [ "$has" != "0" ] && applied=true
+                ;;
+            daily-stats)
+                local has
+                has=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'player_daily_stats');" 2>/dev/null || echo "false")
+                [ "$has" = "t" ] && applied=true
+                ;;
+            site-images)
+                local has
+                has=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'site_images');" 2>/dev/null || echo "false")
+                [ "$has" = "t" ] && applied=true
+                ;;
+            season-results)
+                local has
+                has=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+                    "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'seasons' AND column_name IN ('final_results', 'conclusion_image_path');" 2>/dev/null || echo "0")
+                [ "$has" = "2" ] && applied=true
+                ;;
+            cup-tournaments)
+                local has
+                has=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+                    "SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('cups', 'cup_participants', 'cup_matches', 'cup_advancements');" 2>/dev/null || echo "0")
+                [ "$has" = "4" ] && applied=true
                 ;;
             *)
                 # Assume performance-indexes and match-details-view are applied if DB exists

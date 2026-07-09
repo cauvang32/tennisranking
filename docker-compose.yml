@@ -31,12 +31,12 @@ services:
       - EDITOR_PASSWORD=${EDITOR_PASSWORD}
       - JWT_SECRET=${JWT_SECRET}
       - CSRF_SECRET=${CSRF_SECRET}
-   volumes:
-     # Map the production firebase json file path to the container
-     - /etc/tennis-pro/firebase-service-account.json:/etc/tennis-pro/firebase-service-account.json
-   depends_on:
-     postgres:
-       condition: service_healthy
+    volumes:
+      # Map the production firebase json file path to the container
+      - /etc/tennis-pro/firebase-service-account.json:/etc/tennis-pro/firebase-service-account.json
+    depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
     networks:

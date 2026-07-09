@@ -343,9 +343,7 @@ if (!isDevelopment) {
       res.setHeader('X-Frame-Options', 'DENY')
       const lp = filePath.toLowerCase()
       if (lp.endsWith('.html')) {
-        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
-        res.setHeader('Surrogate-Control', 'no-store')
-        res.setHeader('Pragma', 'no-cache')
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
       } else if (/\.(js|css|mjs|cjs|svg|png|jpg|jpeg|gif|ico|webp|avif|woff|woff2|ttf)$/i.test(lp)) {
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
       } else {
@@ -559,22 +557,17 @@ if (isDevelopment) {
     </body></html>`)
   })
 } else {
-  // Serve index-v2.html (renamed to bust Cloudflare's edge cache of the old index.html).
-  // Cloudflare may have cached the old index.html at edge servers; renaming forces
-  // a cache miss. The no-store headers ensure it won't be re-cached.
-  const indexPath = join(__dirname, 'dist', 'index-v2.html')
+  // Serve index.html. npmplus proxy already sets no-store headers for HTML
+  // and proxy_cache off for the /tennis/ location. The no-cache header here
+  // is a belt-and-suspenders approach for direct access.
   app.get(SUBPATH, (_req, res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
-    res.setHeader('Surrogate-Control', 'no-store')
-    res.setHeader('Pragma', 'no-cache')
-    res.sendFile(indexPath)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+    res.sendFile(join(__dirname, 'dist', 'index.html'))
   })
   // Express 5.x requires named splat parameter syntax: {/*splat} instead of bare *
   app.get(`${SUBPATH}{/*splat}`, (_req, res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
-    res.setHeader('Surrogate-Control', 'no-store')
-    res.setHeader('Pragma', 'no-cache')
-    res.sendFile(indexPath)
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+    res.sendFile(join(__dirname, 'dist', 'index.html'))
   })
 }
 

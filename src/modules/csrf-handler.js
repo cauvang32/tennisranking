@@ -60,9 +60,12 @@ export async function makeAuthenticatedRequest(apiBase, url, options = {}) {
     throw new Error('CSRF token required')
   }
 
-  // SSRF Protection: Validate URL targets our own API only
-  const allowedOrigin = window.location.origin
-  const parsedUrl = new URL(url, allowedOrigin)
+  // SSRF Protection: Resolve URL against apiBase (which includes subpath) so
+  // relative paths like '/cups/_players' correctly become
+  // '/tennis/api/cups/_players'. Then validate the resolved URL targets our
+  // own origin.
+  const parsedUrl = new URL(url, apiBase)
+  const allowedOrigin = new URL(apiBase).origin
   if (parsedUrl.origin !== allowedOrigin) {
     throw new Error('Invalid request URL: external URLs not allowed')
   }
@@ -76,7 +79,7 @@ export async function makeAuthenticatedRequest(apiBase, url, options = {}) {
     ...options.headers
   }
 
-  return fetch(url, {
+  return fetch(parsedUrl.toString(), {
     ...options,
     headers,
     credentials: 'include'

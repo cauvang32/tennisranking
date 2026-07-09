@@ -88,3 +88,4 @@ networks:
 
 volumes:
   redis-data:
+  uploads-data:

@@ -23,7 +23,7 @@ export const createCupRouter = ({
   router.get('/', checkAuth, asyncHandler(async (req, res) => {
     const { data: cups, hit: cacheHit } = await rankingsCache.getOrSet(
       'cups',
-      () => db.getCups()
+      () => db.getCups(100)
     )
     if (!config.isProduction) res.set('Redis-Cache', cacheHit ? 'HIT' : 'MISS')
     res.json(sanitizeResponse(cups || []))

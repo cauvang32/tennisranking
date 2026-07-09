@@ -564,7 +564,7 @@ class TennisDatabasePostgreSQL {
   }
 
   async getActiveSeasons() {
-    const result = await this.query(`SELECT ${SEASON_SELECT_COLS} FROM seasons WHERE is_active = true ORDER BY start_date DESC`)
+    const result = await this.query(`SELECT ${SEASON_SELECT_COLS} FROM seasons WHERE is_active = true ORDER BY start_date DESC LIMIT 50`)
     return result.rows
   }
 
@@ -1815,14 +1815,19 @@ class TennisDatabasePostgreSQL {
   }
 
   // ── Cup tournaments ────────────────────────────────────────────────────────
-  async getCups() {
-    const result = await this.query(`
-      SELECT id, name, season_id, format, num_teams, regulation_text,
+  async getCups(limit = 100) {
+    const sql = limit != null
+      ? `SELECT id, name, season_id, format, num_teams, regulation_text,
              status, start_date, end_date, created_by,
              TO_CHAR(created_at, 'YYYY-MM-DDTHH:MI:SS') as created_at,
              TO_CHAR(updated_at, 'YYYY-MM-DDTHH:MI:SS') as updated_at
-      FROM cups ORDER BY created_at DESC
-    `)
+      FROM cups ORDER BY created_at DESC LIMIT $1`
+      : `SELECT id, name, season_id, format, num_teams, regulation_text,
+             status, start_date, end_date, created_by,
+             TO_CHAR(created_at, 'YYYY-MM-DDTHH:MI:SS') as created_at,
+             TO_CHAR(updated_at, 'YYYY-MM-DDTHH:MI:SS') as updated_at
+      FROM cups ORDER BY created_at DESC`
+    const result = await this.query(sql, limit != null ? [limit] : [])
     return result.rows
   }
 

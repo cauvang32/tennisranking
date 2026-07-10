@@ -25,8 +25,13 @@ export const buildAuthMiddleware = ({
     try {
       const user = verifyToken(token)
 
+      // verifyToken returns null for invalid/expired tokens — guard before .type access
+      if (!user) {
+        return res.status(401).json({ error: 'Invalid or expired token' })
+      }
+
       // Reject refresh tokens used as access tokens
-      if (user.type && user.type !== 'access') {
+      if (user.type !== 'access') {
         return res.status(401).json({ error: 'Invalid token type' })
       }
 

@@ -45,3 +45,5 @@ SECURITY_AUDIT.md
 simplification-findings.json
 migrations/.env
 stats.html
+memory/feature-plan-audit
+memory/MEMORY.md

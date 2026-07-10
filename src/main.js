@@ -5703,8 +5703,8 @@ class TennisRankingSystem {
             <label>Định dạng *</label>
             <select id="cupFormat" class="input-field">
               <option value="single_elimination">Loại trực tiếp</option>
-              <option value="round_robin">Vòng tròn</option>
             </select>
+            <small class="form-hint">Hiện chỉ hỗ trợ định dạng loại trực tiếp</small>
           </div>
           <div class="form-group">
             <label>Số đội *</label>

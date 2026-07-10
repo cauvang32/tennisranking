@@ -72,14 +72,10 @@ export const createCupRouter = ({
         .trim()
         .isLength({ min: 1, max: 255 }).withMessage('Cup name is required (max 255 chars)'),
       body('format')
-        .isIn(['single_elimination', 'double_elimination', 'round_robin'])
-        .withMessage('Invalid cup format'),
+        .isIn(['single_elimination'])
+        .withMessage('Invalid cup format. Only single_elimination is supported.'),
       body('numTeams')
-        .isInt({ min: 2, max: 32 }).withMessage('Number of teams must be 2-32')
-        .custom((val) => {
-          // Must be power of 2 for single elimination
-          return true // allow non-power-of-2, padding handled by bracket gen
-        }),
+        .isInt({ min: 2, max: 32 }).withMessage('Number of teams must be 2-32'),
       body('seasonId').optional().isInt().withMessage('Season ID must be integer'),
       body('regulationText').optional().isString().withMessage('Regulation text must be string'),
       body('startDate').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('Valid start date required'),
@@ -123,7 +119,7 @@ export const createCupRouter = ({
     [
       param('id').isInt().withMessage('Invalid cup ID'),
       body('name').optional().trim().isLength({ min: 1, max: 255 }).withMessage('Invalid name'),
-      body('format').optional().isIn(['single_elimination', 'double_elimination', 'round_robin']).withMessage('Invalid format'),
+      body('format').optional().isIn(['single_elimination']).withMessage('Invalid format'),
       body('numTeams').optional().isInt({ min: 2, max: 32 }).withMessage('Teams must be 2-32'),
       body('seasonId').optional().isInt().withMessage('Season ID must be integer'),
       body('regulationText').optional().isString().withMessage('Regulation text must be string'),
@@ -347,6 +343,9 @@ export const createCupRouter = ({
       const cupId = parseInt(req.params.id)
       const cup = await db.getCupById(cupId)
       if (!cup) return res.status(404).json({ error: 'Cup not found' })
+      if (cup.format !== 'single_elimination') {
+        return res.status(400).json({ error: `Bracket generation not supported for format: ${cup.format}. Only 'single_elimination' is available.` })
+      }
 
       const participants = await db.getCupParticipants(cupId)
       if (participants.length < 2) {

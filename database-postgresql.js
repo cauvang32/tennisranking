@@ -1959,6 +1959,11 @@ class TennisDatabasePostgreSQL {
     const cup = await this.getCupById(cupId)
     if (!cup) throw new Error('Cup not found')
 
+    // Only single_elimination is implemented; reject other formats early
+    if (cup.format !== 'single_elimination') {
+      throw new Error(`Bracket generation not supported for format: ${cup.format}. Only 'single_elimination' is available.`)
+    }
+
     const participants = await this.getCupParticipants(cupId)
     const numTeams = participants.length
 

@@ -331,7 +331,7 @@ export async function initRateLimitRedis() {
     client.stream.setMaxListeners(100)
   }
 
-  const TIMEOUT_MS = 120000  // match start-with-redis.sh: Docker port forwarding can take up to 30s
+  const TIMEOUT_MS = config.rateLimit.redisTimeoutMs  // configurable via RATE_LIMIT_REDIS_TIMEOUT_MS
 
   try {
     // Wait for the IORedis client to become ready (it connects in background).

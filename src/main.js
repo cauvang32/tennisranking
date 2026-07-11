@@ -3,7 +3,7 @@ import './style.css'
 // ── Module imports (extracted from main.js to reduce file size) ────────────────
 import { connectSSE, closeSSE } from './modules/sse-manager.js'
 import { createCacheManager } from './modules/cache-manager.js'
-import { getCSRFToken as moduleGetCSRFToken, makeAuthenticatedRequest as moduleMakeAuthenticatedRequest, resetCSRFToken } from './modules/csrf-handler.js'
+import { getCSRFToken as moduleGetCSRFToken, makeAuthenticatedRequest as moduleMakeAuthenticatedRequest, resetCSRFToken, refreshAuthToken } from './modules/csrf-handler.js'
 import { detectServerMode as moduleDetectServerMode, checkAuthStatus as moduleCheckAuthStatus, login as moduleLogin, logout as moduleLogout, getApiBaseUrl as moduleGetApiBaseUrl, updateUIForAuthStatus as moduleUpdateUIForAuthStatus } from './modules/auth-manager.js'
 import { normalizeText } from './lib/vietnamese-normalize.js'
 
@@ -324,8 +324,21 @@ class TennisRankingSystem {
   async init() {
     try {
       await this.detectServerMode()
-      await this.checkAuthStatus()
+      const authResult = await this.checkAuthStatus()
       this.updateUIForAuthStatus()
+
+      // If not authenticated, try proactive token refresh (access token may have
+      // expired while the user was away, but refresh token is still valid)
+      if (!this.isAuthenticated && this.serverMode) {
+        const refreshed = await refreshAuthToken(this.apiBase)
+        if (refreshed) {
+          this.isAuthenticated = true
+          this.user = refreshed.user
+          this.csrfToken = refreshed.csrfToken
+          resetCSRFToken() // Invalidate module cache; this.csrfToken is authoritative
+          this.updateUIForAuthStatus()
+        }
+      }
       
       // Wait for DOM to be fully loaded
       if (document.readyState === 'loading') {
@@ -641,7 +654,13 @@ class TennisRankingSystem {
         if (data.defaultDate) {
           this.selectedDate = data.defaultDate
         }
-        
+
+        // Sync CSRF token from init response (authoritative — uses current req.user)
+        if (data.isAuthenticated && data.csrfToken) {
+          this.csrfToken = data.csrfToken
+          resetCSRFToken() // Invalidate module cache so getCSRFToken() uses this.csrfToken
+        }
+
         this.updateSeasonSelect()
       } else {
         // Fallback to individual requests if /api/init not available
@@ -5281,10 +5300,9 @@ class TennisRankingSystem {
       formData.append('image', file)
       const altInput = document.querySelector(`.image-alt-input[data-key="${key}"]`)
       if (altInput) formData.append('altText', altInput.value)
-      const csrfToken = await this.getCSRFToken()
-      const res = await fetch(`${this.apiBase}/images/${key}`, {
-        method: 'POST', credentials: 'include',
-        headers: { 'x-csrf-token': csrfToken }, body: formData
+      const res = await this.makeAuthenticatedRequest(`/images/${key}`, {
+        method: 'POST',
+        body: formData
       })
       const data = await res.json()
       if (data.success) {
@@ -5295,7 +5313,7 @@ class TennisRankingSystem {
         this.showToast(data.error || 'Lỗi khi tải lên', 'error')
       }
     } catch (error) {
-      this.showToast('Lỗi kết nối: ' + error.message, 'error')
+      this.showToast(error.message, 'error')
     }
     input.value = ''
   }
@@ -5303,10 +5321,8 @@ class TennisRankingSystem {
   async deleteSiteImage(key) {
     if (!confirm(`Bạn có chắc muốn xóa hình ảnh "${key}"?`)) return
     try {
-      const csrfToken = await this.getCSRFToken()
-      const res = await fetch(`${this.apiBase}/images/${key}`, {
-        method: 'DELETE', credentials: 'include',
-        headers: { 'x-csrf-token': csrfToken }
+      const res = await this.makeAuthenticatedRequest(`/images/${key}`, {
+        method: 'DELETE'
       })
       const data = await res.json()
       if (data.success) {
@@ -5317,16 +5333,14 @@ class TennisRankingSystem {
         this.showToast(data.error || 'Lỗi khi xóa', 'error')
       }
     } catch (error) {
-      this.showToast('Lỗi kết nối: ' + error.message, 'error')
+      this.showToast(error.message, 'error')
     }
   }
 
   async updateImageMeta(key, meta) {
     try {
-      const csrfToken = await this.getCSRFToken()
-      const res = await fetch(`${this.apiBase}/images/${key}/meta`, {
-        method: 'PUT', credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
+      const res = await this.makeAuthenticatedRequest(`/images/${key}/meta`, {
+        method: 'PUT',
         body: JSON.stringify(meta)
       })
       const data = await res.json()
@@ -5339,10 +5353,8 @@ class TennisRankingSystem {
   async migrateHeroBanner() {
     if (!confirm('Dời banner từ file public/image.png vào hệ thống quản lý?')) return
     try {
-      const csrfToken = await this.getCSRFToken()
-      const res = await fetch(`${this.apiBase}/images/migrate-hero`, {
-        method: 'POST', credentials: 'include',
-        headers: { 'x-csrf-token': csrfToken }
+      const res = await this.makeAuthenticatedRequest(`/images/migrate-hero`, {
+        method: 'POST'
       })
       const data = await res.json()
       if (data.success) {
@@ -5353,7 +5365,7 @@ class TennisRankingSystem {
         this.showToast(data.error || 'Lỗi khi dời banner', 'error')
       }
     } catch (error) {
-      this.showToast('Lỗi kết nối: ' + error.message, 'error')
+      this.showToast(error.message, 'error')
     }
   }
 
@@ -5393,10 +5405,8 @@ class TennisRankingSystem {
       return
     }
     try {
-      const csrfToken = await this.getCSRFToken()
-      const res = await fetch(`${this.apiBase}/seasons/${seasonId}/results`, {
-        method: 'PUT', credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
+      const res = await this.makeAuthenticatedRequest(`/seasons/${seasonId}/results`, {
+        method: 'PUT',
         body: JSON.stringify({ finalResults: text })
       })
       const data = await res.json()
@@ -5409,7 +5419,7 @@ class TennisRankingSystem {
         this.showToast(data.error || 'Lỗi khi lưu', 'error')
       }
     } catch (error) {
-      this.showToast('Lỗi kết nối: ' + error.message, 'error')
+      this.showToast(error.message, 'error')
     }
   }
 
@@ -5427,10 +5437,9 @@ class TennisRankingSystem {
       const formData = new FormData()
       formData.append('image', file)
       formData.append('seasonId', seasonId)
-      const csrfToken = await this.getCSRFToken()
-      const res = await fetch(`${this.apiBase}/images/season/${seasonId}/conclusion`, {
-        method: 'POST', credentials: 'include',
-        headers: { 'x-csrf-token': csrfToken }, body: formData
+      const res = await this.makeAuthenticatedRequest(`/images/season/${seasonId}/conclusion`, {
+        method: 'POST',
+        body: formData
       })
       const data = await res.json()
       if (data.success) {
@@ -5442,7 +5451,7 @@ class TennisRankingSystem {
         this.showToast(data.error || 'Lỗi khi tải lên', 'error')
       }
     } catch (error) {
-      this.showToast('Lỗi kết nối: ' + error.message, 'error')
+      this.showToast(error.message, 'error')
     }
     input.value = ''
   }
@@ -5451,10 +5460,8 @@ class TennisRankingSystem {
     const seasonId = parseInt(document.getElementById('seasonResultsSeasonId').value)
     if (!confirm('Bạn có chắc muốn xóa ảnh tổng kết?')) return
     try {
-      const csrfToken = await this.getCSRFToken()
-      const res = await fetch(`${this.apiBase}/images/season/${seasonId}/conclusion`, {
-        method: 'DELETE', credentials: 'include',
-        headers: { 'x-csrf-token': csrfToken }
+      const res = await this.makeAuthenticatedRequest(`/images/season/${seasonId}/conclusion`, {
+        method: 'DELETE'
       })
       const data = await res.json()
       if (data.success) {
@@ -5756,10 +5763,8 @@ class TennisRankingSystem {
       const numTeams = parseInt(document.getElementById('cupNumTeams').value)
       const regulationText = document.getElementById('cupRegulation').value.trim() || null
 
-      const csrfToken = await this.getCSRFToken()
-      const res = await fetch(`${this.apiBase}/cups`, {
-        method: 'POST', credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
+      const res = await this.makeAuthenticatedRequest('/cups', {
+        method: 'POST',
         body: JSON.stringify({ name, seasonId: seasonId ? parseInt(seasonId) : null, format, numTeams, regulationText })
       })
       const data = await res.json()
@@ -5771,7 +5776,7 @@ class TennisRankingSystem {
         this.showToast(data.error || 'Lỗi khi tạo giải đấu', 'error')
       }
     } catch (error) {
-      this.showToast('Lỗi kết nối: ' + error.message, 'error')
+      this.showToast(error.message, 'error')
     }
   }
 
@@ -5834,12 +5839,10 @@ class TennisRankingSystem {
     if (selected.length > maxTeams) return this.showToast(`Tối đa ${maxTeams} đội`, 'error')
 
     try {
-      const csrfToken = await this.getCSRFToken()
       let added = 0
       for (let i = 0; i < selected.length; i++) {
-        const res = await fetch(`${this.apiBase}/cups/${cupId}/participants`, {
-          method: 'POST', credentials: 'include',
-          headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
+        const res = await this.makeAuthenticatedRequest(`/cups/${cupId}/participants`, {
+          method: 'POST',
           body: JSON.stringify({ player1Id: selected[i], seed: i + 1 })
         })
         const data = await res.json()
@@ -5859,10 +5862,8 @@ class TennisRankingSystem {
   async shuffleCupSeeds(cupId) {
     if (!confirm('Xáo trộn hạt giống? Thứ tự đội sẽ được random.')) return
     try {
-      const csrfToken = await this.getCSRFToken()
-      const res = await fetch(`${this.apiBase}/cups/${cupId}/seed-shuffle`, {
-        method: 'POST', credentials: 'include',
-        headers: { 'x-csrf-token': csrfToken }
+      const res = await this.makeAuthenticatedRequest(`/cups/${cupId}/seed-shuffle`, {
+        method: 'POST'
       })
       const data = await res.json()
       if (data.success) {
@@ -5872,17 +5873,15 @@ class TennisRankingSystem {
         this.showToast(data.error || 'Lỗi khi xáo trộn', 'error')
       }
     } catch (error) {
-      this.showToast('Lỗi kết nối', 'error')
+      this.showToast(error.message, 'error')
     }
   }
 
   async generateCupBracket(cupId) {
     if (!confirm('Tạo bảng đấu? Hành động này sẽ chuyển giải đấu sang trạng thái "Đã lên lịch".')) return
     try {
-      const csrfToken = await this.getCSRFToken()
-      const res = await fetch(`${this.apiBase}/cups/${cupId}/generate-bracket`, {
-        method: 'POST', credentials: 'include',
-        headers: { 'x-csrf-token': csrfToken }
+      const res = await this.makeAuthenticatedRequest(`/cups/${cupId}/generate-bracket`, {
+        method: 'POST'
       })
       const data = await res.json()
       if (data.success) {
@@ -5892,7 +5891,7 @@ class TennisRankingSystem {
         this.showToast(data.error || 'Lỗi khi tạo bảng đấu', 'error')
       }
     } catch (error) {
-      this.showToast('Lỗi kết nối', 'error')
+      this.showToast(error.message, 'error')
     }
   }
 
@@ -5900,10 +5899,8 @@ class TennisRankingSystem {
     const labels = { scheduled: 'lên lịch', in_progress: 'bắt đầu', completed: 'hoàn thành', cancelled: 'hủy' }
     if (!confirm(`Bạn có chắc muốn ${labels[newStatus] || 'thay đổi trạng thái'} giải đấu?`)) return
     try {
-      const csrfToken = await this.getCSRFToken()
-      const res = await fetch(`${this.apiBase}/cups/${cupId}/status`, {
-        method: 'PUT', credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
+      const res = await this.makeAuthenticatedRequest(`/cups/${cupId}/status`, {
+        method: 'PUT',
         body: JSON.stringify({ status: newStatus })
       })
       const data = await res.json()
@@ -5926,10 +5923,8 @@ class TennisRankingSystem {
     const s2 = parseInt(score2El.value) || 0
 
     try {
-      const csrfToken = await this.getCSRFToken()
-      const res = await fetch(`${this.apiBase}/cups/${cupId}/matches/${matchId}`, {
-        method: 'PUT', credentials: 'include',
-        headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
+      const res = await this.makeAuthenticatedRequest(`/cups/${cupId}/matches/${matchId}`, {
+        method: 'PUT',
         body: JSON.stringify({ team1Score: s1, team2Score: s2 })
       })
       const data = await res.json()
@@ -5940,17 +5935,15 @@ class TennisRankingSystem {
         this.showToast(data.error || 'Lỗi khi ghi điểm', 'error')
       }
     } catch (error) {
-      this.showToast('Lỗi kết nối', 'error')
+      this.showToast(error.message, 'error')
     }
   }
 
   async deleteCup(cupId) {
     if (!confirm('Bạn có chắc muốn xóa giải đấu này? Hành động này không thể hoàn tác.')) return
     try {
-      const csrfToken = await this.getCSRFToken()
-      const res = await fetch(`${this.apiBase}/cups/${cupId}`, {
-        method: 'DELETE', credentials: 'include',
-        headers: { 'x-csrf-token': csrfToken }
+      const res = await this.makeAuthenticatedRequest(`/cups/${cupId}`, {
+        method: 'DELETE'
       })
       const data = await res.json()
       if (data.success) {

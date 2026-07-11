@@ -1,6 +1,7 @@
 import crypto from 'crypto'
 import csrf from 'csrf'
 import config from '../config/env.js'
+import { readToken, verifyToken } from '../lib/jwt-encryption.js'
 
 /**
  * CSRF protection middleware.
@@ -65,12 +66,35 @@ export const globalCSRFProtection = (req, res, next) => {
   // Skip CSRF for unauthenticated device registration
   if (matchesApiRoute(req, '/api/devices/register') && !req.cookies.authToken) return next()
 
+  // Extract the authenticated user from the auth token for CSRF verification.
+  // `req.user` is not set yet at this point (route-level authenticateToken runs
+  // after this global middleware), so we replicate the minimal token extraction
+  // logic from `checkAuth` to derive the correct CSRF secret.
+  if (!req.user) {
+    let token = req.cookies.authToken
+      || (req.headers['authorization'] && req.headers['authorization'].split(' ')[1])
+
+    if (token) {
+      if (req.cookies.authToken && token === req.cookies.authToken) {
+        const raw = readToken(token)
+        if (raw) token = raw
+      }
+      try {
+        const user = verifyToken(token)
+        // verifyToken returns null for invalid/expired tokens — guard before .type access
+        if (user && user.type === 'access') {
+          req.user = user
+        }
+      } catch { /* invalid token — authenticateToken will reject later */ }
+    }
+  }
+
   // Apply CSRF validation for all other state-changing operations
-  const token = req.get('X-CSRF-Token') || req.body?._csrf
+  const csrfToken = req.get('X-CSRF-Token') || req.body?._csrf
 
   const secret = deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })
 
-  if (!token || !tokens.verify(secret, token)) {
+  if (!csrfToken || !tokens.verify(secret, csrfToken)) {
     return res.status(403).json({
       error: 'Invalid CSRF token',
       csrfRequired: true

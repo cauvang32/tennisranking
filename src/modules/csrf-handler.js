@@ -129,7 +129,8 @@ export async function makeAuthenticatedRequest(apiBase, url, options = {}) {
   // relative paths like '/cups/_players' correctly become
   // '/tennis/api/cups/_players'. Then validate the resolved URL targets our
   // own origin.
-  const parsedUrl = new URL(url, apiBase)
+  const baseWithSlash = apiBase.endsWith('/') ? apiBase : apiBase + '/'
+  const parsedUrl = new URL(url, baseWithSlash)
   const allowedOrigin = new URL(apiBase).origin
   if (parsedUrl.origin !== allowedOrigin) {
     throw new Error('Invalid request URL: external URLs not allowed')

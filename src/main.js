@@ -5788,14 +5788,18 @@ class TennisRankingSystem {
       const name = document.getElementById('cupName').value.trim()
       if (!name) return this.showToast('Vui lòng nhập tên giải đấu', 'error')
 
-      const seasonId = document.getElementById('cupSeasonId').value || null
+      const seasonIdVal = document.getElementById('cupSeasonId').value
       const format = document.getElementById('cupFormat').value
       const numTeams = parseInt(document.getElementById('cupNumTeams').value)
-      const regulationText = document.getElementById('cupRegulation').value.trim() || null
+      const regulationText = document.getElementById('cupRegulation').value.trim()
+
+      const body = { name, format, numTeams }
+      if (seasonIdVal) body.seasonId = parseInt(seasonIdVal)
+      if (regulationText) body.regulationText = regulationText
 
       const res = await this.makeAuthenticatedRequest('/cups', {
         method: 'POST',
-        body: JSON.stringify({ name, seasonId: seasonId ? parseInt(seasonId) : null, format, numTeams, regulationText })
+        body: JSON.stringify(body)
       })
       const data = await res.json()
       if (data.success) {

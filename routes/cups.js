@@ -1,7 +1,43 @@
 import { Router } from 'express'
 import { body, param } from 'express-validator'
+import multer from 'multer'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
+import fs from 'fs'
 import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const CUP_UPLOAD_DIR = join(__dirname, '..', 'data', 'uploads', 'cups')
+if (!fs.existsSync(CUP_UPLOAD_DIR)) fs.mkdirSync(CUP_UPLOAD_DIR, { recursive: true })
+
+const cupImageStorage = multer.diskStorage({
+  destination: (req, _file, cb) => {
+    const cupId = req.params?.id
+    if (cupId) {
+      const dir = join(CUP_UPLOAD_DIR, String(cupId))
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
+      cb(null, dir)
+    } else {
+      cb(null, CUP_UPLOAD_DIR)
+    }
+  },
+  filename: (_req, file, cb) => {
+    const ext = file.mimetype.split('/')[1] || 'png'
+    const prefix = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}`
+    cb(null, `${prefix}.${ext}`)
+  }
+})
+const imageUpload = multer({
+  storage: cupImageStorage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+    if (allowed.includes(file.mimetype)) cb(null, true)
+    else cb(new Error('Invalid image type'))
+  }
+})
 
 export const createCupRouter = ({
   db,
@@ -145,6 +181,7 @@ export const createCupRouter = ({
       body('regulationText').optional().isString().withMessage('Regulation text must be string'),
       body('startDate').optional({ nullable: true, checkFalsy: true }).isISO8601(),
       body('endDate').optional({ nullable: true, checkFalsy: true }).isISO8601(),
+      body('finalResults').optional({ nullable: true, checkFalsy: true }).isString(),
     ],
     handleValidationErrors,
     asyncHandler(async (req, res) => {
@@ -160,14 +197,15 @@ export const createCupRouter = ({
       }
 
       const updates = {}
-      for (const key of ['name', 'format', 'numTeams', 'seasonId', 'regulationText', 'startDate', 'endDate']) {
+      for (const key of ['name', 'format', 'numTeams', 'seasonId', 'regulationText', 'startDate', 'endDate', 'finalResults']) {
         if (req.body[key] !== undefined) {
           const dbKey = key === 'numTeams' ? 'num_teams' :
                         key === 'seasonId' ? 'season_id' :
                         key === 'regulationText' ? 'regulation_text' :
                         key === 'startDate' ? 'start_date' :
-                        key === 'endDate' ? 'end_date' : key
-          updates[dbKey] = key === 'startDate' || key === 'endDate'
+                        key === 'endDate' ? 'end_date' :
+                        key === 'finalResults' ? 'final_results' : key
+          updates[dbKey] = (key === 'startDate' || key === 'endDate')
             ? req.body[key].split('T')[0]
             : req.body[key]
         }
@@ -440,6 +478,125 @@ export const createCupRouter = ({
       await rankingsCache.invalidateByPrefix('cups*')
 
       res.json({ success: true, ...result })
+    })
+  )
+
+  // Update match date
+  router.put(
+    '/:id/matches/:mid/date',
+    authenticateToken,
+    requireAdmin,
+    conditionalRateLimit(createLimiter),
+    [
+      param('id').isInt().withMessage('Invalid cup ID'),
+      param('mid').isInt().withMessage('Invalid match ID'),
+      body('playDate').isISO8601().withMessage('Valid date required'),
+    ],
+    handleValidationErrors,
+    asyncHandler(async (req, res) => {
+      const cupId = parseInt(req.params.id)
+      const matchId = parseInt(req.params.mid)
+      const cup = await db.getCupById(cupId)
+      if (!cup) return res.status(404).json({ error: 'Cup not found' })
+      if (!['scheduled', 'in_progress'].includes(cup.status)) {
+        return res.status(400).json({ error: 'Cup must be scheduled or in_progress to set match dates' })
+      }
+
+      await db.updateCupMatchDate(cupId, matchId, req.body.playDate.split('T')[0])
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      res.json({ success: true })
+    })
+  )
+
+  // Upload conclusion image for completed cup
+  router.post(
+    '/:id/conclusion-image',
+    authenticateToken,
+    requireAdmin,
+    imageUpload.single('image'),
+    asyncHandler(async (req, res) => {
+      const cupId = parseInt(req.params.id)
+      const cup = await db.getCupById(cupId)
+      if (!cup) return res.status(404).json({ error: 'Cup not found' })
+
+      if (!req.file) {
+        res.status(400).json({ error: 'No image file provided' })
+        return
+      }
+
+      const storagePath = req.file.path.replace(
+        join(__dirname, '..'), ''
+      ).replace(/\\/g, '/')
+
+      await db.query(`
+        UPDATE cups SET conclusion_image_path = $1, conclusion_image_filename = $2,
+          conclusion_image_content_type = $3, conclusion_image_size = $4, updated_at = NOW()
+        WHERE id = $5
+      `, [storagePath, req.file.originalname, req.file.mimetype, req.file.size, cupId])
+
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.invalidateByPrefix('cups*')
+      res.json({
+        success: true,
+        message: 'Conclusion image uploaded',
+        url: `/api/cups/${cupId}/conclusion-image/file`
+      })
+    })
+  )
+
+  // Serve cup conclusion image
+  router.get(
+    '/:id/conclusion-image/file',
+    checkAuth,
+    [param('id').isInt().withMessage('Invalid cup ID')],
+    handleValidationErrors,
+    asyncHandler(async (req, res) => {
+      const cupId = parseInt(req.params.id)
+      const cup = await db.getCupById(cupId)
+      if (!cup || !cup.conclusion_image_path) {
+        res.status(404).json({ error: 'Conclusion image not found' })
+        return
+      }
+      const filePath = join(__dirname, '..', cup.conclusion_image_path)
+      if (!fs.existsSync(filePath)) {
+        res.status(404).json({ error: 'Image file not found on disk' })
+        return
+      }
+      res.set({
+        'Content-Type': cup.conclusion_image_content_type || 'image/png',
+        'Cache-Control': 'public, max-age=31536000, immutable',
+        'X-Content-Type-Options': 'nosniff'
+      })
+      res.sendFile(filePath)
+    })
+  )
+
+  // Delete cup conclusion image
+  router.delete(
+    '/:id/conclusion-image',
+    authenticateToken,
+    requireAdmin,
+    conditionalRateLimit(deleteLimiter),
+    [param('id').isInt().withMessage('Invalid cup ID')],
+    handleValidationErrors,
+    asyncHandler(async (req, res) => {
+      const cupId = parseInt(req.params.id)
+      const cup = await db.getCupById(cupId)
+      if (!cup) return res.status(404).json({ error: 'Cup not found' })
+
+      if (cup.conclusion_image_path) {
+        const oldPath = join(__dirname, '..', cup.conclusion_image_path)
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath)
+      }
+
+      await db.query(`
+        UPDATE cups SET conclusion_image_path = NULL, conclusion_image_filename = NULL,
+          conclusion_image_content_type = NULL, conclusion_image_size = NULL, updated_at = NOW()
+        WHERE id = $1
+      `, [cupId])
+
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      res.json({ success: true, message: 'Conclusion image removed' })
     })
   )
 

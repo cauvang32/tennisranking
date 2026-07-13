@@ -223,9 +223,12 @@ export const createImageRouter = ({
         const oldPath = join(__dirname, '..', image.storage_path)
         if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath)
       }
-      // Set is_active to false and clear storage_path
-      await db.updateSiteImageMeta(key, { isActive: false })
-      await rankingsCache.invalidateOnImageChange()
+      // Set is_active to false AND clear storage_path so the placeholder is shown
+      await db.query(`UPDATE site_images SET is_active = false, storage_path = NULL, updated_at = NOW() WHERE key = $1`, [key])
+      // Invalidate cache — wrapped so SSE listener errors don't 500 the response
+      try { await rankingsCache.invalidateOnImageChange() } catch (err) {
+        console.error('Cache invalidation failed after image delete:', err.message)
+      }
       res.json({ success: true, message: `Image "${key}" removed` })
     })
   )

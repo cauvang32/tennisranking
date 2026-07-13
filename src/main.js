@@ -3,7 +3,7 @@ import './style.css'
 // ── Module imports (extracted from main.js to reduce file size) ────────────────
 import { connectSSE, closeSSE } from './modules/sse-manager.js'
 import { createCacheManager } from './modules/cache-manager.js'
-import { getCSRFToken as moduleGetCSRFToken, makeAuthenticatedRequest as moduleMakeAuthenticatedRequest, resetCSRFToken, refreshAuthToken } from './modules/csrf-handler.js'
+import { getCSRFToken as moduleGetCSRFToken, makeAuthenticatedRequest as moduleMakeAuthenticatedRequest, resetCSRFToken, setCSRFToken, refreshAuthToken } from './modules/csrf-handler.js'
 import { detectServerMode as moduleDetectServerMode, checkAuthStatus as moduleCheckAuthStatus, login as moduleLogin, logout as moduleLogout, getApiBaseUrl as moduleGetApiBaseUrl, updateUIForAuthStatus as moduleUpdateUIForAuthStatus } from './modules/auth-manager.js'
 import { normalizeText } from './lib/vietnamese-normalize.js'
 
@@ -335,7 +335,7 @@ class TennisRankingSystem {
           this.isAuthenticated = true
           this.user = refreshed.user
           this.csrfToken = refreshed.csrfToken
-          resetCSRFToken() // Invalidate module cache; this.csrfToken is authoritative
+          setCSRFToken(refreshed.csrfToken) // Sync module cache with authoritative token
           this.updateUIForAuthStatus()
         }
       }
@@ -411,9 +411,9 @@ class TennisRankingSystem {
       this.isAuthenticated = true
       this.user = result.user
       this.csrfToken = result.csrfToken
-      // Clear the module-level cached token so the next request fetches a
-      // fresh user-specific CSRF token (derived from the new user ID).
-      resetCSRFToken()
+      // Sync module cache with the new user's CSRF token so getCSRFToken()
+      // returns the authenticated token, not a guest token.
+      setCSRFToken(result.csrfToken)
       this.updateUIForAuthStatus()
       this.updateScreenshotSectionVisibility()
       await this.loadInitialData()
@@ -658,7 +658,7 @@ class TennisRankingSystem {
         // Sync CSRF token from init response (authoritative — uses current req.user)
         if (data.isAuthenticated && data.csrfToken) {
           this.csrfToken = data.csrfToken
-          resetCSRFToken() // Invalidate module cache so getCSRFToken() uses this.csrfToken
+          setCSRFToken(data.csrfToken) // Sync module cache with authoritative token
         }
 
         this.updateSeasonSelect()
@@ -5525,7 +5525,7 @@ class TennisRankingSystem {
             <p style="font-size:13px;color:var(--text-secondary);margin:4px 0;">Định dạng: ${formatLabel}</p>
             <p style="font-size:13px;color:var(--text-secondary);margin:4px 0;">Số đội: ${cup.num_teams}</p>
             ${cup.season_id ? `<p style="font-size:13px;color:var(--text-secondary);margin:4px 0;">Mùa giải: ${this.escapeHtml(cup.season_name || 'ID ' + cup.season_id)}</p>` : ''}
-            <p style="font-size:12px;color:var(--text-secondary);margin:8px 0 0;">Tạo: ${new Date(cup.created_at).toLocaleDateString('vi-VN')}</p>
+            <p style="font-size:12px;color:var(--text-secondary);margin:8px 0 0;">Tạo: ${cup.created_at ? new Date(cup.created_at).toLocaleDateString('vi-VN') : 'N/A'}</p>
           </div>
         </div>
       `
@@ -5575,13 +5575,15 @@ class TennisRankingSystem {
       `
       participants.forEach(p => {
         const name = p.team_name || (p.player1_name + (p.player2_name ? ' & ' + p.player2_name : ''))
-        html += `<div style="background:var(--bg-secondary);border-radius:8px;padding:8px 12px;font-size:13px;">${p.seed ? `#${p.seed} ` : ''}${this.escapeHtml(name)}</div>`
+        const removeBtn = cup.status === 'draft' ? `<button class="btn-icon" onclick="event.stopPropagation();app.removeCupParticipant(${cupId}, ${p.id})" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:16px;padding:0 4px;float:right;" title="Xóa">&times;</button>` : ''
+        html += `<div style="background:var(--bg-secondary);border-radius:8px;padding:8px 12px;font-size:13px;position:relative;">${removeBtn}${p.seed ? `#${p.seed} ` : ''}${this.escapeHtml(name)}</div>`
       })
       html += `</div></div>`
 
       // Action buttons
       if (cup.status === 'draft') {
         html += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin:16px 0;">
+          <button class="btn btn-secondary btn-sm" onclick="app.editCup(${cupId})">✏️ Sửa</button>
           <button class="btn btn-primary btn-sm" onclick="app.shuffleCupSeeds(${cupId})">🔀 Xáo trộn hạt giống</button>
           <button class="btn btn-success btn-sm" onclick="app.generateCupBracket(${cupId})">📊 Tạo bảng đấu</button>
           <button class="btn btn-warning btn-sm" onclick="app.changeCupStatus(${cupId},'scheduled')">📅 Lên lịch</button>
@@ -5589,6 +5591,7 @@ class TennisRankingSystem {
         </div>`
       } else if (cup.status === 'scheduled') {
         html += `<div style="display:flex;gap:8px;margin:16px 0;">
+          <button class="btn btn-secondary btn-sm" onclick="app.editCup(${cupId})">✏️ Sửa</button>
           <button class="btn btn-success btn-sm" onclick="app.changeCupStatus(${cupId},'in_progress')">▶️ Bắt đầu</button>
           <button class="btn btn-warning btn-sm" onclick="app.changeCupStatus(${cupId},'cancelled')">⏹️ Hủy</button>
         </div>`
@@ -5596,6 +5599,27 @@ class TennisRankingSystem {
         html += `<div style="display:flex;gap:8px;margin:16px 0;">
           <button class="btn btn-success btn-sm" onclick="app.changeCupStatus(${cupId},'completed')">✅ Hoàn thành</button>
           <button class="btn btn-warning btn-sm" onclick="app.changeCupStatus(${cupId},'cancelled')">⏹️ Hủy</button>
+        </div>`
+      } else if (cup.status === 'completed' || cup.status === 'cancelled') {
+        // Post-tournament results section
+        const hasConclusion = cup.conclusion_image_path
+        html += `<div style="background:var(--card-bg);border-radius:12px;padding:16px;margin-top:16px;">
+          <h4 style="margin:0 0 12px;">🏆 Kết quả giải đấu</h4>
+          <textarea id="cupFinalResults" class="input-field" rows="4" placeholder="Nhập kết quả cuối cùng...">${this.escapeHtml(cup.final_results || '')}</textarea>
+          <div style="display:flex;gap:8px;margin-top:8px;">
+            <button class="btn btn-primary btn-sm" onclick="app.saveCupFinalResults(${cupId})">💾 Lưu kết quả</button>
+          </div>
+          <div style="margin-top:12px;">
+            <h4 style="margin:0 0 8px;font-size:14px;">📸 Ảnh tổng kết</h4>
+            ${hasConclusion ? `
+              <div id="cupConclusionPreview"><img src="${this.apiBase}/cups/${cupId}/conclusion-image/file" style="max-width:100%;max-height:200px;object-fit:contain;border-radius:8px;"></div>
+              <button class="btn btn-ghost btn-sm" style="margin-top:8px;" onclick="app.deleteCupConclusionImage(${cupId})">🗑️ Xóa ảnh</button>
+            ` : ''}
+            <label class="btn btn-secondary btn-sm" style="cursor:pointer;margin-top:8px;">
+              📤 Tải lên ảnh tổng kết
+              <input type="file" accept="image/*" style="display:none;" onchange="app.uploadCupConclusionImage(event, ${cupId})">
+            </label>
+          </div>
         </div>`
       }
 
@@ -5647,8 +5671,14 @@ class TennisRankingSystem {
             <span style="font-size:13px;${isWinner2 ? 'font-weight:bold;color:#10b981;' : ''}">${this.escapeHtml(t2Name)}</span>
             <span style="font-size:12px;background:var(--card-bg);padding:2px 6px;border-radius:4px;">${t2Score}</span>
           </div>
+          ${cupStatus === 'scheduled' || cupStatus === 'in_progress' ? `
+            <div style="margin-top:6px;display:flex;gap:4px;align-items:center;">
+              <input type="date" class="input-field input-sm" style="flex:1;" id="date_${m.id}" value="${m.play_date || ''}">
+              <button class="btn btn-sm btn-secondary" style="padding:4px 8px;" onclick="app.scheduleMatchDate(${cupId},${m.id})">📅</button>
+            </div>
+          ` : ''}
           ${cupStatus === 'in_progress' && m.status === 'scheduled' ? `
-            <div style="margin-top:8px;display:flex;gap:4px;">
+            <div style="margin-top:6px;display:flex;gap:4px;">
               <input type="number" min="0" value="0" class="input-field input-sm" style="width:50px;" id="score1_${m.id}">
               <input type="number" min="0" value="0" class="input-field input-sm" style="width:50px;" id="score2_${m.id}">
               <button class="btn btn-sm btn-primary" style="flex:1;padding:4px;" onclick="app.updateMatchScore(${cupId},${m.id})">Ghi điểm</button>
@@ -5962,6 +5992,227 @@ class TennisRankingSystem {
     document.getElementById('createCupBtn').style.display = ''
     document.getElementById('cupDetail').style.display = 'none'
     this.loadCups()
+  }
+
+  // Edit cup details
+  async editCup(cupId) {
+    try {
+      const response = await this.makeAuthenticatedRequest(`/cups/${cupId}`)
+      const cup = await response.json()
+      if (!cup) return this.showToast('Không tìm thấy giải đấu', 'error')
+
+      // Load seasons for dropdown
+      const seasonsRes = await this.makeAuthenticatedRequest('/cups/_seasons')
+      const seasons = await seasonsRes.json()
+
+      const modal = document.getElementById('loginModal')
+      if (!modal) return
+      const content = modal.querySelector('.modal-content') || modal.querySelector('[class*="modal"]')
+      if (!content) return
+      const prevContent = content.innerHTML
+      const modalTitle = modal.querySelector('.modal-title')
+      const prevTitle = modalTitle ? modalTitle.textContent : ''
+
+      if (modalTitle) modalTitle.textContent = '✏️ Sửa Giải Đấu'
+      content.innerHTML = `
+        <div class="modal-header">
+          <h3 class="modal-title">✏️ Sửa Giải Đấu</h3>
+          <button class="modal-close" data-dismiss="modal">&times;</button>
+        </div>
+        <div class="modal-body">
+          <form id="editCupForm">
+            <div class="form-group">
+              <label>Tên giải đấu *</label>
+              <input type="text" id="editCupName" class="input-field" required value="${this.escapeHtml(cup.name)}">
+            </div>
+            <div class="form-group">
+              <label>Liên kết mùa giải</label>
+              <select id="editCupSeasonId" class="input-field">
+                <option value="">-- Không liên kết --</option>
+                ${(seasons || []).map(s => `<option value="${s.id}" ${s.id === cup.season_id ? 'selected' : ''}>${this.escapeHtml(s.name)}</option>`).join('')}
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Ngày bắt đầu</label>
+              <input type="date" id="editCupStartDate" class="input-field" value="${cup.start_date || ''}">
+            </div>
+            <div class="form-group">
+              <label>Ngày kết thúc</label>
+              <input type="date" id="editCupEndDate" class="input-field" value="${cup.end_date || ''}">
+            </div>
+            <div class="form-group">
+              <label>Quy định</label>
+              <textarea id="editCupRegulation" class="input-field" rows="3">${this.escapeHtml(cup.regulation_text || '')}</textarea>
+            </div>
+            ${cup.status !== 'draft' ? `<div class="form-group"><small class="form-hint">⚠️ Chỉ có thể sửa tên, ngày, quy định khi đã lên lịch.</small></div>` : ''}
+            <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px;">
+              <button type="button" class="btn btn-ghost" data-dismiss="modal">Hủy</button>
+              <button type="submit" class="btn btn-primary">Lưu thay đổi</button>
+            </div>
+          </form>
+        </div>
+      `
+
+      modal.classList.add('active')
+      modal.style.display = 'flex'
+
+      const form = content.querySelector('#editCupForm')
+      if (form) {
+        form.addEventListener('submit', async (e) => {
+          e.preventDefault()
+          await this.saveCupEdit(cupId)
+          content.innerHTML = prevContent
+          if (modalTitle) modalTitle.textContent = prevTitle
+          modal.classList.remove('active')
+          modal.style.display = ''
+        })
+      }
+    } catch (error) {
+      this.showToast('Lỗi khi tải thông tin giải đấu', 'error')
+    }
+  }
+
+  async saveCupEdit(cupId) {
+    try {
+      const name = document.getElementById('editCupName').value.trim()
+      if (!name) return this.showToast('Vui lòng nhập tên giải đấu', 'error')
+
+      const body = { name }
+      const seasonId = document.getElementById('editCupSeasonId').value
+      if (seasonId) body.seasonId = parseInt(seasonId)
+      const startDate = document.getElementById('editCupStartDate').value
+      if (startDate) body.startDate = startDate
+      const endDate = document.getElementById('editCupEndDate').value
+      if (endDate) body.endDate = endDate
+      const regulationText = document.getElementById('editCupRegulation').value.trim()
+      if (regulationText) body.regulationText = regulationText
+
+      const res = await this.makeAuthenticatedRequest(`/cups/${cupId}`, {
+        method: 'PUT',
+        body: JSON.stringify(body)
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast('Đã lưu thay đổi!', 'success')
+        await this.showCupDetail(cupId)
+      } else {
+        this.showToast(data.error || 'Lỗi khi lưu', 'error')
+      }
+    } catch (error) {
+      this.showToast(error.message, 'error')
+    }
+  }
+
+  // Remove participant
+  async removeCupParticipant(cupId, participantId) {
+    if (!confirm('Bạn có chắc muốn xóa người tham gia này?')) return
+    try {
+      const res = await this.makeAuthenticatedRequest(`/cups/${cupId}/participants/${participantId}`, {
+        method: 'DELETE'
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast('Đã xóa người tham gia', 'success')
+        await this.showCupDetail(cupId)
+      } else {
+        this.showToast(data.error || 'Lỗi khi xóa', 'error')
+      }
+    } catch (error) {
+      this.showToast(error.message, 'error')
+    }
+  }
+
+  // Schedule match date
+  async scheduleMatchDate(cupId, matchId) {
+    const dateEl = document.getElementById(`date_${matchId}`)
+    if (!dateEl || !dateEl.value) return this.showToast('Vui lòng chọn ngày', 'error')
+    try {
+      const res = await this.makeAuthenticatedRequest(`/cups/${cupId}/matches/${matchId}/date`, {
+        method: 'PUT',
+        body: JSON.stringify({ playDate: dateEl.value })
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast('Đã lên lịch trận đấu!', 'success')
+        await this.showCupDetail(cupId)
+      } else {
+        this.showToast(data.error || 'Lỗi khi lên lịch', 'error')
+      }
+    } catch (error) {
+      this.showToast(error.message, 'error')
+    }
+  }
+
+  // Save final results text
+  async saveCupFinalResults(cupId) {
+    const textEl = document.getElementById('cupFinalResults')
+    if (!textEl) return
+    const text = textEl.value.trim()
+    if (!text) return this.showToast('Vui lòng nhập kết quả giải đấu', 'error')
+    try {
+      const res = await this.makeAuthenticatedRequest(`/cups/${cupId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ finalResults: text })
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast('Đã lưu kết quả giải đấu!', 'success')
+        await this.showCupDetail(cupId)
+      } else {
+        this.showToast(data.error || 'Lỗi khi lưu', 'error')
+      }
+    } catch (error) {
+      this.showToast(error.message, 'error')
+    }
+  }
+
+  // Upload cup conclusion image
+  async uploadCupConclusionImage(e, cupId) {
+    const input = e.target
+    if (!input.files || !input.files[0]) return
+    const file = input.files[0]
+    if (file.size > 10 * 1024 * 1024) {
+      this.showToast('File quá lớn (tối đa 10MB)', 'error')
+      input.value = ''
+      return
+    }
+    try {
+      const formData = new FormData()
+      formData.append('image', file)
+      const res = await this.makeAuthenticatedRequest(`/cups/${cupId}/conclusion-image`, {
+        method: 'POST',
+        body: formData
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast('Đã tải lên ảnh tổng kết!', 'success')
+        await this.showCupDetail(cupId)
+      } else {
+        this.showToast(data.error || 'Lỗi khi tải lên', 'error')
+      }
+    } catch (error) {
+      this.showToast(error.message, 'error')
+    }
+    input.value = ''
+  }
+
+  // Delete cup conclusion image
+  async deleteCupConclusionImage(cupId) {
+    if (!confirm('Bạn có chắc muốn xóa ảnh tổng kết?')) return
+    try {
+      const res = await this.makeAuthenticatedRequest(`/cups/${cupId}/conclusion-image`, {
+        method: 'DELETE'
+      })
+      const data = await res.json()
+      if (data.success) {
+        this.showToast('Đã xóa ảnh tổng kết', 'success')
+        await this.showCupDetail(cupId)
+      } else {
+        this.showToast(data.error || 'Lỗi khi xóa', 'error')
+      }
+    } catch (error) {
+      this.showToast(error.message, 'error')
+    }
   }
 }
 

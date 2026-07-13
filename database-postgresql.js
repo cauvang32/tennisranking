@@ -1747,8 +1747,8 @@ class TennisDatabasePostgreSQL {
     const result = await this.query(`
       SELECT id, key, filename, storage_path, content_type, file_size,
              alt_text, is_active, uploaded_by,
-             TO_CHAR(uploaded_at, 'YYYY-MM-DDTHH:MI:SS') as uploaded_at,
-             TO_CHAR(updated_at, 'YYYY-MM-DDTHH:MI:SS') as updated_at
+             uploaded_at,
+             updated_at
       FROM site_images
       ORDER BY
         CASE key WHEN 'hero_banner' THEN 1 WHEN 'logo' THEN 2 WHEN 'favicon' THEN 3 WHEN 'background' THEN 4 ELSE 5 END,
@@ -1761,8 +1761,8 @@ class TennisDatabasePostgreSQL {
     const result = await this.query(`
       SELECT id, key, filename, storage_path, content_type, file_size,
              alt_text, is_active, uploaded_by,
-             TO_CHAR(uploaded_at, 'YYYY-MM-DDTHH:MI:SS') as uploaded_at,
-             TO_CHAR(updated_at, 'YYYY-MM-DDTHH:MI:SS') as updated_at
+             uploaded_at,
+             updated_at
       FROM site_images WHERE key = $1
     `, [key])
     return result.rows[0] || null
@@ -1816,17 +1816,13 @@ class TennisDatabasePostgreSQL {
 
   // ── Cup tournaments ────────────────────────────────────────────────────────
   async getCups(limit = 100) {
+    const selectCols = `id, name, season_id, format, num_teams, regulation_text,
+             status, start_date, end_date, created_by,
+             COALESCE(final_results, '') as final_results,
+             created_at, updated_at`
     const sql = limit != null
-      ? `SELECT id, name, season_id, format, num_teams, regulation_text,
-             status, start_date, end_date, created_by,
-             TO_CHAR(created_at, 'YYYY-MM-DDTHH:MI:SS') as created_at,
-             TO_CHAR(updated_at, 'YYYY-MM-DDTHH:MI:SS') as updated_at
-      FROM cups ORDER BY created_at DESC LIMIT $1`
-      : `SELECT id, name, season_id, format, num_teams, regulation_text,
-             status, start_date, end_date, created_by,
-             TO_CHAR(created_at, 'YYYY-MM-DDTHH:MI:SS') as created_at,
-             TO_CHAR(updated_at, 'YYYY-MM-DDTHH:MI:SS') as updated_at
-      FROM cups ORDER BY created_at DESC`
+      ? `SELECT ${selectCols} FROM cups ORDER BY created_at DESC LIMIT $1`
+      : `SELECT ${selectCols} FROM cups ORDER BY created_at DESC`
     const result = await this.query(sql, limit != null ? [limit] : [])
     return result.rows
   }
@@ -1835,8 +1831,12 @@ class TennisDatabasePostgreSQL {
     const result = await this.query(`
       SELECT id, name, season_id, format, num_teams, regulation_text,
              status, start_date, end_date, created_by,
-             TO_CHAR(created_at, 'YYYY-MM-DDTHH:MI:SS') as created_at,
-             TO_CHAR(updated_at, 'YYYY-MM-DDTHH:MI:SS') as updated_at
+             COALESCE(final_results, '') as final_results,
+             COALESCE(conclusion_image_path, '') as conclusion_image_path,
+             COALESCE(conclusion_image_filename, '') as conclusion_image_filename,
+             COALESCE(conclusion_image_content_type, '') as conclusion_image_content_type,
+             created_at,
+             updated_at
       FROM cups WHERE id = $1
     `, [cupId])
     return result.rows[0] || null
@@ -1855,7 +1855,7 @@ class TennisDatabasePostgreSQL {
     const sets = []
     const params = []
     let idx = 1
-    for (const key of ['name', 'season_id', 'format', 'num_teams', 'regulation_text', 'status', 'start_date', 'end_date']) {
+    for (const key of ['name', 'season_id', 'format', 'num_teams', 'regulation_text', 'status', 'start_date', 'end_date', 'final_results']) {
       if (updates[key] !== undefined) {
         sets.push(`${key} = $${idx}`)
         params.push(updates[key])
@@ -2118,6 +2118,13 @@ class TennisDatabasePostgreSQL {
     } finally {
       client.release()
     }
+  }
+
+  async updateCupMatchDate(cupId, matchId, playDate) {
+    await this.query(`
+      UPDATE cup_matches SET play_date = $1, updated_at = NOW()
+      WHERE id = $2 AND cup_id = $3
+    `, [playDate, matchId, cupId])
   }
 
   async close() {

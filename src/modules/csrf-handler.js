@@ -125,12 +125,19 @@ export async function makeAuthenticatedRequest(apiBase, url, options = {}) {
     throw new Error('CSRF token required')
   }
 
-  // SSRF Protection: Resolve URL against apiBase (which includes subpath) so
-  // relative paths like '/cups/_players' correctly become
-  // '/tennis/api/cups/_players'. Then validate the resolved URL targets our
-  // own origin.
-  const baseWithSlash = apiBase.endsWith('/') ? apiBase : apiBase + '/'
-  const parsedUrl = new URL(url, baseWithSlash)
+  // Resolve the request URL.
+  // Some callers pass bare paths ('/cups'), others prepend apiBase
+  // ('${apiBase}/cups'). Handle both.
+  // DO NOT use new URL(url, base) for relative paths — a leading '/' in `url`
+  // replaces the entire base pathname, so '/cups' against '.../tennis/api/'
+  // resolves to 'https://hungsanity.com/cups', dropping '/tennis/api' entirely.
+  let fullUrl
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+    fullUrl = url
+  } else {
+    fullUrl = apiBase.endsWith('/') ? apiBase + url.slice(1) : apiBase + url
+  }
+  const parsedUrl = new URL(fullUrl)
   const allowedOrigin = new URL(apiBase).origin
   if (parsedUrl.origin !== allowedOrigin) {
     throw new Error('Invalid request URL: external URLs not allowed')

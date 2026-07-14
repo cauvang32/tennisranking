@@ -1,7 +1,7 @@
 import './style.css'
 
-// @ 2026-07-14T13-15 cache-bust
-const __APP_VERSION__ = '2.0.3'
+// @ 2026-07-14T14-00 cache-bust v2
+const __APP_VERSION__ = '2.0.4'
 
 // ── Module imports (extracted from main.js to reduce file size) ────────────────
 import { connectSSE, closeSSE } from './modules/sse-manager.js'
@@ -5537,6 +5537,18 @@ class TennisRankingSystem {
   }
 
   async showCupDetail(cupId) {
+    // Reset DOM state IMMEDIATELY — before any API calls
+    // Ensures consistent UI even if API fails or bfcache restores
+    const cupsGrid = document.getElementById('cupsGrid')
+    const createCupBtn = document.getElementById('createCupBtn')
+    const cupDetail = document.getElementById('cupDetail')
+    const cupDetailContent = document.getElementById('cupDetailContent')
+
+    if (cupsGrid) cupsGrid.style.display = 'none'
+    if (createCupBtn) createCupBtn.style.display = 'none'
+    if (cupDetail) cupDetail.style.display = 'block'
+    if (cupDetailContent) cupDetailContent.innerHTML = '<div style="text-align:center;padding:40px;"><div class="spinner"></div><p style="color:var(--text-secondary);margin-top:12px;">Đang tải...</p></div>'
+
     try {
       const response = await this.makeAuthenticatedRequest(`/cups/${cupId}`)
       const cup = await response.json()
@@ -5549,10 +5561,6 @@ class TennisRankingSystem {
       ])
       const participants = await partRes.json()
       const matches = await bracketRes.json()
-
-      document.getElementById('cupsGrid').style.display = 'none'
-      document.getElementById('createCupBtn').style.display = 'none'
-      document.getElementById('cupDetail').style.display = 'block'
 
       const statusLabels = { draft: 'Bản nháp', scheduled: 'Đã lên lịch', in_progress: 'Đang diễn ra', completed: 'Hoàn thành', cancelled: 'Đã hủy' }
       const formatLabels = { single_elimination: 'Loại trực tiếp', double_elimination: 'Loại kép', round_robin: 'Vòng tròn' }
@@ -5639,6 +5647,13 @@ class TennisRankingSystem {
     } catch (error) {
       this.showToast('Lỗi khi tải chi tiết giải đấu', 'error')
       console.error('Cup detail error:', error)
+      // Show error in the detail panel (DOM already set up above)
+      if (cupDetailContent) {
+        cupDetailContent.innerHTML = `<div style="text-align:center;padding:40px;color:var(--text-secondary);">
+          <p>⚠️ Không thể tải chi tiết giải đấu</p>
+          <p style="font-size:12px;">${this.escapeHtml(error.message || 'Lỗi kết nối')}</p>
+        </div>`
+      }
     }
   }
 
@@ -6229,3 +6244,11 @@ const app = new TennisRankingSystem()
 
 // Expose app to global scope for event handlers
 window.app = app
+
+// Handle mobile Safari bfcache — force reload so fresh JS runs
+window.addEventListener('pageshow', (event) => {
+  if (event.persisted) {
+    // Page restored from bfcache — JS didn't re-execute, DOM is stale
+    window.location.reload()
+  }
+})

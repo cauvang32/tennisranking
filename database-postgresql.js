@@ -241,19 +241,7 @@ class TennisDatabasePostgreSQL {
         CREATE INDEX IF NOT EXISTS idx_matches_play_date ON matches(play_date);
       `)
       await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_matches_season_id ON matches(season_id);
-      `)
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_matches_match_type ON matches(match_type);
-      `)
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_seasons_active ON seasons(is_active);
-      `)
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_season_players_season_id ON season_players(season_id);
-      `)
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_season_players_player_id ON season_players(player_id);
+        CREATE INDEX IF NOT EXISTS idx_seasons_active_start_date ON seasons(is_active DESC, start_date DESC);
       `)
 
       // Additional indexes for player lookups (form queries)
@@ -286,6 +274,16 @@ class TennisDatabasePostgreSQL {
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_season_players_composite ON season_players(season_id, player_id);
       `)
+
+      // Keep the schema lean: these older single-column indexes are superseded
+      // by the composite indexes above or are redundant with existing unique keys.
+      await client.query(`DROP INDEX IF EXISTS idx_matches_season_id`)
+      await client.query(`DROP INDEX IF EXISTS idx_matches_match_type`)
+      await client.query(`DROP INDEX IF EXISTS idx_seasons_active`)
+      await client.query(`DROP INDEX IF EXISTS idx_season_players_season_id`)
+      await client.query(`DROP INDEX IF EXISTS idx_season_players_player_id`)
+      await client.query(`DROP INDEX IF EXISTS idx_players_name`)
+      await client.query(`DROP INDEX IF EXISTS idx_cups_name`)
 
       // FCM device registry — self-bootstrapped so a fresh DB doesn't need the
       // separate migrations/add-devices-table.sh to be run first.
@@ -492,6 +490,67 @@ class TennisDatabasePostgreSQL {
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_cup_advancements_to ON cup_advancements(to_match_id)
       `)
+
+      // ── Cup result/image columns (idempotent, auto-create if missing) ──────
+      await client.query(`
+        DO $$ BEGIN
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_name = 'cups' AND column_name = 'final_results') THEN
+            ALTER TABLE cups ADD COLUMN final_results TEXT;
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_name = 'cups' AND column_name = 'conclusion_image_path') THEN
+            ALTER TABLE cups ADD COLUMN conclusion_image_path VARCHAR(512);
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_name = 'cups' AND column_name = 'conclusion_image_filename') THEN
+            ALTER TABLE cups ADD COLUMN conclusion_image_filename VARCHAR(255);
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_name = 'cups' AND column_name = 'conclusion_image_content_type') THEN
+            ALTER TABLE cups ADD COLUMN conclusion_image_content_type VARCHAR(64);
+          END IF;
+          IF NOT EXISTS (SELECT 1 FROM information_schema.columns
+                         WHERE table_name = 'cups' AND column_name = 'conclusion_image_size') THEN
+            ALTER TABLE cups ADD COLUMN conclusion_image_size INTEGER;
+          END IF;
+        END $$;
+      `)
+
+      // ── Cup performance indexes ─────────────────────────────────────────────
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_cups_created_at ON cups(created_at DESC)
+      `)
+
+      // ── General performance indexes (matches, players, seasons) ─────────────
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_matches_play_date ON matches(play_date DESC)
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_matches_winning_team ON matches(winning_team)
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_matches_created_at ON matches(created_at DESC)
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_seasons_active_start_date ON seasons(is_active DESC, start_date DESC)
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_season_players_composite ON season_players(season_id, player_id)
+      `)
+
+      // Cleanup obsolete or redundant indexes that no longer match current queries.
+      await client.query(`DROP INDEX IF EXISTS idx_matches_season_id`)
+      await client.query(`DROP INDEX IF EXISTS idx_matches_match_type`)
+      await client.query(`DROP INDEX IF EXISTS idx_matches_player1_date`)
+      await client.query(`DROP INDEX IF EXISTS idx_matches_player2_date`)
+      await client.query(`DROP INDEX IF EXISTS idx_matches_player3_date`)
+      await client.query(`DROP INDEX IF EXISTS idx_matches_player4_date`)
+      await client.query(`DROP INDEX IF EXISTS idx_seasons_active`)
+      await client.query(`DROP INDEX IF EXISTS idx_players_name`)
+      await client.query(`DROP INDEX IF EXISTS idx_cups_name`)
+      await client.query(`DROP INDEX IF EXISTS idx_season_players_season_id`)
+      await client.query(`DROP INDEX IF EXISTS idx_season_players_player_id`)
 
       await client.query('COMMIT')
     } catch (error) {

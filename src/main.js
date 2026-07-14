@@ -1,5 +1,8 @@
 import './style.css'
 
+// @ 2026-07-14T13-15 cache-bust
+const __APP_VERSION__ = '2.0.3'
+
 // ── Module imports (extracted from main.js to reduce file size) ────────────────
 import { connectSSE, closeSSE } from './modules/sse-manager.js'
 import { createCacheManager } from './modules/cache-manager.js'
@@ -34,6 +37,7 @@ class TennisRankingSystem {
     this.currentViewMode = 'single' // 'single' or 'batch' — which mode is active
     this.eventHandlers = [] // Track event listeners for cleanup
 
+    this.appVersion = __APP_VERSION__
     // Use extracted module for cache management
     const cacheManager = createCacheManager()
     this.cache = cacheManager.cache

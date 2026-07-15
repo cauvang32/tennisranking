@@ -162,6 +162,7 @@ export const createCupRouter = ({
       }
 
       await rankingsCache.invalidateByPrefix('cups*')
+      await rankingsCache.incrementVersion()
       res.status(201).json({ success: true, id: cupId })
     })
   )
@@ -213,6 +214,7 @@ export const createCupRouter = ({
 
       await db.updateCup(cupId, updates)
       await rankingsCache.invalidateByPrefix('cups*')
+      await rankingsCache.incrementVersion()
       res.json({ success: true })
     })
   )
@@ -234,6 +236,7 @@ export const createCupRouter = ({
       }
       await db.deleteCup(cupId)
       await rankingsCache.invalidateByPrefix('cups*')
+      await rankingsCache.incrementVersion()
       res.json({ success: true })
     })
   )
@@ -274,6 +277,7 @@ export const createCupRouter = ({
 
       await db.updateCup(cupId, { status: newStatus })
       await rankingsCache.invalidateByPrefix('cups*')
+      await rankingsCache.incrementVersion()
       res.json({ success: true, status: newStatus })
     })
   )
@@ -331,6 +335,7 @@ export const createCupRouter = ({
       }
 
       await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.incrementVersion()
       res.status(201).json({ success: true, id: participantId })
     })
   )
@@ -357,6 +362,7 @@ export const createCupRouter = ({
 
       await db.reorderCupParticipants(cupId, req.body.orderedIds)
       await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.incrementVersion()
       res.json({ success: true })
     })
   )
@@ -383,6 +389,7 @@ export const createCupRouter = ({
 
       await db.removeCupParticipant(cupId, pid)
       await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.incrementVersion()
       res.json({ success: true })
     })
   )
@@ -414,6 +421,7 @@ export const createCupRouter = ({
       await db.updateCup(cupId, { status: 'scheduled' })
       await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
       await rankingsCache.invalidateByPrefix('cups*')
+      await rankingsCache.incrementVersion()
 
       const matches = await db.getCupBracket(cupId)
       res.json({ success: true, matchesCount: matches.length })
@@ -446,6 +454,7 @@ export const createCupRouter = ({
 
       await db.reorderCupParticipants(cupId, ids)
       await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.incrementVersion()
       res.json({ success: true })
     })
   )
@@ -476,6 +485,7 @@ export const createCupRouter = ({
       const result = await db.updateCupMatchScore(cupId, matchId, team1Score, team2Score)
       await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
       await rankingsCache.invalidateByPrefix('cups*')
+      await rankingsCache.incrementVersion()
 
       res.json({ success: true, ...result })
     })
@@ -504,6 +514,7 @@ export const createCupRouter = ({
 
       await db.updateCupMatchDate(cupId, matchId, req.body.playDate.split('T')[0])
       await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.incrementVersion()
       res.json({ success: true })
     })
   )
@@ -536,6 +547,7 @@ export const createCupRouter = ({
 
       await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
       await rankingsCache.invalidateByPrefix('cups*')
+      await rankingsCache.incrementVersion()
       res.json({
         success: true,
         message: 'Conclusion image uploaded',
@@ -596,6 +608,7 @@ export const createCupRouter = ({
       `, [cupId])
 
       await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.incrementVersion()
       res.json({ success: true, message: 'Conclusion image removed' })
     })
   )

@@ -1924,7 +1924,7 @@ class TennisDatabasePostgreSQL {
     if (sets.length > 0) {
       sets.push('updated_at = NOW()')
       params.push(cupId)
-      await this.query(`UPDATE cups SET ${sets.join(', ')} WHERE id = $${idx}`)
+      await this.query(`UPDATE cups SET ${sets.join(', ')} WHERE id = $${idx}`, params)
     }
   }
 
@@ -2065,7 +2065,7 @@ class TennisDatabasePostgreSQL {
         ])
 
         const matchId = result.rows[0].id
-        firstRoundMatches.push({ matchId, team1: p1, team2: p2 })
+        firstRoundMatches.push({ id: matchId, team1: p1, team2: p2 })
 
         // Auto-complete bye matches
         if (!p1 && p2) {

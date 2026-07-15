@@ -81,7 +81,19 @@
   --text-primary: var(--text);
   --danger: var(--error);
   --danger-rgb: 239, 68, 68;
-  
+
+  /* Cup tournament aliases */
+  --card-bg: var(--surface);
+  --border-color: var(--border);
+  --accent: var(--primary);
+
+  /* Badge colors - light mode */
+  --badge-draft-bg: #6b7280; --badge-draft-text: #fff;
+  --badge-scheduled-bg: #3b82f6; --badge-scheduled-text: #fff;
+  --badge-in_progress-bg: #f59e0b; --badge-in_progress-text: #fff;
+  --badge-completed-bg: #10b981; --badge-completed-text: #fff;
+  --badge-cancelled-bg: #ef4444; --badge-cancelled-text: #fff;
+
   /* Container */
   --container-max: 1280px;
   --sidebar-width: 280px;
@@ -1089,6 +1101,26 @@ body.authenticated .logged-out-only {
 
 .btn-danger:hover:not(:disabled) {
   background: #DC2626;
+  transform: translateY(-1px);
+}
+
+.btn-success {
+  background: #10b981;
+  color: var(--text-inverse);
+}
+
+.btn-success:hover:not(:disabled) {
+  background: #059669;
+  transform: translateY(-1px);
+}
+
+.btn-warning {
+  background: #f59e0b;
+  color: #000;
+}
+
+.btn-warning:hover:not(:disabled) {
+  background: #D97706;
   transform: translateY(-1px);
 }
 
@@ -2279,6 +2311,14 @@ body.match-mode-solo .duo-only {
   font-size: 0.875rem;
 }
 
+.spinner-wrapper {
+  text-align: center;
+  padding: 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
 /* ========== Footer ========== */
 .app-footer {
   background: var(--glass-bg);
@@ -2688,6 +2728,16 @@ body.match-mode-solo .duo-only {
     --text-secondary: #94A3B8;
     --text-muted: #64748B;
     --glass-bg: rgba(30, 41, 59, 0.8);
+    --card-bg: #1E293B;
+    --border-color: #334155;
+    --accent: #60A5FA;
+
+    /* Badge colors - dark mode (softer, with tinted backgrounds) */
+    --badge-draft-bg: rgba(107, 114, 128, 0.2); --badge-draft-text: #9ca3af;
+    --badge-scheduled-bg: rgba(59, 130, 246, 0.2); --badge-scheduled-text: #60a5fa;
+    --badge-in_progress-bg: rgba(245, 158, 11, 0.2); --badge-in_progress-text: #fbbf24;
+    --badge-completed-bg: rgba(16, 185, 129, 0.2); --badge-completed-text: #34d399;
+    --badge-cancelled-bg: rgba(239, 68, 68, 0.2); --badge-cancelled-text: #f87171;
   }
   
   body {
@@ -3080,5 +3130,498 @@ body.match-mode-solo .duo-only {
   .image-editor-controls .btn {
     width: 100%;
     justify-content: center;
+  }
+}
+
+/* ============================================================
+   Cup Tournament Styles
+   ============================================================ */
+
+/* Cup detail header with title and badges */
+.cup-detail-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-md);
+  margin-bottom: var(--space-lg);
+}
+
+.cup-detail-header .section-title {
+  margin: 0;
+}
+
+.cup-badge-group {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.cup-badge-text {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}
+
+/* Status badge color variants (used for cup status indicators) */
+.badge-draft { background: var(--badge-draft-bg); color: var(--badge-draft-text); }
+.badge-scheduled { background: var(--badge-scheduled-bg); color: var(--badge-scheduled-text); }
+.badge-in_progress { background: var(--badge-in_progress-bg); color: var(--badge-in_progress-text); }
+.badge-completed { background: var(--badge-completed-bg); color: var(--badge-completed-text); }
+.badge-cancelled { background: var(--badge-cancelled-bg); color: var(--badge-cancelled-text); }
+
+/* Cup info section */
+.cup-info-section {
+  background: var(--card-bg);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+  margin-bottom: var(--space-md);
+}
+
+.cup-info-section h4 {
+  margin: 0 0 var(--space-md);
+}
+
+/* Cup regulation section */
+.cup-regulation {
+  background: var(--card-bg);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+  margin-bottom: var(--space-md);
+}
+
+.cup-regulation p {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  margin: 0;
+}
+
+/* Cup participant grid */
+.cup-participant-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--space-sm);
+}
+
+/* Cup participant card */
+.cup-participant-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  font-size: 0.875rem;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  transition: all var(--transition-fast);
+}
+
+.cup-participant-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.cup-participant-card .participant-seed {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  border-radius: var(--radius-full);
+  background: var(--accent);
+  color: var(--text-inverse);
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+
+.cup-participant-card .participant-name {
+  flex: 1;
+  font-weight: 500;
+}
+
+/* Remove participant button */
+.remove-participant-btn {
+  background: none;
+  border: none;
+  color: #ef4444;
+  cursor: pointer;
+  font-size: 1.25rem;
+  line-height: 1;
+  padding: 0 var(--space-xs);
+  opacity: 0.7;
+  transition: opacity var(--transition-fast);
+}
+
+.remove-participant-btn:hover {
+  opacity: 1;
+}
+
+/* Cup actions bar */
+.cup-actions-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin: var(--space-md) 0;
+}
+
+/* Cup form groups (edit/create modal) */
+.cup-form-group {
+  margin-bottom: var(--space-md);
+}
+
+.cup-form-group label {
+  display: block;
+  margin-bottom: var(--space-xs);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.cup-form-hint {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.cup-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-sm);
+  margin-top: var(--space-lg);
+}
+
+/* Bracket visualization */
+.bracket-container {
+  display: flex;
+  gap: 32px;
+  padding: var(--space-lg);
+  overflow-x: auto;
+}
+
+.bracket-round {
+  flex: 1;
+  min-width: 180px;
+}
+
+.bracket-round-title {
+  text-align: center;
+  margin: 0 0 var(--space-md);
+  color: var(--text-secondary);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.bracket-match {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  margin-bottom: var(--space-md);
+  border-left: 3px solid var(--text-muted);
+  transition: all var(--transition-fast);
+}
+
+.bracket-match:hover {
+  border-color: var(--accent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.bracket-match.completed {
+  border-left-color: var(--success);
+}
+
+.bracket-match.in_progress {
+  border-left-color: var(--warning);
+}
+
+.bracket-match-number {
+  font-size: 0.6875rem;
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+}
+
+.bracket-team {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.8125rem;
+}
+
+.bracket-team.winner {
+  font-weight: 700;
+  color: #10b981;
+}
+
+.bracket-score {
+  font-size: 0.75rem;
+  background: var(--card-bg);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.bracket-date-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  margin-top: 6px;
+}
+
+.bracket-score-row {
+  display: flex;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.bracket-input-sm {
+  width: 50px;
+  padding: 4px 6px;
+  font-size: 0.75rem;
+}
+
+.bracket-input-flex {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Cup conclusion section */
+.cup-conclusion-section {
+  background: var(--card-bg);
+  border-radius: var(--radius-lg);
+  padding: var(--space-lg);
+  margin-top: var(--space-md);
+}
+
+.cup-conclusion-image {
+  max-width: 100%;
+  max-height: 200px;
+  object-fit: contain;
+  border-radius: var(--radius-md);
+}
+
+/* Participant selection modal */
+.participant-search {
+  width: 100%;
+  margin-bottom: var(--space-md);
+}
+
+.participant-select-all-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--space-md);
+  padding-bottom: var(--space-sm);
+  border-bottom: 1px solid var(--border);
+}
+
+.participant-select-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+.participant-count {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.participant-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: var(--space-sm);
+}
+
+.participant-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  background: var(--bg-secondary);
+  border: 2px solid var(--border-color);
+  transition: all var(--transition-fast);
+  font-size: 0.875rem;
+  user-select: none;
+}
+
+.participant-card:hover {
+  background: var(--card-bg);
+  border-color: var(--accent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.participant-card.selected {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--text-inverse);
+}
+
+.participant-card .check-icon {
+  display: none;
+  color: var(--accent);
+  font-weight: bold;
+  font-size: 1rem;
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+}
+
+.participant-card.selected .check-icon {
+  display: inline;
+  color: var(--text-inverse);
+}
+
+.participant-card .player-name {
+  flex: 1;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.participant-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border);
+}
+
+/* Cup card in list view */
+.cup-card-actions {
+  display: flex;
+  gap: var(--space-sm);
+  padding: var(--space-sm) 0 0;
+  border-top: 1px solid var(--border);
+  margin-top: var(--space-sm);
+}
+
+.cup-card-actions .btn {
+  flex: 1;
+}
+
+/* Cup card in list - make it clickable and distinctive */
+.image-editor-card[data-cup-id] {
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.image-editor-card[data-cup-id]:hover {
+  border-color: var(--accent);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  transform: translateY(-2px);
+}
+
+/* Prevent hover effect when hovering action buttons */
+.image-editor-card[data-cup-id]:hover .cup-card-actions .btn {
+  /* buttons handle their own hover */
+}
+
+/* Cup section header with year */
+.cup-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  margin-bottom: var(--space-lg);
+}
+
+.cup-meta-info {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+/* Utility classes for cup detail sections */
+.cup-section-title {
+  margin: 0 0 12px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.cup-section-title-sm {
+  margin: 0 0 8px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+
+.cup-info-section-spaced {
+  margin-top: var(--space-md);
+}
+
+.bracket-scroll {
+  overflow-x: auto;
+}
+
+.btn-flex-fill {
+  flex: 1;
+  padding: 4px;
+}
+
+.mt-sm { margin-top: var(--space-sm); }
+
+.empty-state {
+  text-align: center;
+  padding: 40px;
+}
+
+.empty-state p {
+  color: var(--text-secondary);
+}
+
+/* ============================================================
+   Mobile Responsive for Cup Tournament
+   ============================================================ */
+
+@media (max-width: 768px) {
+  .cup-detail-header {
+    flex-direction: column;
+    gap: var(--space-sm);
+  }
+
+  .cup-badge-group {
+    flex-wrap: wrap;
+  }
+
+  .cup-participant-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .cup-actions-bar {
+    flex-direction: column;
+  }
+
+  .cup-actions-bar .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .bracket-container {
+    gap: 16px;
+    padding: var(--space-md);
+  }
+
+  .bracket-round {
+    min-width: 150px;
+  }
+
+  .participant-grid {
+    grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+    gap: 6px;
+  }
+
+  .participant-card {
+    padding: 8px 10px;
+    font-size: 0.8125rem;
+  }
+
+  .cup-card-actions {
+    flex-direction: column;
   }
 }

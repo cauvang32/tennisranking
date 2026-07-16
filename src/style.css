@@ -3542,11 +3542,6 @@ body.match-mode-solo .duo-only {
   transform: translateY(-2px);
 }
 
-/* Prevent hover effect when hovering action buttons */
-.image-editor-card[data-cup-id]:hover .cup-card-actions .btn {
-  /* buttons handle their own hover */
-}
-
 /* Cup section header with year */
 .cup-section-header {
   display: flex;

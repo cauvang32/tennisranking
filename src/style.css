@@ -3359,6 +3359,33 @@ body.match-mode-solo .duo-only {
   border-radius: 4px;
 }
 
+.bracket-team.clickable {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.bracket-team.clickable:hover {
+  background: rgba(59, 130, 246, 0.08);
+  border-radius: 4px;
+}
+
+.btn-winner-pick {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 2px 4px;
+  margin-right: 4px;
+  opacity: 0.7;
+  transition: opacity 0.15s, transform 0.15s;
+  flex-shrink: 0;
+}
+
+.btn-winner-pick:hover {
+  opacity: 1;
+  transform: scale(1.2);
+}
+
 .bracket-date-row {
   display: flex;
   gap: 4px;

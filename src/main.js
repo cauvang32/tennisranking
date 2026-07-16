@@ -102,6 +102,8 @@ class TennisRankingSystem {
         this.renderPlayers()
       } else if (activeTabId === 'seasons-tab') {
         this.renderSeasons()
+      } else if (activeTabId === 'cups-tab') {
+        this.loadCups()
       } else if (activeTabId === 'accounts-tab') {
         this.renderAccounts()
         if (this.user?.role === 'admin') {
@@ -5709,8 +5711,16 @@ class TennisRankingSystem {
       if (!rounds[m.round_number]) rounds[m.round_number] = []
       rounds[m.round_number].push(m)
     })
-    const roundNames = { 1: 'Vòng đầu', 2: 'Tứ kết', 3: 'Bán kết', 4: 'Chung kết' }
     const maxRounds = Math.max(...Object.keys(rounds).map(Number))
+    // Compute round labels relative to the final round
+    const roundNames = {}
+    for (let r = 1; r <= maxRounds; r++) {
+      const fromEnd = maxRounds - r
+      if (fromEnd === 0) roundNames[r] = 'Chung kết'
+      else if (fromEnd === 1) roundNames[r] = 'Bán kết'
+      else if (fromEnd === 2) roundNames[r] = 'Tứ kết'
+      else roundNames[r] = `Vòng ${r}`
+    }
     let html = '<div class="bracket-container">'
     for (let r = 1; r <= maxRounds; r++) {
       const roundMatches = rounds[r] || []
@@ -5724,13 +5734,18 @@ class TennisRankingSystem {
         const isWinner1 = m.winner_participant_id === m.team1_participant_id
         const isWinner2 = m.winner_participant_id === m.team2_participant_id
         const matchClass = m.status === 'completed' ? 'completed' : m.status === 'in_progress' ? 'in_progress' : ''
+        const canPickWinner = ['scheduled', 'in_progress'].includes(cupStatus)
+        const t1Pid = m.team1_participant_id
+        const t2Pid = m.team2_participant_id
         html += `<div class="bracket-match ${matchClass}">
           <div class="bracket-match-number">Trận ${m.match_number}</div>
-          <div class="bracket-team ${isWinner1 ? 'winner' : ''}">
+          <div class="bracket-team ${isWinner1 ? 'winner' : ''} ${canPickWinner ? 'clickable' : ''}">
+            ${canPickWinner && t1Pid ? `<button class="btn-winner-pick" data-action="set-match-winner" data-cup-id="${cupId}" data-match-id="${m.id}" data-winner-pid="${t1Pid}" title="Chọn người thắng">🏆</button>` : ''}
             <span>${this.escapeHtml(t1Name)}</span>
             <span class="bracket-score">${t1Score}</span>
           </div>
-          <div class="bracket-team ${isWinner2 ? 'winner' : ''}">
+          <div class="bracket-team ${isWinner2 ? 'winner' : ''} ${canPickWinner ? 'clickable' : ''}">
+            ${canPickWinner && t2Pid ? `<button class="btn-winner-pick" data-action="set-match-winner" data-cup-id="${cupId}" data-match-id="${m.id}" data-winner-pid="${t2Pid}" title="Chọn người thắng">🏆</button>` : ''}
             <span>${this.escapeHtml(t2Name)}</span>
             <span class="bracket-score">${t2Score}</span>
           </div>
@@ -5828,6 +5843,11 @@ class TennisRankingSystem {
       case 'update-match-score':
         this.updateMatchScore(cupId, matchId)
         break
+      case 'set-match-winner': {
+        const winnerPid = parseInt(btn.dataset.winnerPid, 10)
+        if (!isNaN(winnerPid)) this.setCupMatchWinner(cupId, matchId, winnerPid)
+        break
+      }
     }
   }
 
@@ -5997,8 +6017,12 @@ class TennisRankingSystem {
         return this.showToast(cup?.error || 'Không tìm thấy giải đấu', 'error')
       }
 
-      // Load players for the selection list
-      const playersRes = await this.makeAuthenticatedRequest('/players')
+      // Load players and existing participants in parallel (independent of each other)
+      const [playersRes, partRes] = await Promise.all([
+        this.makeAuthenticatedRequest('/players'),
+        this.makeAuthenticatedRequest(`/cups/${cupId}/participants`)
+      ])
+
       const playersPayload = await playersRes.json().catch(() => null)
       if (!playersRes.ok) {
         throw new Error(playersPayload?.error || 'Không tải được danh sách người chơi')
@@ -6009,14 +6033,20 @@ class TennisRankingSystem {
           ? playersPayload.data
           : []
 
-      await this.showAddParticipantsModal(cupId, players, cup.num_teams || 8)
+      const participantsPayload = await partRes.json().catch(() => [])
+      const existingParticipants = Array.isArray(participantsPayload) ? participantsPayload : []
+      const existingPlayerIds = new Set(
+        existingParticipants.map(p => p.player1_id)
+      )
+
+      await this.showAddParticipantsModal(cupId, players, cup.num_teams || 8, existingPlayerIds, existingParticipants)
     } catch (error) {
       console.error('showAddParticipantsForCup error:', error)
       this.showToast(error.message || 'Lỗi khi mở hộp thoại thêm người tham gia', 'error')
     }
   }
 
-  async showAddParticipantsModal(cupId, players, maxTeams) {
+  async showAddParticipantsModal(cupId, players, maxTeams, existingPlayerIds = new Set(), existingParticipants = []) {
     const modal = document.getElementById('loginModal')
     if (!modal) return
     const content = modal.querySelector('.modal-content') || modal.querySelector('[class*="modal"]')
@@ -6069,13 +6099,29 @@ class TennisRankingSystem {
     modal.style.display = 'flex'
 
     // Store selected player IDs in a Set for easy management
-    const selectedIds = new Set()
+    // Pre-select existing participants
+    const selectedIds = new Set(existingPlayerIds)
+
+    // Map from player1_id to participant_id for tracking existing participants
+    const existingPartMap = {}
+    existingParticipants.forEach(p => {
+      existingPartMap[p.player1_id] = p.id
+    })
+
+    // Apply pre-selection in the DOM
+    content.querySelectorAll('.participant-card').forEach(card => {
+      const playerId = parseInt(card.dataset.playerId)
+      if (existingPlayerIds.has(playerId)) {
+        card.classList.add('selected')
+      }
+    })
 
     // Update counter display
     const updateCount = () => {
       const countEl = document.getElementById('participantCount')
       if (countEl) countEl.textContent = `Đã chọn: ${selectedIds.size}/${maxTeams}`
     }
+    updateCount() // Initial count reflects existing participants
 
     // Click handler for participant cards
     content.querySelectorAll('.participant-card').forEach(card => {
@@ -6135,36 +6181,57 @@ class TennisRankingSystem {
     const confirmBtn = content.querySelector('#confirmParticipantsBtn')
     if (confirmBtn) {
       confirmBtn.addEventListener('click', () => {
-        this.confirmAddParticipantsFromSet(cupId, maxTeams, selectedIds)
+        this.confirmAddParticipantsFromSet(cupId, maxTeams, selectedIds, existingPlayerIds, existingPartMap)
       })
     }
   }
 
-  async confirmAddParticipantsFromSet(cupId, maxTeams, selectedIds) {
+  async confirmAddParticipantsFromSet(cupId, maxTeams, selectedIds, previousPlayerIds = new Set(), existingPartMap = {}) {
     const selected = Array.from(selectedIds)
-    if (selected.length < 2) return this.showToast('Cần ít nhất 2 người tham gia', 'error')
+    const minRequired = Math.min(maxTeams, 2)
+    if (selected.length < minRequired) return this.showToast(`Cần ít nhất ${minRequired} người tham gia`, 'error')
     if (selected.length > maxTeams) return this.showToast(`Tối đa ${maxTeams} đội`, 'error')
 
     try {
+      // Compute additions: in current selection but NOT in previous
+      const additions = selected.filter(pid => !previousPlayerIds.has(pid))
+      // Compute removals: in previous but NOT in current selection (use Set.has for O(1))
+      const removals = Array.from(previousPlayerIds).filter(pid => !selectedIds.has(pid))
+
+      // Remove participants first (if any were deselected)
+      let removed = 0
+      for (const pid of removals) {
+        const partId = existingPartMap[pid]
+        if (partId) {
+          const data = await this._cupApiCall(`/cups/${cupId}/participants/${partId}`, { method: 'DELETE' })
+          if (data?.success) removed++
+        }
+      }
+
+      // Add new participants
       let added = 0
-      for (let i = 0; i < selected.length; i++) {
+      for (let i = 0; i < additions.length; i++) {
         const data = await this._cupApiCall(`/cups/${cupId}/participants`, {
           method: 'POST',
-          body: JSON.stringify({ player1Id: selected[i], seed: i + 1 })
+          body: JSON.stringify({ player1Id: additions[i], seed: i + 1 })
         })
         if (data?.success) added++
       }
-      if (added > 0) {
-        this.showToast(`Đã thêm ${added}/${selected.length} người tham gia`, 'success')
-      } else {
-        this.showToast('Không thể thêm người tham gia nào', 'error')
+
+      if (added > 0 || removed > 0) {
+        let msg = ''
+        if (added > 0) msg += `Thêm ${added}`
+        if (removed > 0) msg += ` ${added > 0 ? ',' : ''} Xóa ${removed}`
+        this.showToast(msg.trim(), 'success')
+      } else if (selected.length > 0) {
+        this.showToast('Không có thay đổi', 'success')
       }
 
       // Close modal and show cup detail
       this.hideModal('loginModal')
       await this.showCupDetail(cupId)
     } catch (error) {
-      this.showToast('Lỗi khi thêm người tham gia', 'error')
+      this.showToast('Lỗi khi cập nhật người tham gia', 'error')
     }
   }
 
@@ -6212,6 +6279,17 @@ class TennisRankingSystem {
     })
     if (data?.success) {
       this.showToast(`Ghi điểm ${s1}-${s2} thành công!`, 'success')
+      await this.showCupDetail(cupId)
+    }
+  }
+
+  async setCupMatchWinner(cupId, matchId, winnerParticipantId) {
+    const data = await this._cupApiCall(`/cups/${cupId}/matches/${matchId}/winner`, {
+      method: 'PUT',
+      body: JSON.stringify({ winnerParticipantId })
+    })
+    if (data?.success) {
+      this.showToast('Đã chọn người thắng!', 'success')
       await this.showCupDetail(cupId)
     }
   }

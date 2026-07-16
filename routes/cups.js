@@ -213,13 +213,14 @@ export const createCupRouter = ({
       }
 
       await db.updateCup(cupId, updates)
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
       await rankingsCache.invalidateByPrefix('cups*')
       await rankingsCache.incrementVersion()
       res.json({ success: true })
     })
   )
 
-  // Delete cup (only in draft status)
+  // Delete cup (allowed in any status)
   router.delete(
     '/:id',
     authenticateToken,
@@ -231,10 +232,8 @@ export const createCupRouter = ({
       const cupId = parseInt(req.params.id)
       const cup = await db.getCupById(cupId)
       if (!cup) return res.status(404).json({ error: 'Cup not found' })
-      if (cup.status !== 'draft') {
-        return res.status(400).json({ error: 'Can only delete cups in draft status' })
-      }
       await db.deleteCup(cupId)
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
       await rankingsCache.invalidateByPrefix('cups*')
       await rankingsCache.incrementVersion()
       res.json({ success: true })
@@ -276,6 +275,7 @@ export const createCupRouter = ({
       }
 
       await db.updateCup(cupId, { status: newStatus })
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
       await rankingsCache.invalidateByPrefix('cups*')
       await rankingsCache.incrementVersion()
       res.json({ success: true, status: newStatus })
@@ -334,7 +334,7 @@ export const createCupRouter = ({
         return res.status(409).json({ error: 'Participant already registered' })
       }
 
-      await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
       await rankingsCache.incrementVersion()
       res.status(201).json({ success: true, id: participantId })
     })
@@ -361,7 +361,7 @@ export const createCupRouter = ({
       }
 
       await db.reorderCupParticipants(cupId, req.body.orderedIds)
-      await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
       await rankingsCache.incrementVersion()
       res.json({ success: true })
     })
@@ -388,7 +388,7 @@ export const createCupRouter = ({
       }
 
       await db.removeCupParticipant(cupId, pid)
-      await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
       await rankingsCache.incrementVersion()
       res.json({ success: true })
     })
@@ -419,7 +419,7 @@ export const createCupRouter = ({
 
       await db.generateBracket(cupId)
       await db.updateCup(cupId, { status: 'scheduled' })
-      await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
       await rankingsCache.invalidateByPrefix('cups*')
       await rankingsCache.incrementVersion()
 
@@ -453,7 +453,7 @@ export const createCupRouter = ({
       }
 
       await db.reorderCupParticipants(cupId, ids)
-      await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
       await rankingsCache.incrementVersion()
       res.json({ success: true })
     })
@@ -483,7 +483,7 @@ export const createCupRouter = ({
 
       const { team1Score, team2Score } = req.body
       const result = await db.updateCupMatchScore(cupId, matchId, team1Score, team2Score)
-      await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
       await rankingsCache.invalidateByPrefix('cups*')
       await rankingsCache.incrementVersion()
 
@@ -513,7 +513,7 @@ export const createCupRouter = ({
       }
 
       await db.updateCupMatchDate(cupId, matchId, req.body.playDate.split('T')[0])
-      await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
       await rankingsCache.incrementVersion()
       res.json({ success: true })
     })
@@ -545,7 +545,7 @@ export const createCupRouter = ({
         WHERE id = $5
       `, [storagePath, req.file.originalname, req.file.mimetype, req.file.size, cupId])
 
-      await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
       await rankingsCache.invalidateByPrefix('cups*')
       await rankingsCache.incrementVersion()
       res.json({
@@ -607,9 +607,41 @@ export const createCupRouter = ({
         WHERE id = $1
       `, [cupId])
 
-      await rankingsCache.invalidateByPrefix(`cup:${cupId}:*`)
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
+      await rankingsCache.invalidateByPrefix('cups*')
       await rankingsCache.incrementVersion()
       res.json({ success: true, message: 'Conclusion image removed' })
+    })
+  )
+
+  // Set match winner manually (no scores required) — handles cascade
+  router.put(
+    '/:id/matches/:mid/winner',
+    authenticateToken,
+    requireAdmin,
+    conditionalRateLimit(createLimiter),
+    [
+      param('id').isInt().withMessage('Invalid cup ID'),
+      param('mid').isInt().withMessage('Invalid match ID'),
+      body('winnerParticipantId').isInt().withMessage('Winner participant ID required'),
+    ],
+    handleValidationErrors,
+    asyncHandler(async (req, res) => {
+      const cupId = parseInt(req.params.id)
+      const matchId = parseInt(req.params.mid)
+      const cup = await db.getCupById(cupId)
+      if (!cup) return res.status(404).json({ error: 'Cup not found' })
+      if (!['scheduled', 'in_progress'].includes(cup.status)) {
+        return res.status(400).json({ error: 'Can only set winners when cup is scheduled or in_progress' })
+      }
+
+      const { winnerParticipantId } = req.body
+      const result = await db.setCupMatchWinner(cupId, matchId, winnerParticipantId)
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
+      await rankingsCache.invalidateByPrefix('cups*')
+      await rankingsCache.incrementVersion()
+
+      res.json({ success: true, ...result })
     })
   )
 

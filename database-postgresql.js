@@ -2137,11 +2137,10 @@ class TennisDatabasePostgreSQL {
         UPDATE cup_matches
         SET team1_score = $1, team2_score = $2, status = 'completed', updated_at = NOW()
         WHERE id = $3 AND cup_id = $4
-        RETURNING id, team1_participant_id, team2_participant_id, round_number
+        RETURNING id, team1_participant_id, team2_participant_id, winner_participant_id, round_number
       `, [team1Score, team2Score, matchId, cupId])
 
       if (result.rows.length === 0) {
-        await client.query('ROLLBACK')
         throw new Error('Match not found')
       }
 
@@ -2150,6 +2149,12 @@ class TennisDatabasePostgreSQL {
 
       if (team1Score > team2Score) winnerId = match.team1_participant_id
       else if (team2Score > team1Score) winnerId = match.team2_participant_id
+
+      // If the winner changed from a previous value, cascade-clear the old winner downstream
+      const oldWinner = match.winner_participant_id
+      if (oldWinner !== null && winnerId !== null && oldWinner !== winnerId) {
+        await this._clearCupWinnerDownstream(client, cupId, matchId, oldWinner, match.round_number)
+      }
 
       if (winnerId) {
         await client.query(`
@@ -2172,7 +2177,7 @@ class TennisDatabasePostgreSQL {
       await client.query('COMMIT')
       return { success: true, winnerId, match }
     } catch (error) {
-      await client.query('ROLLBACK')
+      await client.query('ROLLBACK').catch(() => {})
       throw error
     } finally {
       client.release()
@@ -2184,6 +2189,118 @@ class TennisDatabasePostgreSQL {
       UPDATE cup_matches SET play_date = $1, updated_at = NOW()
       WHERE id = $2 AND cup_id = $3
     `, [playDate, matchId, cupId])
+  }
+
+  /**
+   * Set a cup match winner manually (no scores required).
+   * Handles cascade: if this match previously advanced a different winner,
+   * recursively clears the old winner's path downstream before advancing the new one.
+   */
+  async setCupMatchWinner(cupId, matchId, winnerParticipantId) {
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN')
+
+      // 1. Validate the match exists and the winner is one of the two participants
+      const matchRes = await client.query(`
+        SELECT id, team1_participant_id, team2_participant_id, winner_participant_id,
+               round_number, status
+        FROM cup_matches
+        WHERE id = $1 AND cup_id = $2
+      `, [matchId, cupId])
+
+      if (matchRes.rows.length === 0) {
+        throw new Error('Match not found')
+      }
+
+      const match = matchRes.rows[0]
+      const t1 = match.team1_participant_id
+      const t2 = match.team2_participant_id
+
+      if (t1 !== null && t1 === winnerParticipantId) {
+        // Valid: winner is team 1
+      } else if (t2 !== null && t2 === winnerParticipantId) {
+        // Valid: winner is team 2
+      } else {
+        throw new Error('The selected participant is not in this match')
+      }
+
+      // 2. If this match previously advanced a different winner, recursively clear downstream
+      const oldWinner = match.winner_participant_id
+      if (oldWinner !== null && oldWinner !== winnerParticipantId) {
+        await this._clearCupWinnerDownstream(client, cupId, matchId, oldWinner, match.round_number)
+      }
+
+      // 3. Set the winner and mark match as completed
+      await client.query(`
+        UPDATE cup_matches
+        SET winner_participant_id = $1, status = 'completed', updated_at = NOW()
+        WHERE id = $2
+      `, [winnerParticipantId, matchId])
+
+      // 4. Advance winner to next round
+      const advancements = await client.query(`
+        SELECT to_match_id, winner_slot FROM cup_advancements WHERE from_match_id = $1
+      `, [matchId])
+
+      for (const adv of advancements.rows) {
+        await client.query(`
+          UPDATE cup_matches
+          SET ${adv.winner_slot}_participant_id = $1, updated_at = NOW()
+          WHERE id = $2
+        `, [winnerParticipantId, adv.to_match_id])
+      }
+
+      await client.query('COMMIT')
+      return { success: true, winnerId: winnerParticipantId }
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {})
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  /**
+   * Recursively clear a winner's path through the bracket, starting from a given match.
+   * Only clears matches where the given participant was the actual winner.
+   */
+  async _clearCupWinnerDownstream(client, cupId, matchId, participantId, currentRound) {
+    // Clear from this match's advancement destinations
+    const advancements = await client.query(`
+      SELECT to_match_id, winner_slot FROM cup_advancements WHERE from_match_id = $1
+    `, [matchId])
+
+    for (const adv of advancements.rows) {
+      await client.query(`
+        UPDATE cup_matches
+        SET ${adv.winner_slot}_participant_id = NULL, updated_at = NOW()
+        WHERE id = $1
+      `, [adv.to_match_id])
+    }
+
+    // Find all downstream matches where this participant appears
+    const destMatches = await client.query(`
+      SELECT id, winner_participant_id, round_number
+      FROM cup_matches
+      WHERE (team1_participant_id = $1 OR team2_participant_id = $1)
+        AND cup_id = $2
+        AND round_number > $3
+    `, [participantId, cupId, currentRound])
+
+    for (const dm of destMatches.rows) {
+      // Only clear if THIS participant was the winner of the downstream match
+      if (dm.winner_participant_id === participantId) {
+        // Clear the downstream match's winner, scores, and status
+        await client.query(`
+          UPDATE cup_matches SET winner_participant_id = NULL, status = 'scheduled',
+            team1_score = NULL, team2_score = NULL, updated_at = NOW()
+          WHERE id = $1
+        `, [dm.id])
+        // Recurse: clear from this match's downstream too
+        await this._clearCupWinnerDownstream(client, cupId, dm.id, participantId, dm.round_number)
+      }
+    }
   }
 
   async close() {

@@ -236,14 +236,6 @@ class TennisDatabasePostgreSQL {
         )
       `)
 
-      // Create indexes for better performance
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_matches_play_date ON matches(play_date);
-      `)
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_seasons_active_start_date ON seasons(is_active DESC, start_date DESC);
-      `)
-
       // Additional indexes for player lookups (form queries)
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_matches_player1_id ON matches(player1_id);
@@ -257,26 +249,23 @@ class TennisDatabasePostgreSQL {
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_matches_player4_id ON matches(player4_id);
       `)
-      
+
       // Composite index for season+date queries
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_matches_season_date ON matches(season_id, play_date DESC);
       `)
-      
+
       // Composite index for form lookup (covering index)
       await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_matches_form_lookup 
-        ON matches(play_date DESC, created_at DESC) 
+        CREATE INDEX IF NOT EXISTS idx_matches_form_lookup
+        ON matches(play_date DESC, created_at DESC)
         INCLUDE (player1_id, player2_id, player3_id, player4_id, winning_team);
       `)
-      
-      // Composite index for season_players
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_season_players_composite ON season_players(season_id, player_id);
-      `)
 
-      // Keep the schema lean: these older single-column indexes are superseded
+      // O5: Keep the schema lean — older single-column indexes are superseded
       // by the composite indexes above or are redundant with existing unique keys.
+      // Note: idx_matches_play_date, idx_seasons_active_start_date, and
+      // idx_season_players_composite are created later in the "General performance indexes" section.
       await client.query(`DROP INDEX IF EXISTS idx_matches_season_id`)
       await client.query(`DROP INDEX IF EXISTS idx_matches_match_type`)
       await client.query(`DROP INDEX IF EXISTS idx_seasons_active`)
@@ -669,19 +658,13 @@ class TennisDatabasePostgreSQL {
   }
 
   async updateSeason(seasonId, name, startDate, endDate, autoEnd, description, loseMoneyPerLoss = null, finalResults = null) {
-    const sets = []
-    const params = []
-    let idx = 1
-    sets.push(`name = $${idx}`); params.push(name); idx++
-    sets.push(`start_date = $${idx}`); params.push(startDate); idx++
-    sets.push(`end_date = $${idx}`); params.push(endDate); idx++
-    sets.push(`auto_end = $${idx}`); params.push(autoEnd); idx++
-    sets.push(`description = $${idx}`); params.push(description); idx++
-    if (loseMoneyPerLoss !== null) { sets.push(`lose_money_per_loss = $${idx}`); params.push(loseMoneyPerLoss); idx++ }
-    if (finalResults !== null) { sets.push(`final_results = $${idx}`); params.push(finalResults); idx++ }
-    sets.push('updated_at = COALESCE(updated_at, created_at)')
-    params.push(seasonId)
-    await this.query(`UPDATE seasons SET ${sets.join(', ')} WHERE id = $${idx}`)
+    await this.query(`
+      UPDATE seasons
+      SET name = $1, start_date = $2, end_date = $3, auto_end = $4, description = $5,
+          lose_money_per_loss = COALESCE($6, lose_money_per_loss),
+          final_results = COALESCE($7, final_results)
+      WHERE id = $8
+    `, [name, startDate, endDate, autoEnd, description, loseMoneyPerLoss, finalResults, seasonId])
   }
 
   async endSeason(seasonId, endDate, endedBy) {

@@ -3,42 +3,70 @@ import './style.css'
 // @ 2026-07-14T14-00 cache-bust v2
 const __APP_VERSION__ = '2.0.4'
 
-// ── Module imports (extracted from main.js to reduce file size) ────────────────
+// ── Infrastructure modules (already extracted) ────────────────────────────────
 import { connectSSE, closeSSE } from './modules/sse-manager.js'
 import { createCacheManager } from './modules/cache-manager.js'
 import { getCSRFToken as moduleGetCSRFToken, makeAuthenticatedRequest as moduleMakeAuthenticatedRequest, resetCSRFToken, setCSRFToken, refreshAuthToken } from './modules/csrf-handler.js'
 import { detectServerMode as moduleDetectServerMode, checkAuthStatus as moduleCheckAuthStatus, login as moduleLogin, logout as moduleLogout, getApiBaseUrl as moduleGetApiBaseUrl, updateUIForAuthStatus as moduleUpdateUIForAuthStatus } from './modules/auth-manager.js'
 import { normalizeText } from './lib/vietnamese-normalize.js'
 
-// Tennis Ranking System with PostgreSQL Database
+// ── Feature modules (factories — receive `this` as ctx) ───────────────────────
+import { createPlayersModule } from './features/players/players.js'
+import { createRankingsModule } from './features/rankings/rankings.js'
+import { createMatchesModule } from './features/matches/matches.js'
+import { createBatchModeModule } from './features/matches/batch-mode.js'
+import { createScreenshotModule } from './features/matches/screenshot.js'
+import { createMatchModalModule } from './features/matches/match-modal.js'
+import { createSeasonsModule } from './features/seasons/seasons.js'
+import { createSeasonResultsModule } from './features/seasons/season-results.js'
+import { createCupsModule } from './features/cups/cups.js'
+import { createAccountsModule } from './features/accounts/accounts.js'
+import { createImagesModule } from './features/images/images.js'
+import { createExportModule } from './features/export/export.js'
+
+// Tab manager logic is integrated directly into the switchTab method above
+// ================================================================================
+// TennisRankingSystem — thin bootstrap, delegates everything to feature modules
+// ================================================================================
 class TennisRankingSystem {
   constructor() {
+    // ── Shared state (accessed by feature modules via ctx) ──────────────────
     this.players = []
     this.matches = []
     this.seasons = []
     this.playDates = []
-    this.currentViewMode = 'daily' // daily, season, lifetime
+    this.normalizedPlayers = []    // {normalized, id, name} sorted index for fuzzy matching
+    this.seasonPlayers = []        // Players allowed in selected match season
+    this.currentSeasonPlayers = [] // Same as seasonPlayers, set by onMatchSeasonChange
+
+    this.currentViewMode = 'daily' // rankings view: daily | season | lifetime
     this.selectedDate = null
     this.selectedSeason = null
-    this.autoSaveEnabled = true
+    this.selectedMatchSeason = null // Season selected in match form
+    this.isManualWinnerMode = false
+    this.currentMatchType = 'duo'  // 'duo' or 'solo'
+    this.currentWinningTeam = null
+
+    // Batch mode state
+    this.batchMatches = []
+    this.batchMatchId = 0
+    this.batchMatchType = 'duo'
+
+    // Screenshot parsing state
+    this.parsedMatchesBuffer = []
+
+    // Auth state
     this.serverMode = true
-    // Use extracted module for API base detection
     this.apiBase = moduleGetApiBaseUrl()
     this.isAuthenticated = false
     this.user = null
-    this.csrfToken = null // CSRF token for secure requests
-    this.currentWinningTeam = null
-    this.isManualWinnerMode = false
-    this.currentMatchType = 'duo' // 'duo' (đánh đôi) or 'solo' (đánh đơn)
-    this.currentSeasonPlayers = [] // Players eligible for current selected season
-    this.batchMatches = [] // [{matchType, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam}]
-    this.batchMatchId = 0 // auto-increment row id
-    this.batchMatchType = 'duo' // default match type for batch mode (2v2)
-    this.currentViewMode = 'single' // 'single' or 'batch' — which mode is active
-    this.eventHandlers = [] // Track event listeners for cleanup
+    this.csrfToken = null
 
+    // SSE / cache coherence
     this.appVersion = __APP_VERSION__
-    // Use extracted module for cache management
+    this.eventHandlers = []
+
+    // ── Infrastructure (cache + CSRF) ───────────────────────────────────────
     const cacheManager = createCacheManager()
     this.cache = cacheManager.cache
     this.CACHE_TTL = cacheManager.CACHE_TTL
@@ -48,326 +76,134 @@ class TennisRankingSystem {
     this.invalidateCache = cacheManager.invalidateCache
     this.clearCache = cacheManager.clearCache
 
-    // Start version polling for cache coherence
-    this.startVersionPolling()
+    // ── Utility methods (used by all feature modules) ───────────────────────
+    this.escapeHtml = escapeHtml
+    this.formatDate = formatDate
+    this.formatMoney = formatMoney
+    this.showToast = showToast
+    this.showModal = showModal
+    this.hideModal = hideModal
+    this.updateFileStatus = updateFileStatus
+    this.setTodaysDate = setTodaysDate
 
+    // ── Auth helpers (delegate to auth-manager) ─────────────────────────────
+    this.detectServerMode = async () => {
+      const result = await moduleDetectServerMode(this.apiBase)
+      this.serverMode = result.serverMode
+      if (result.serverMode) this.apiBase = result.apiBase
+    }
+    this.checkAuthStatus = async () => {
+      if (!this.serverMode) return
+      const result = await moduleCheckAuthStatus(this.apiBase)
+      this.isAuthenticated = result.isAuthenticated
+      this.user = result.user
+      this.csrfToken = result.csrfToken
+      this.updateScreenshotSectionVisibility()
+    }
+    this.login = async (username, password) => {
+      const result = await moduleLogin(this.apiBase, username, password)
+      if (result.success) {
+        this.isAuthenticated = true
+        this.user = result.user
+        this.csrfToken = result.csrfToken
+        setCSRFToken(result.csrfToken)
+        this.updateUIForAuthStatus()
+        this.updateScreenshotSectionVisibility()
+        await this.loadInitialData()
+      }
+      return result
+    }
+    this.logout = async () => {
+      await moduleLogout(this.apiBase, this.csrfToken)
+      resetCSRFToken()
+      this.isAuthenticated = false
+      this.user = null
+      this.csrfToken = null
+      this.updateUIForAuthStatus()
+    }
+    this.makeAuthenticatedRequest = (url, options) => moduleMakeAuthenticatedRequest(this.apiBase, url, options)
+    this.getCSRFToken = async () => {
+      if (this.csrfToken) return this.csrfToken
+      const token = await moduleGetCSRFToken(this.apiBase)
+      if (token) this.csrfToken = token
+      return token
+    }
+
+    // ── Wire up feature modules ─────────────────────────────────────────────
+    wireFeatureModules(this)
+
+    // ── Start! ──────────────────────────────────────────────────────────────
+    this.startVersionPolling()
     this.init()
   }
 
-  // Real-time server data sync using SSE (Server-Sent Events).
-  // Polling fallback when SSE is unavailable is handled by sse-manager.js.
+  // ── SSE / cache coherence ─────────────────────────────────────────────────
   startVersionPolling() {
-    this.connectSSE()
-  }
-
-  // Establish SSE connection for instant cache invalidation
-  connectSSE() {
-    if (!this.serverMode) return
-
-    // Use extracted module
     connectSSE(this.apiBase, this.cache,
       (newVersion) => { this.cache.serverVersion = newVersion; this.invalidateCache(); this.reloadCurrentView() },
       () => this.reloadCurrentView()
     )
   }
 
-  // Stop all version sync (SSE only — polling is handled by sse-manager.js)
   stopVersionPolling() {
     closeSSE()
   }
 
-  // Reload current view data after cache invalidation (called by SSE handler)
   async reloadCurrentView() {
     try {
-      // 1. Reload shared data that ALL tabs depend on (cache was just cleared)
-      await Promise.all([
-        this.loadPlayDates(),
-        this.loadSeasons(),
-        this.loadPlayers()
-      ])
+      await Promise.all([this.loadPlayDates(), this.loadSeasons(), this.loadPlayers()])
+      this.updateDateSelector()
+      this.updateSeasonSelector()
+      this.updatePlayerSelects()
+      this.updateSeasonSelect()
 
-      // 2. Update all cross-tab dropdown selectors with fresh data
-      this.updateDateSelector()        // Rankings date picker + match history date filter
-      this.updateSeasonSelector()      // Rankings season picker
-      this.updatePlayerSelects()       // Matches player dropdowns
-      this.updateSeasonSelect()        // Matches season dropdown
-
-      // 3. Re-render the tab the user is currently viewing
       const activeTabId = document.querySelector('.tab-content.active')?.id
-      if (activeTabId === 'rankings-tab') {
-        await this.renderRankings()
-      } else if (activeTabId === 'matches-tab') {
-        await this.renderMatchHistory()
-      } else if (activeTabId === 'players-tab') {
-        this.renderPlayers()
-      } else if (activeTabId === 'seasons-tab') {
-        this.renderSeasons()
-      } else if (activeTabId === 'cups-tab') {
-        this.loadCups()
-      } else if (activeTabId === 'accounts-tab') {
-        this.renderAccounts()
-        if (this.user?.role === 'admin') {
-          this.renderCacheStatus()
-          this.fetchFcmStatus()
-        }
+      switch (activeTabId) {
+        case 'rankings-tab': await this.renderRankings(); break
+        case 'matches-tab': await this.renderMatchHistory(); break
+        case 'players-tab': this.renderPlayers(); break
+        case 'seasons-tab': this.renderSeasons(); break
+        case 'cups-tab': this.loadCups(); break
+        case 'accounts-tab':
+          this.renderAccounts()
+          if (this.user?.role === 'admin') { this.renderCacheStatus(); this.fetchFcmStatus() }
+          break
       }
     } catch (error) {
       console.warn('⚠️ Failed to reload current view:', error)
     }
   }
 
-
-  // Smart cache: check if cached data is still valid
-  isCacheValid(cacheKey, type = 'rankings') {
-    const lastFetch = this.cache.lastFetch.get(cacheKey)
-    if (!lastFetch) return false
-    
-    const ttl = this.CACHE_TTL[type] || this.CACHE_TTL.rankings
-    return (Date.now() - lastFetch) < ttl
-  }
-
-  // Smart cache: set data with timestamp
-  setCache(type, key, data) {
-    const cacheKey = key ? `${type}:${key}` : type
-    
-    if (type === 'rankings' || type === 'matches') {
-      this.cache[type].set(key, data)
-    } else {
-      this.cache[type] = data
-    }
-    
-    this.cache.lastFetch.set(cacheKey, Date.now())
-    console.log(`💾 Cache SET: ${cacheKey}`)
-  }
-
-  // Smart cache: get data if valid
-  getCache(type, key = null) {
-    const cacheKey = key ? `${type}:${key}` : type
-    
-    if (!this.isCacheValid(cacheKey, type)) {
-      console.log(`❌ Cache MISS: ${cacheKey}`)
-      return null
-    }
-    
-    let data = null
-    if (type === 'rankings' || type === 'matches') {
-      data = this.cache[type].get(key)
-    } else {
-      data = this.cache[type]
-    }
-    
-    if (data) {
-      console.log(`✅ Cache HIT: ${cacheKey}`)
-    }
-    return data
-  }
-
-  // Smart cache invalidation - only clear what changed
-  invalidateCache(types = []) {
-    if (!types || types.length === 0) {
-      // Full clear (for restore/logout)
-      this.cache.rankings.clear()
-      this.cache.matches.clear()
-      this.cache.lastFetch.clear()
-      this.cache.players = null
-      this.cache.seasons = null
-      this.cache.playDates = null
-      console.log('🗑️ Full cache cleared')
-      return
-    }
-    
-    // Selective invalidation
-    types.forEach(type => {
-      switch(type) {
-        case 'rankings':
-          this.cache.rankings.clear()
-          for (const key of this.cache.lastFetch.keys()) {
-            if (key.startsWith('rankings:')) {
-              this.cache.lastFetch.delete(key)
-            }
-          }
-          console.log('🗑️ Rankings cache cleared')
-          break
-          
-        case 'matches':
-          this.cache.matches.clear()
-          this.cache.playDates = null
-          for (const key of this.cache.lastFetch.keys()) {
-            if (key.startsWith('matches:') || key === 'playDates') {
-              this.cache.lastFetch.delete(key)
-            }
-          }
-          console.log('🗑️ Matches cache cleared')
-          break
-          
-        case 'players':
-          this.cache.players = null
-          this.cache.lastFetch.delete('players')
-          console.log('🗑️ Players cache cleared')
-          break
-          
-        case 'seasons':
-          this.cache.seasons = null
-          this.cache.lastFetch.delete('seasons')
-          console.log('🗑️ Seasons cache cleared')
-          break
-          
-        case 'playDates':
-          this.cache.playDates = null
-          this.cache.lastFetch.delete('playDates')
-          console.log('🗑️ PlayDates cache cleared')
-          break
-      }
-    })
-  }
-
-  // Legacy method for compatibility
-  clearCache() {
-    this.invalidateCache()
-  }
-
-  // Event listener management for proper cleanup
-  addTrackedEventListener(element, event, handler, options) {
-    if (!element) return
-    element.addEventListener(event, handler, options)
-    this.eventHandlers.push({ element, event, handler, options })
-  }
-
-  removeAllTrackedEventListeners() {
-    this.eventHandlers.forEach(({ element, event, handler, options }) => {
-      if (element) {
-        element.removeEventListener(event, handler, options)
-      }
-    })
-    this.eventHandlers = []
-  }
-
-  // Security: HTML escape to prevent XSS attacks
-  escapeHtml(unsafe) {
-    if (unsafe === null || unsafe === undefined) return ''
-    return String(unsafe)
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;')
-      .replace(/`/g, '&#96;')
-  }
-
-  // Loading overlay control
-  showLoader(message = 'Đang tải...') {
-    const overlay = document.getElementById('loadingOverlay')
-    if (overlay) {
-      const messageEl = overlay.querySelector('p')
-      if (messageEl) messageEl.textContent = message
-      overlay.classList.add('show')
-    }
-  }
-
-  hideLoader() {
-    const overlay = document.getElementById('loadingOverlay')
-    if (overlay) {
-      overlay.classList.remove('show')
-    }
-  }
-
-  // Auto-detect API base URL for subpath deployments
-  getApiBaseUrl() {
-    const currentPath = window.location.pathname
-    const currentOrigin = window.location.origin
-    const currentHost = window.location.host
-    
-    console.log('🔍 Detecting API base URL...')
-    console.log('📍 Current path:', currentPath)
-    console.log('🌐 Current origin:', currentOrigin)
-    console.log('🏠 Current host:', currentHost)
-    
-    // Special case: if we're on hungsanity.com or similar production domains
-    // and the path starts with /tennis, use tennis subpath
-    if (currentPath.startsWith('/tennis')) {
-      const apiBase = `${currentOrigin}/tennis/api`
-      console.log('✅ Tennis subpath deployment detected')
-      console.log('🔗 API Base URL:', apiBase)
-      return apiBase
-    }
-    
-    // Check if we're on a production domain (not localhost)
-    const isProduction = !currentHost.includes('localhost') && !currentHost.includes('127.0.0.1')
-    
-    if (isProduction) {
-      // For production domains, check if we need to use a subpath
-      const pathSegments = currentPath.split('/').filter(segment => segment && segment !== 'index.html')
-      
-      if (pathSegments.length > 0) {
-        const potentialSubpath = pathSegments[0]
-        const commonSubpaths = ['tennis', 'app', 'ranking', 'admin', 'dashboard']
-        
-        if (commonSubpaths.includes(potentialSubpath)) {
-          const apiBase = `${currentOrigin}/${potentialSubpath}/api`
-          console.log('✅ Production subpath detected:', potentialSubpath)
-          console.log('🔗 API Base URL:', apiBase)
-          return apiBase
-        }
-      }
-      
-      // Production domain but no clear subpath - try tennis as default
-      // This handles cases where the app is served from /tennis/ but accessed directly
-      const testApiBase = `${currentOrigin}/tennis/api`
-      console.log('✅ Production domain - trying tennis subpath as default')
-      console.log('🔗 API Base URL (will test):', testApiBase)
-      
-      // We'll test this URL and fall back to root if it doesn't work
-      return testApiBase
-    }
-    
-    // Development or localhost - use root API
-    const apiBase = `${currentOrigin}/api`
-    console.log('✅ Development/localhost detected - using root API')
-    console.log('🔗 API Base URL:', apiBase)
-    return apiBase
-  }
-
+  // ── Initialization ────────────────────────────────────────────────────────
   async init() {
     try {
       await this.detectServerMode()
-      const authResult = await this.checkAuthStatus()
+      await this.checkAuthStatus()
       this.updateUIForAuthStatus()
 
-      // If not authenticated, try proactive token refresh (access token may have
-      // expired while the user was away, but refresh token is still valid)
+      // Proactive token refresh if access token expired but refresh token valid
       if (!this.isAuthenticated && this.serverMode) {
         const refreshed = await refreshAuthToken(this.apiBase)
         if (refreshed) {
           this.isAuthenticated = true
           this.user = refreshed.user
           this.csrfToken = refreshed.csrfToken
-          setCSRFToken(refreshed.csrfToken) // Sync module cache with authoritative token
+          setCSRFToken(refreshed.csrfToken)
           this.updateUIForAuthStatus()
         }
       }
-      
-      // Wait for DOM to be fully loaded
+
       if (document.readyState === 'loading') {
-        await new Promise(resolve => {
-          document.addEventListener('DOMContentLoaded', resolve)
-        })
+        await new Promise(r => document.addEventListener('DOMContentLoaded', r))
       }
-      
-      // Hide all view mode sections initially
+
       this.hideAllViewModeSections()
-      
       this.setupEventListeners()
       await this.loadInitialData()
       this.updateUIForAuthStatus()
-      
-     // Ensure rankings tab is properly activated
-     this.switchTab('rankings')
-
-      // Load hero banner dynamically
+      this.switchTab('rankings')
       this.loadHeroBanner()
-     
-     // System is ready
-     this.updateFileStatus('✅ Hệ thống đã sẵn sàng', 'success')
+      this.updateFileStatus('✅ Hệ thống đã sẵn sàng', 'success')
     } catch (error) {
       console.error('Error initializing system:', error)
       this.updateUIForAuthStatus()
@@ -376,316 +212,41 @@ class TennisRankingSystem {
   }
 
   hideAllViewModeSections() {
-    try {
-      // Hide any view mode sections that might be visible outside their proper containers
-      const viewModeSections = document.querySelectorAll('.view-mode-section')
-      viewModeSections.forEach(section => {
-        section.classList.add('hidden')
-      })
-    } catch (error) {
-      console.error('Error hiding view mode sections:', error)
-    }
+    document.querySelectorAll('.view-mode-section').forEach(s => s.classList.add('hidden'))
   }
 
-  async detectServerMode() {
-    const result = await moduleDetectServerMode(this.apiBase)
-    this.serverMode = result.serverMode
-    if (result.serverMode) {
-      this.apiBase = result.apiBase
-      console.log('✅ Server mode detected - using server database')
-      console.log('✅ API base URL confirmed:', this.apiBase)
-    } else {
-      console.log('⚠️ No server available, falling back to local storage mode')
-      this.serverMode = false
-      this.apiBase = null
-    }
-  }
-
-  async checkAuthStatus() {
-    if (!this.serverMode) return
-
-    const result = await moduleCheckAuthStatus(this.apiBase)
-    this.isAuthenticated = result.isAuthenticated
-    this.user = result.user
-    this.csrfToken = result.csrfToken
-    this.updateScreenshotSectionVisibility()
-  }
-
-  async login(username, password) {
-    const result = await moduleLogin(this.apiBase, username, password)
-    if (result.success) {
-      this.isAuthenticated = true
-      this.user = result.user
-      this.csrfToken = result.csrfToken
-      // Sync module cache with the new user's CSRF token so getCSRFToken()
-      // returns the authenticated token, not a guest token.
-      setCSRFToken(result.csrfToken)
-      this.updateUIForAuthStatus()
-      this.updateScreenshotSectionVisibility()
-      await this.loadInitialData()
-    }
-    return result
-  }
-
-  /** Show/hide the screenshot upload section based on user role */
-  updateScreenshotSectionVisibility() {
-    const section = document.getElementById('screenshotSection')
-    if (!section) return
-    const canUse = this.user?.role === 'admin' || this.user?.role === 'editor'
-    section.style.display = canUse ? '' : 'none'
-    if (!canUse) this.clearScreenshot()
-  }
-
-  async logout() {
-    await moduleLogout(this.apiBase, this.csrfToken)
-    resetCSRFToken()
-    this.isAuthenticated = false
-    this.user = null
-    this.csrfToken = null
-    this.updateUIForAuthStatus()
-  }
-
-  updateUIForAuthStatus() {
-    const userRole = this.user?.role || null
-    
-    // Update body class for CSS targeting
-    if (this.isAuthenticated) {
-      document.body.classList.add('authenticated')
-    } else {
-      document.body.classList.remove('authenticated')
-    }
-    
-    // Update user info display
-    const userName = document.querySelector('.user-name')
-    const userRoleBadge = document.querySelector('.user-role.badge')
-    if (userName && this.user) {
-      userName.textContent = this.user.displayName || this.user.username
-    }
-    if (userRoleBadge && this.user) {
-      userRoleBadge.textContent = this.user.role === 'admin' ? 'Admin' : (this.user.role === 'editor' ? 'Editor' : 'Viewer')
-    }
-    
-    // Handle general edit elements (for any authenticated user with edit rights)
-    const editElements = document.querySelectorAll('.edit-only')
-    editElements.forEach(element => {
-      if (this.isAuthenticated && (userRole === 'admin' || userRole === 'editor')) {
-        element.classList.remove('hidden')
-      } else {
-        element.classList.add('hidden')
-      }
-    })
-    
-    // Handle admin-only elements
-    const adminElements = document.querySelectorAll('.admin-only')
-    adminElements.forEach(element => {
-      if (userRole === 'admin') {
-        element.classList.remove('hidden')
-      } else {
-        element.classList.add('hidden')
-      }
-    })
-    
-    // Handle editor elements (admin or editor)
-    const editorElements = document.querySelectorAll('.editor-only')
-    editorElements.forEach(element => {
-      if (userRole === 'admin' || userRole === 'editor') {
-        element.classList.remove('hidden')
-      } else {
-        element.classList.add('hidden')
-      }
-    })
-    
-    // Handle guest info elements
-    const guestInfoElements = document.querySelectorAll('.guest-info')
-    guestInfoElements.forEach(element => {
-      if (this.isAuthenticated && (userRole === 'admin' || userRole === 'editor')) {
-        element.classList.add('hidden')
-      } else {
-        element.classList.remove('hidden')
-      }
-    })
-    
-    // Handle logged-in/logged-out visibility
-    document.querySelectorAll('.logged-in-only').forEach(el => {
-      el.style.display = this.isAuthenticated ? '' : 'none'
-    })
-    document.querySelectorAll('.logged-out-only').forEach(el => {
-      el.style.display = this.isAuthenticated ? 'none' : ''
-    })
-    
-    this.renderPlayers()
-    this.renderSeasons()
-  }
-
-  // Helper method to get CSRF token (uses extracted module if available)
-  // Helper method to get CSRF token (uses extracted module)
-  async getCSRFToken() {
-    if (this.csrfToken) return this.csrfToken
-    const token = await moduleGetCSRFToken(this.apiBase)
-    if (token) this.csrfToken = token
-    return token
-  }
-
-  // Helper method to make authenticated requests with CSRF protection (uses extracted module)
-  async makeAuthenticatedRequest(url, options = {}) {
-    return moduleMakeAuthenticatedRequest(this.apiBase, url, options)
-  }
-
-  updateAuthHeader() {
-    const header = document.querySelector('header')
-    let authDiv = header.querySelector('.auth-section')
-    
-    if (!authDiv) {
-      authDiv = document.createElement('div')
-      authDiv.className = 'auth-section'
-      header.appendChild(authDiv)
-    }
-    
-    if (this.isAuthenticated) {
-      const roleLabel = this.user.role === 'admin' ? '👑 Quản trị viên' : '✏️ Biên tập viên'
-      const roleClass = this.user.role === 'admin' ? 'admin-role' : 'editor-role'
-      
-      authDiv.innerHTML = `
-        <div class="user-info">
-          <span class="user-name">👤 ${this.escapeHtml(this.user.username)}</span>
-          <span class="user-role ${roleClass}">${roleLabel}</span>
-          <button id="logoutBtn" class="logout-btn">Đăng xuất</button>
-        </div>
-      `
-      document.getElementById('logoutBtn').addEventListener('click', () => this.logout())
-    } else {
-      authDiv.innerHTML = `
-        <div class="login-section">
-          <span class="view-mode">📖 Chế độ xem</span>
-          <button id="loginBtn" class="login-btn">Đăng nhập</button>
-        </div>
-      `
-      document.getElementById('loginBtn').addEventListener('click', () => this.showLoginModal())
-    }
-  }
-
-  showLoginModal() {
-    const modal = document.createElement('div')
-    modal.className = 'modal'
-    modal.innerHTML = `
-      <div class="modal-content">
-        <h2>🔐 Đăng nhập quản trị</h2>
-        <form id="loginForm">
-          <div class="form-group">
-            <label for="loginUsername">Tên đăng nhập:</label>
-            <input type="text" id="loginUsername" required>
-          </div>
-          <div class="form-group">
-            <label for="loginPassword">Mật khẩu:</label>
-            <input type="password" id="loginPassword" required>
-          </div>
-          <div class="form-actions">
-            <button type="submit">Đăng nhập</button>
-            <button type="button" id="cancelLogin">Hủy</button>
-          </div>
-        </form>
-        <div id="loginError" class="error-message"></div>
-      </div>
-    `
-    
-    document.body.appendChild(modal)
-    
-    document.getElementById('loginForm').addEventListener('submit', async (e) => {
-      e.preventDefault()
-      const username = document.getElementById('loginUsername').value
-      const password = document.getElementById('loginPassword').value
-      const errorDiv = document.getElementById('loginError')
-      
-      const result = await this.login(username, password)
-      
-      if (result.success) {
-        document.body.removeChild(modal)
-        this.updateFileStatus('✅ Đăng nhập thành công!', 'success')
-      } else {
-        errorDiv.textContent = result.message
-      }
-    })
-    
-    document.getElementById('cancelLogin').addEventListener('click', () => {
-      document.body.removeChild(modal)
-    })
-    
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) {
-        document.body.removeChild(modal)
-      }
-    })
-  }
-
+  // ── Data loading ──────────────────────────────────────────────────────────
   async loadInitialData() {
     if (!this.serverMode) {
-      this.updateFileStatus('⚠️ Không thể kết nối server. Vui lòng khởi động server.', 'error')
+      this.updateFileStatus('⚠️ Không thể kết nối server.', 'error')
       return
     }
-
     try {
-      // Single combined request replaces 4+ parallel fetches
       const response = await fetch(`${this.apiBase}/init`, { credentials: 'include' })
-      
       if (response.ok) {
         const data = await response.json()
-        
-        // Populate all data from combined response
         this.players = data.players || []
         this.seasons = data.seasons || []
         this.playDates = data.playDates || []
-        
-        // Pre-populate client caches from init response
         this.setCache('players', null, this.players)
         this.setCache('seasons', null, this.seasons)
         this.setCache('playDates', null, this.playDates)
-        
-        // Cache lifetime rankings
-        if (data.lifetimeRankings) {
-          this.setCache('rankings', 'lifetime', data.lifetimeRankings)
-        }
-        
-        // Cache default date rankings + matches (avoids extra fetches on first render)
-        if (data.defaultDate && data.defaultDateRankings) {
-          this.setCache('rankings', `daily:${data.defaultDate}`, data.defaultDateRankings)
-        }
-        if (data.defaultDate && data.defaultDateMatches) {
-          this.setCache('matches', `date:${data.defaultDate}`, data.defaultDateMatches)
-        }
-        
-        // Set server version for cache coherence
+        if (data.lifetimeRankings) this.setCache('rankings', 'lifetime', data.lifetimeRankings)
+        if (data.defaultDate && data.defaultDateRankings) this.setCache('rankings', `daily:${data.defaultDate}`, data.defaultDateRankings)
+        if (data.defaultDate && data.defaultDateMatches) this.setCache('matches', `date:${data.defaultDate}`, data.defaultDateMatches)
         this.cache.serverVersion = data.version
-        
-        // Set default selected date
-        if (data.defaultDate) {
-          this.selectedDate = data.defaultDate
-        }
-
-        // Sync CSRF token from init response (authoritative — uses current req.user)
+        if (data.defaultDate) this.selectedDate = data.defaultDate
         if (data.isAuthenticated && data.csrfToken) {
           this.csrfToken = data.csrfToken
-          setCSRFToken(data.csrfToken) // Sync module cache with authoritative token
+          setCSRFToken(data.csrfToken)
         }
-
         this.updateSeasonSelect()
       } else {
-        // Fallback to individual requests if /api/init not available
-        console.warn('⚠️ /api/init failed, falling back to individual requests')
-        await Promise.all([
-          this.loadPlayers(),
-          this.loadSeasons(),
-          this.loadPlayDates(),
-          this.loadMatches()
-        ])
+        await Promise.all([this.loadPlayers(), this.loadSeasons(), this.loadPlayDates(), this.loadMatches()])
       }
-      
-      // Update UI components after loading data
       this.updatePlayerSelects()
       this.setTodaysDate()
-      
-      // Set default view mode and render
       await this.setDefaultViewMode()
-      
     } catch (error) {
       console.error('Error loading initial data:', error)
       this.updateFileStatus('❌ Lỗi tải dữ liệu từ server', 'error')
@@ -694,208 +255,235 @@ class TennisRankingSystem {
 
   async loadPlayers() {
     try {
-      // Check cache first (10 min TTL for players)
       const cached = this.getCache('players')
       if (cached) {
         this.players = cached
-        // Rebuild the normalized index from cached players
-        this.normalizedPlayers = this.players.map(p => ({
-          normalized: normalizeText(p.name).toLowerCase(),
-          id: p.id,
-          name: p.name
-        })).sort((a, b) => a.normalized.localeCompare(b.normalized))
-        return Promise.resolve()
+        this.normalizedPlayers = this.players.map(p => ({ normalized: normalizeText(p.name).toLowerCase(), id: p.id, name: p.name })).sort((a, b) => a.normalized.localeCompare(b.normalized))
+        return
       }
-
       const response = await fetch(`${this.apiBase}/players`)
       if (response.ok) {
         this.players = await response.json()
         this.setCache('players', null, this.players)
-        // Build a sorted normalized index for fast fuzzy matching
-        this.normalizedPlayers = this.players.map(p => ({
-          normalized: normalizeText(p.name).toLowerCase(),
-          id: p.id,
-          name: p.name
-        })).sort((a, b) => a.normalized.localeCompare(b.normalized))
+        this.normalizedPlayers = this.players.map(p => ({ normalized: normalizeText(p.name).toLowerCase(), id: p.id, name: p.name })).sort((a, b) => a.normalized.localeCompare(b.normalized))
       }
-      return Promise.resolve()
-    } catch (error) {
-      console.error('Error loading players:', error)
-      return Promise.resolve()
-    }
+    } catch (error) { console.error('Error loading players:', error) }
   }
 
   async loadSeasons() {
     try {
-      // Check cache first (10 min TTL for seasons)
       const cached = this.getCache('seasons')
-      if (cached) {
-        this.seasons = cached
-        this.updateSeasonSelect()
-        return
-      }
-      
+      if (cached) { this.seasons = cached; this.updateSeasonSelect(); return }
       const response = await fetch(`${this.apiBase}/seasons`)
-      if (response.ok) {
-        this.seasons = await response.json()
-        this.setCache('seasons', null, this.seasons)
-        this.updateSeasonSelect()
-      }
-    } catch (error) {
-      console.error('Error loading seasons:', error)
-    }
+      if (response.ok) { this.seasons = await response.json(); this.setCache('seasons', null, this.seasons); this.updateSeasonSelect() }
+    } catch (error) { console.error('Error loading seasons:', error) }
   }
 
   async loadPlayDates() {
     try {
-      // Check cache first (5 min TTL for playDates)
       const cached = this.getCache('playDates')
-      if (cached) {
-        this.playDates = cached
-        return
-      }
-      
+      if (cached) { this.playDates = cached; return }
       const response = await fetch(`${this.apiBase}/play-dates`)
-      if (response.ok) {
-        this.playDates = await response.json()
-        this.setCache('playDates', null, this.playDates)
-      }
-    } catch (error) {
-      console.error('Error loading play dates:', error)
-    }
+      if (response.ok) { this.playDates = await response.json(); this.setCache('playDates', null, this.playDates) }
+    } catch (error) { console.error('Error loading play dates:', error) }
   }
 
   async loadMatches() {
     try {
       this.matches = []
       let nextCursor = null
-      const limit = 50
-
       do {
-        const url = nextCursor
-          ? `${this.apiBase}/matches?after=${nextCursor}&limit=${limit}`
-          : `${this.apiBase}/matches?limit=${limit}`
-
+        const url = nextCursor ? `${this.apiBase}/matches?after=${nextCursor}&limit=50` : `${this.apiBase}/matches?limit=50`
         const response = await fetch(url)
         if (!response.ok) break
-
         const batch = await response.json()
         if (!batch || batch.length === 0) break
-
         this.matches.push(...batch)
-
-        const nextCursorHeader = response.headers.get('X-Next-Cursor')
-        // M1: Cursor is now a base64-encoded JSON with (playDate, createdAt, id)
-        nextCursor = nextCursorHeader || null
+        nextCursor = response.headers.get('X-Next-Cursor') || null
       } while (nextCursor)
-
-      // Update cache key 'all' so renderMatchHistory picks up fresh data
-      if (this.matches.length > 0) {
-        this.setCache('matches', 'all', this.matches)
-      }
-    } catch (error) {
-      console.error('Error loading matches:', error)
-    }
+      if (this.matches.length > 0) this.setCache('matches', 'all', this.matches)
+    } catch (error) { console.error('Error loading matches:', error) }
   }
 
   async setDefaultViewMode() {
     try {
-      // Check if we have any play dates
       if (this.playDates.length > 0) {
         this.currentViewMode = 'daily'
-        // Convert to date-only format to avoid timezone issues
         this.selectedDate = this.playDates[0].play_date.split('T')[0]
       } else {
-        // Fall back to season mode
         const activeSeason = this.seasons.find(s => s.is_active)
-        if (activeSeason) {
-          this.currentViewMode = 'season'
-          this.selectedSeason = activeSeason.id
-        } else {
-          this.currentViewMode = 'lifetime'
-        }
+        if (activeSeason) { this.currentViewMode = 'season'; this.selectedSeason = activeSeason.id }
+        else this.currentViewMode = 'lifetime'
       }
-      
-      // Only update UI elements if we're on the rankings tab
       if (document.querySelector('.tab-content.active')?.id === 'rankings-tab') {
         this.updateDateSelector()
         this.updateSeasonSelector()
         await this.renderRankings()
       }
-      
       this.updatePlayerSelects()
-    } catch (error) {
-      console.error('Error setting default view mode:', error)
-      // Fallback to lifetime mode
-      this.currentViewMode = 'lifetime'
-    }
+    } catch (error) { console.error('Error setting default view mode:', error); this.currentViewMode = 'lifetime' }
   }
 
+  // ── UI helpers (used by auth-manager) ─────────────────────────────────────
+  updateUIForAuthStatus() {
+    moduleUpdateUIForAuthStatus(this)
+  }
+
+  // ── Event listeners (one big setup, called once on init) ──────────────────
   setupEventListeners() {
     try {
-      // Tab switching (new nav-btn class)
-      document.querySelectorAll('.nav-btn').forEach(button => {
-        button.addEventListener('click', async (e) => {
-          const tab = e.currentTarget.dataset.tab
-          if (tab) await this.switchTab(tab)
-        })
+      // Tab switching
+      document.querySelectorAll('.nav-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => { const tab = e.currentTarget.dataset.tab; if (tab) this.switchTab(tab) })
       })
-      
-      // View mode switching (new view-btn class)
-      document.querySelectorAll('.view-btn').forEach(button => {
-        button.addEventListener('click', (e) => {
-          const view = e.currentTarget.dataset.view
-          if (view) this.switchViewMode(view)
-        })
+
+      // View mode switching
+      document.querySelectorAll('.view-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => { const view = e.currentTarget.dataset.view; if (view) this.switchViewMode(view) })
       })
-      
-      // Match type toggle (new type-btn class)
-      document.querySelectorAll('.type-btn').forEach(button => {
-        button.addEventListener('click', (e) => {
-          const type = e.currentTarget.dataset.type
-          if (type) this.switchMatchType(type)
-        })
+
+      // Match type toggle
+      document.querySelectorAll('.type-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => { const type = e.currentTarget.dataset.type; if (type) this.switchMatchType(type) })
       })
-      
-      // Match form submission
+
+      // Match form
       const matchForm = document.getElementById('matchForm')
-      if (matchForm) {
-        matchForm.addEventListener('submit', async (e) => {
-          e.preventDefault()
-          await this.recordMatch()
-        })
-      }
-      
-      // Reset match form
-      const resetFormBtn = document.getElementById('resetFormBtn')
-      if (resetFormBtn) {
-        resetFormBtn.addEventListener('click', () => this.resetMatchForm())
+      if (matchForm) matchForm.addEventListener('submit', (e) => { e.preventDefault(); this.recordMatch() })
+
+      // Reset form
+      const resetBtn = document.getElementById('resetFormBtn')
+      if (resetBtn) resetBtn.addEventListener('click', () => this.resetMatchForm())
+
+      // Score inputs → auto-winner
+      ;['team1Score', 'team2Score'].forEach(id => {
+        const input = document.getElementById(id)
+        if (input) input.addEventListener('input', () => this.updateAutoWinner())
+      })
+
+      // Winner select
+      const winnerSelect = document.getElementById('winner')
+      if (winnerSelect) winnerSelect.addEventListener('change', (e) => {
+        this.currentWinningTeam = e.target.value === 'team1' ? 1 : (e.target.value === 'team2' ? 2 : null)
+      })
+
+      // Manual / auto winner toggle
+      const useManualBtn = document.getElementById('useManualWinner')
+      const useAutoBtn = document.getElementById('useAutoWinner')
+      if (useManualBtn && useAutoBtn) {
+        useManualBtn.addEventListener('click', () => this.toggleWinnerMode(true))
+        useAutoBtn.addEventListener('click', () => this.toggleWinnerMode(false))
       }
 
-      // Screenshot upload section (editor/admin only)
-      const uploadBtn = document.getElementById('uploadScreenshotBtn')
-      const fileInput = document.getElementById('screenshotFile')
-      const clearBtn = document.getElementById('clearScreenshotBtn')
-      const confirmBtn = document.getElementById('confirmParsedMatchesBtn')
-      const cancelBtn = document.getElementById('cancelParsedMatchesBtn')
+      // Match season selector
+      const matchSeasonSelect = document.getElementById('matchSeasonSelect')
+      if (matchSeasonSelect) matchSeasonSelect.addEventListener('change', async (e) => {
+        await this.onMatchSeasonChange(parseInt(e.target.value))
+        this.updateTeamLabelsForMatchType()
+      })
 
-      if (uploadBtn && fileInput) {
-        uploadBtn.addEventListener('click', () => fileInput.click())
-      }
-      if (fileInput) {
-        fileInput.addEventListener('change', (e) => this.handleScreenshotUpload(e))
-      }
-      if (clearBtn) {
-        clearBtn.addEventListener('click', () => this.clearScreenshot())
-      }
-      if (confirmBtn) {
-        confirmBtn.addEventListener('click', () => this.confirmParsedMatches())
-      }
-      if (cancelBtn) {
-        cancelBtn.addEventListener('click', () => this.cancelParsedMatches())
-      }
+      // Login / logout buttons
+      const loginBtn = document.getElementById('loginBtn')
+      if (loginBtn) loginBtn.addEventListener('click', () => this.showLoginModal())
+      const logoutBtn = document.getElementById('logoutBtn')
+      if (logoutBtn) logoutBtn.addEventListener('click', () => this.logout())
 
-      // Mode toggle: Single Match vs Batch Match
+      // Today button
+      const todayBtn = document.getElementById('todayBtn')
+      if (todayBtn) todayBtn.addEventListener('click', () => {
+        const today = new Date().toISOString().split('T')[0]
+        const dateSelect = document.getElementById('rankingDateSelect')
+        if (dateSelect) {
+          const hasToday = Array.from(dateSelect.options).some(o => o.value === today)
+          if (hasToday) dateSelect.value = today
+          else { const opt = document.createElement('option'); opt.value = today; opt.textContent = this.formatDate(today); dateSelect.insertBefore(opt, dateSelect.options[1]); dateSelect.value = today }
+        }
+        this.selectedDate = today
+        this.renderRankings()
+      })
+
+      // Date / season selectors for rankings
+      const rankingDateSelect = document.getElementById('rankingDateSelect')
+      if (rankingDateSelect) rankingDateSelect.addEventListener('change', (e) => { this.selectedDate = e.target.value; if (this.currentViewMode === 'daily') this.renderRankings() })
+      const seasonSelect = document.getElementById('seasonSelect')
+      if (seasonSelect) seasonSelect.addEventListener('change', (e) => { this.selectedSeason = parseInt(e.target.value); if (this.currentViewMode === 'season') this.renderRankings() })
+
+      // Match history date filter
+      const matchHistoryDate = document.getElementById('matchHistoryDate')
+      if (matchHistoryDate) matchHistoryDate.addEventListener('change', () => this.renderMatchHistory())
+
+      // Login form
+      const loginForm = document.getElementById('loginForm')
+      if (loginForm) loginForm.addEventListener('submit', async (e) => {
+        e.preventDefault()
+        const result = await this.login(document.getElementById('loginUsername').value, document.getElementById('loginPassword').value)
+        if (result.success) { this.hideModal('loginModal'); this.showToast('Đăng nhập thành công!', 'success') }
+        else this.showToast(result.message, 'error')
+      })
+
+      // Season form
+      const seasonForm = document.getElementById('seasonForm')
+      if (seasonForm) seasonForm.addEventListener('submit', (e) => { e.preventDefault(); this.saveSeason() })
+
+      // Account form
+      const accountForm = document.getElementById('accountForm')
+      if (accountForm) accountForm.addEventListener('submit', (e) => { e.preventDefault(); this.saveAccount() })
+
+      // Add player
+      const addPlayerBtn = document.getElementById('addPlayer')
+      if (addPlayerBtn) addPlayerBtn.addEventListener('click', () => this.addPlayer())
+      ;['playerName', 'newPlayerName'].forEach(id => {
+        const input = document.getElementById(id)
+        if (input) input.addEventListener('keypress', (e) => { if (e.key === 'Enter') this.addPlayer() })
+      })
+
+      // Delete player (event delegation)
+      document.addEventListener('click', async (e) => {
+        const btn = e.target.closest('.delete-btn, .delete-player-btn')
+        if (btn?.dataset.playerId) this.removePlayer(parseInt(btn.dataset.playerId))
+      })
+
+      // Modal dismiss
+      document.addEventListener('click', (e) => {
+        const dismissBtn = e.target.closest('[data-dismiss="modal"]')
+        if (dismissBtn) { const modal = dismissBtn.closest('.modal'); if (modal) this.hideModal(modal.id); return }
+        const backdrop = e.target.closest('.modal-backdrop')
+        if (backdrop) { const modal = backdrop.closest('.modal'); if (modal) this.hideModal(modal.id) }
+      })
+
+      // Create buttons
+      const createSeasonBtn = document.getElementById('createSeasonBtn')
+      if (createSeasonBtn) createSeasonBtn.addEventListener('click', () => this.showSeasonModal())
+      const createAccountBtn = document.getElementById('createAccountBtn')
+      if (createAccountBtn) createAccountBtn.addEventListener('click', () => this.showAccountModal())
+
+      // Export buttons
+      ;[['exportExcelBtn', 'daily'], ['exportSeasonBtn', 'season'], ['exportLifetimeBtn', 'lifetime']].forEach(([id, mode]) => {
+        const btn = document.getElementById(id)
+        if (btn) btn.addEventListener('click', () => this.exportToExcel(mode))
+      })
+      const exportBtn = document.getElementById('exportRankings')
+      if (exportBtn) exportBtn.addEventListener('click', () => this.exportToExcel(this.currentViewMode))
+
+      // Backup / restore buttons
+      const backupJsonBtn = document.getElementById('backupJsonBtn')
+      if (backupJsonBtn) backupJsonBtn.addEventListener('click', () => this.backupToJson())
+      const restoreJsonBtn = document.getElementById('restoreJsonBtn')
+      const restoreJsonInput = document.getElementById('restoreJsonInput')
+      if (restoreJsonBtn && restoreJsonInput) {
+        restoreJsonBtn.addEventListener('click', () => restoreJsonInput.click())
+        restoreJsonInput.addEventListener('change', (e) => this.restoreFromJson(e))
+      }
+      const backupDataBtn = document.getElementById('backupDataBtn')
+      if (backupDataBtn) backupDataBtn.addEventListener('click', () => this.backupData())
+      const restoreDataBtn = document.getElementById('restoreDataBtn')
+      if (restoreDataBtn) restoreDataBtn.addEventListener('click', () => this.restoreData())
+      const clearAllDataBtn = document.getElementById('clearAllData')
+      if (clearAllDataBtn) clearAllDataBtn.addEventListener('click', () => this.clearAllData())
+      const backupExcelBtn = document.getElementById('backupExcelBtn')
+      if (backupExcelBtn) backupExcelBtn.addEventListener('click', () => this.exportToExcel('lifetime'))
+
+      // Batch mode toggle
       const modeSingleBtn = document.getElementById('modeSingleBtn')
       const modeBatchBtn = document.getElementById('modeBatchBtn')
       if (modeSingleBtn && modeBatchBtn) {
@@ -903,7 +491,7 @@ class TennisRankingSystem {
         modeBatchBtn.addEventListener('click', () => this.switchToBatchMode())
       }
 
-      // Batch match type toggle (solo/duo)
+      // Batch type toggle
       const batchTypeToggle = document.getElementById('batchTypeToggle')
       if (batchTypeToggle) {
         batchTypeToggle.querySelectorAll('.type-btn').forEach(btn => {
@@ -918,5612 +506,338 @@ class TennisRankingSystem {
         })
       }
 
-      // Batch match buttons
+      // Batch buttons
       const addBatchBtn = document.getElementById('addBatchMatchBtn')
-      const confirmBatchBtn = document.getElementById('confirmBatchMatchesBtn')
-      const cancelBatchBtn = document.getElementById('cancelBatchMatchesBtn')
-
       if (addBatchBtn) addBatchBtn.addEventListener('click', () => this.addBatchMatchRow())
+      const confirmBatchBtn = document.getElementById('confirmBatchMatchesBtn')
       if (confirmBatchBtn) confirmBatchBtn.addEventListener('click', () => this.confirmBatchMatches())
+      const cancelBatchBtn = document.getElementById('cancelBatchMatchesBtn')
       if (cancelBatchBtn) cancelBatchBtn.addEventListener('click', () => this.hideBatchSection())
 
-      // Login button
-      const loginBtn = document.getElementById('loginBtn')
-      if (loginBtn) {
-        loginBtn.addEventListener('click', () => this.showLoginModal())
-      }
-      
-      // Logout button
-      const logoutBtn = document.getElementById('logoutBtn')
-      if (logoutBtn) {
-        logoutBtn.addEventListener('click', () => this.logout())
-      }
-      
-      // Create season button
-      const createSeasonBtn = document.getElementById('createSeasonBtn')
-      if (createSeasonBtn) {
-        createSeasonBtn.addEventListener('click', () => this.showSeasonModal())
-      }
-      
-      // Create account button
-      const createAccountBtn = document.getElementById('createAccountBtn')
-      if (createAccountBtn) {
-        createAccountBtn.addEventListener('click', () => this.showAccountModal())
-      }
-      
-      // Refresh cache status button (admin only)
-      const refreshCacheStatusBtn = document.getElementById('refreshCacheStatusBtn')
-      if (refreshCacheStatusBtn) {
-        refreshCacheStatusBtn.addEventListener('click', () => {
-          if (this.user?.role === 'admin') {
-            this.renderCacheStatus()
-          }
-        })
-      }
+      // Screenshot buttons
+      const uploadBtn = document.getElementById('uploadScreenshotBtn')
+      const fileInput = document.getElementById('screenshotFile')
+      if (uploadBtn && fileInput) uploadBtn.addEventListener('click', () => fileInput.click())
+      if (fileInput) fileInput.addEventListener('change', (e) => this.handleScreenshotUpload(e))
+      const clearScreenshotBtn = document.getElementById('clearScreenshotBtn')
+      if (clearScreenshotBtn) clearScreenshotBtn.addEventListener('click', () => this.clearScreenshot())
+      const confirmParsedBtn = document.getElementById('confirmParsedMatchesBtn')
+      if (confirmParsedBtn) confirmParsedBtn.addEventListener('click', () => this.confirmParsedMatches())
+      const cancelParsedBtn = document.getElementById('cancelParsedMatchesBtn')
+      if (cancelParsedBtn) cancelParsedBtn.addEventListener('click', () => this.cancelParsedMatches())
 
-      // FCM Dashboard Controls (Admin Only)
-      const fcmRefreshBtn = document.getElementById('fcmRefreshBtn')
-      if (fcmRefreshBtn) {
-        fcmRefreshBtn.addEventListener('click', () => this.fetchFcmStatus())
-      }
-
-      const fcmPauseBtn = document.getElementById('fcmPauseBtn')
-      if (fcmPauseBtn) {
-        fcmPauseBtn.addEventListener('click', () => this.controlFcm('pause'))
-      }
-
-      const fcmResumeBtn = document.getElementById('fcmResumeBtn')
-      if (fcmResumeBtn) {
-        fcmResumeBtn.addEventListener('click', () => this.controlFcm('resume'))
-      }
-
-      const fcmBroadcastForm = document.getElementById('fcmBroadcastForm')
-      if (fcmBroadcastForm) {
-        fcmBroadcastForm.addEventListener('submit', (e) => this.sendFcmBroadcast(e))
-      }
-      
-      // Today button
-      const todayBtn = document.getElementById('todayBtn')
-      if (todayBtn) {
-        todayBtn.addEventListener('click', () => {
-          const today = new Date().toISOString().split('T')[0]
-          const dateSelect = document.getElementById('rankingDateSelect')
-          if (dateSelect) {
-            // Check if today is in the list
-            const hasToday = Array.from(dateSelect.options).some(opt => opt.value === today)
-            if (hasToday) {
-              dateSelect.value = today
-            } else {
-              // If today is not in the list, add it as a temporary option
-              const tempOption = document.createElement('option')
-              tempOption.value = today
-              tempOption.textContent = this.formatDate(today)
-              dateSelect.insertBefore(tempOption, dateSelect.options[1])
-              dateSelect.value = today
-            }
-          }
-          this.selectedDate = today
-          this.renderRankings()
-        })
-      }
-      
-      // Export Excel button (daily view)
-      const exportExcelBtn = document.getElementById('exportExcelBtn')
-      if (exportExcelBtn) {
-        exportExcelBtn.addEventListener('click', () => this.exportToExcel('daily'))
-      }
-      
-      // Export Excel button (season view)
-      const exportSeasonBtn = document.getElementById('exportSeasonBtn')
-      if (exportSeasonBtn) {
-        exportSeasonBtn.addEventListener('click', () => this.exportToExcel('season'))
-      }
-      
-      // Export Excel button (lifetime view)
-      const exportLifetimeBtn = document.getElementById('exportLifetimeBtn')
-      if (exportLifetimeBtn) {
-        exportLifetimeBtn.addEventListener('click', () => this.exportToExcel('lifetime'))
-      }
-      
-      // Ranking date picker (dropdown)
-      const rankingDateSelect = document.getElementById('rankingDateSelect')
-      if (rankingDateSelect) {
-        rankingDateSelect.addEventListener('change', (e) => {
-          this.selectedDate = e.target.value
-          if (this.currentViewMode === 'daily') {
-            this.renderRankings()
-          }
-        })
-      }
-
-      // Season select
-      const seasonSelect = document.getElementById('seasonSelect')
-      if (seasonSelect) {
-        seasonSelect.addEventListener('change', (e) => {
-          this.selectedSeason = parseInt(e.target.value)
-          if (this.currentViewMode === 'season') {
-            this.renderRankings()
-          }
-        })
-      }
-      
-      // Match history date filter
-      const matchHistoryDate = document.getElementById('matchHistoryDate')
-      if (matchHistoryDate) {
-        matchHistoryDate.addEventListener('change', () => this.renderMatchHistory())
-      }
-
-      // Login form submission
-      const loginForm = document.getElementById('loginForm')
-      if (loginForm) {
-        loginForm.addEventListener('submit', async (e) => {
-          e.preventDefault()
-          const username = document.getElementById('loginUsername').value
-          const password = document.getElementById('loginPassword').value
-          const result = await this.login(username, password)
-          if (result.success) {
-            this.hideModal('loginModal')
-            this.showToast('Đăng nhập thành công!', 'success')
-          } else {
-            this.showToast(result.message, 'error')
-          }
-        })
-      }
-      
-      // Season form submission
-      const seasonForm = document.getElementById('seasonForm')
-      if (seasonForm) {
-        seasonForm.addEventListener('submit', async (e) => {
-          e.preventDefault()
-          await this.saveSeason()
-        })
-      }
-      
-      // Account form submission
-      const accountForm = document.getElementById('accountForm')
-      if (accountForm) {
-        accountForm.addEventListener('submit', async (e) => {
-          e.preventDefault()
-          await this.saveAccount()
-        })
-      }
-      
-      // Auto-winner detection for score inputs
-      const scoreInputs = ['team1Score', 'team2Score']
-      scoreInputs.forEach(id => {
-        const input = document.getElementById(id)
-        if (input) {
-          input.addEventListener('input', () => this.updateAutoWinner())
-        }
-      })
-      
-      // Winner select change
-      const winnerSelect = document.getElementById('winner')
-      if (winnerSelect) {
-        winnerSelect.addEventListener('change', (e) => {
-          this.currentWinningTeam = e.target.value === 'team1' ? 1 : (e.target.value === 'team2' ? 2 : null)
-        })
-      }
-
-      // Add player
-      const addPlayerBtn = document.getElementById('addPlayer')
-      if (addPlayerBtn) {
-        addPlayerBtn.addEventListener('click', async () => {
-          await this.addPlayer()
-        })
-      }
-
-      // Player name inputs - both old and new
-      const playerNameInput = document.getElementById('playerName')
-      if (playerNameInput) {
-        playerNameInput.addEventListener('keypress', async (e) => {
-          if (e.key === 'Enter') {
-            await this.addPlayer()
-          }
-        })
-      }
-      
-      const newPlayerNameInput = document.getElementById('newPlayerName')
-      if (newPlayerNameInput) {
-        newPlayerNameInput.addEventListener('keypress', async (e) => {
-          if (e.key === 'Enter') {
-            await this.addPlayer()
-          }
-        })
-      }
-
-      // Delete player buttons (using event delegation for both .delete-btn and .delete-player-btn)
-      document.addEventListener('click', async (e) => {
-        const deleteBtn = e.target.closest('.delete-btn, .delete-player-btn')
-        if (deleteBtn && deleteBtn.dataset.playerId) {
-          const playerId = parseInt(deleteBtn.dataset.playerId)
-          await this.removePlayer(playerId)
-        }
-      })
-
-      // Modal dismiss buttons — event delegation so dynamically created buttons work too
-      document.addEventListener('click', (e) => {
-        const dismissBtn = e.target.closest('[data-dismiss="modal"]')
-        if (dismissBtn) {
-          const modal = dismissBtn.closest('.modal')
-          if (modal) {
-            this.hideModal(modal.id)
-            return
-          }
-        }
-        // Also handle backdrop click to close
-        const backdrop = e.target.closest('.modal-backdrop')
-        if (backdrop) {
-          const modal = backdrop.closest('.modal')
-          if (modal) {
-            this.hideModal(modal.id)
-          }
-        }
-      })
-
-      // Record match
+      // Other buttons
       const recordMatchBtn = document.getElementById('recordMatch')
-      if (recordMatchBtn) {
-        recordMatchBtn.addEventListener('click', async () => {
-          await this.recordMatch()
-        })
-      }
-
-      // Add match modal
+      if (recordMatchBtn) recordMatchBtn.addEventListener('click', () => this.recordMatch())
       const addMatchModalBtn = document.getElementById('addMatchModal')
-      if (addMatchModalBtn) {
-        addMatchModalBtn.addEventListener('click', () => {
-          this.showMatchModal()
-        })
-      }
+      if (addMatchModalBtn) addMatchModalBtn.addEventListener('click', () => this.showMatchModal())
 
-      // Export rankings (uses current view mode)
-      const exportBtn = document.getElementById('exportRankings')
-      if (exportBtn) {
-        exportBtn.addEventListener('click', () => {
-          this.exportToExcel(this.currentViewMode)
-        })
-      }
+      // Admin buttons
+      const refreshCacheBtn = document.getElementById('refreshCacheStatusBtn')
+      if (refreshCacheBtn) refreshCacheBtn.addEventListener('click', () => { if (this.user?.role === 'admin') this.renderCacheStatus() })
 
-      // View mode switching
-      const viewModeDailyBtn = document.getElementById('viewModeDaily')
-      if (viewModeDailyBtn) {
-        viewModeDailyBtn.addEventListener('click', () => {
-          this.switchViewMode('daily')
-        })
-      }
-      
-      const viewModeSeasonBtn = document.getElementById('viewModeSeason')
-      if (viewModeSeasonBtn) {
-        viewModeSeasonBtn.addEventListener('click', () => {
-          this.switchViewMode('season')
-        })
-      }
-      
-      const viewModeLifetimeBtn = document.getElementById('viewModeLifetime')
-      if (viewModeLifetimeBtn) {
-        viewModeLifetimeBtn.addEventListener('click', () => {
-          this.switchViewMode('lifetime')
-        })
-      }
+      // FCM buttons
+      const fcmRefreshBtn = document.getElementById('fcmRefreshBtn')
+      if (fcmRefreshBtn) fcmRefreshBtn.addEventListener('click', () => this.fetchFcmStatus())
+      const fcmPauseBtn = document.getElementById('fcmPauseBtn')
+      if (fcmPauseBtn) fcmPauseBtn.addEventListener('click', () => this.controlFcm('pause'))
+      const fcmResumeBtn = document.getElementById('fcmResumeBtn')
+      if (fcmResumeBtn) fcmResumeBtn.addEventListener('click', () => this.controlFcm('resume'))
+      const fcmBroadcastForm = document.getElementById('fcmBroadcastForm')
+      if (fcmBroadcastForm) fcmBroadcastForm.addEventListener('submit', (e) => this.sendFcmBroadcast(e))
 
-      // Date and season selectors
-      const dateSelector = document.getElementById('dateSelector')
-      if (dateSelector) {
-        dateSelector.addEventListener('change', (e) => {
-          this.selectedDate = e.target.value
-          if (this.currentViewMode === 'daily') {
-            this.renderRankings()
-          }
-        })
-      }
-
-      const seasonSelector = document.getElementById('seasonSelector')
-      if (seasonSelector) {
-        seasonSelector.addEventListener('change', (e) => {
-          this.selectedSeason = parseInt(e.target.value)
-          if (this.currentViewMode === 'season') {
-            this.renderRankings()
-          }
-        })
-      }
-
-      // Season management
-      const addSeasonBtn = document.getElementById('addSeason')
-      if (addSeasonBtn) {
-        addSeasonBtn.addEventListener('click', () => {
-          this.showSeasonModal()
-        })
-      }
-
-      // Clear all data button
-      const clearAllDataBtn = document.getElementById('clearAllData')
-      if (clearAllDataBtn) {
-        clearAllDataBtn.addEventListener('click', () => {
-          this.clearAllData()
-        })
-      }
-
-      // Backup data button
-      const backupDataBtn = document.getElementById('backupData')
-      if (backupDataBtn) {
-        backupDataBtn.addEventListener('click', () => {
-          this.backupData()
-        })
-      }
-
-      // Restore data button
-      const restoreDataBtn = document.getElementById('restoreData')
-      if (restoreDataBtn) {
-        restoreDataBtn.addEventListener('click', () => {
-          this.restoreData()
-        })
-      }
-      
-      // Backup JSON button (full database backup)
-      const backupJsonBtn = document.getElementById('backupJsonBtn')
-      if (backupJsonBtn) {
-        backupJsonBtn.addEventListener('click', () => this.backupToJson())
-      }
-      
-      // Restore JSON button (full database restore)
-      const restoreJsonBtn = document.getElementById('restoreJsonBtn')
-      const restoreJsonInput = document.getElementById('restoreJsonInput')
-      if (restoreJsonBtn && restoreJsonInput) {
-        restoreJsonBtn.addEventListener('click', () => restoreJsonInput.click())
-        restoreJsonInput.addEventListener('change', (e) => this.restoreFromJson(e))
-      }
-      
-      // Backup Excel button (in accounts tab - exports lifetime data)
-      const backupExcelBtn = document.getElementById('backupExcelBtn')
-      if (backupExcelBtn) {
-        backupExcelBtn.addEventListener('click', () => this.exportToExcel('lifetime'))
-      }
-      
-      // Match season selector
-      const matchSeasonSelect = document.getElementById('matchSeasonSelect')
-      if (matchSeasonSelect) {
-        matchSeasonSelect.addEventListener('change', async (e) => {
-          const seasonId = parseInt(e.target.value)
-          await this.onMatchSeasonChange(seasonId)
-          // Update labels for solo mode
-          this.updateTeamLabelsForMatchType()
-        })
-      }
-
-      // Auto-winner detection for score inputs
-      const team1ScoreInput = document.getElementById('team1Score')
-      const team2ScoreInput = document.getElementById('team2Score')
-      if (team1ScoreInput && team2ScoreInput) {
-        team1ScoreInput.addEventListener('input', () => this.updateAutoWinner())
-        team2ScoreInput.addEventListener('input', () => this.updateAutoWinner())
-      }
-
-      // Manual winner toggle
-      const useManualWinnerBtn = document.getElementById('useManualWinner')
-      const useAutoWinnerBtn = document.getElementById('useAutoWinner')
-      if (useManualWinnerBtn && useAutoWinnerBtn) {
-        useManualWinnerBtn.addEventListener('click', () => this.toggleWinnerMode(true))
-       useAutoWinnerBtn.addEventListener('click', () => this.toggleWinnerMode(false))
-     }
-
-     // Match type toggle (Đánh đơn / Đánh đôi)
-     const matchTypeDuoBtn = document.getElementById('matchTypeDuo')
-     const matchTypeSoloBtn = document.getElementById('matchTypeSolo')
-     if (matchTypeDuoBtn && matchTypeSoloBtn) {
-       matchTypeDuoBtn.addEventListener('click', () => this.switchMatchType('duo'))
-       matchTypeSoloBtn.addEventListener('click', () => this.switchMatchType('solo'))
-     }
-
-      // ── Image Editor Event Listeners ──────────────────────────────────────
-      this.setupImageEditorListeners()
-
-      // ── Season Results Modal Listeners ─────────────────────────────────────
-      this.setupSeasonResultsListeners()
-
-      // ── Cup Bracket System Listeners ───────────────────────────────────────
-      this.setupCupListeners()
-
-   } catch (error) {
+      // Feature module listeners
+      this._players.setupEventListeners()
+      this._rankings.setupEventListeners()
+      this._seasonResults.setupSeasonResultsListeners()
+      this._images.setupImageEditorListeners()
+      this._cups.setupCupListeners()
+    } catch (error) {
       console.error('Error setting up event listeners:', error)
     }
   }
+} // end TennisRankingSystem
 
-  // Match type toggle handler
-  switchMatchType(type) {
-    this.currentMatchType = type
-    
-    // Update hidden input
-    const matchTypeInput = document.getElementById('matchType')
-    if (matchTypeInput) matchTypeInput.value = type
-    
-    // Update button states (new UI)
-    document.querySelectorAll('.type-btn').forEach(btn => {
-      btn.classList.toggle('active', btn.dataset.type === type)
-    })
-    
-    // Update team labels based on match type
-    this.updateTeamLabelsForMatchType()
-    
-    // Show/hide elements based on match type
-    if (type === 'solo') {
-      // Hide duo-only elements (player 2 and player 4 selects)
-      document.querySelectorAll('.duo-only').forEach(el => el.style.display = 'none')
-    } else {
-      // Show duo-only elements
-      document.querySelectorAll('.duo-only').forEach(el => el.style.display = '')
+// ================================================================================
+// Wire feature modules onto the class prototype
+// Each module receives `this` as ctx and returns an object of methods
+// ================================================================================
+function wireFeatureModules(app) {
+  // Players (ctx pattern)
+  app._players = createPlayersModule(app)
+  Object.assign(app, {
+    renderPlayers: app._players.render,
+    addPlayer: app._players.addPlayer,
+    removePlayer: app._players.removePlayer,
+  })
+
+  // Rankings (ctx pattern)
+  app._rankings = createRankingsModule(app)
+  Object.assign(app, {
+    renderRankings: app._rankings.render,
+    getRankEmoji: app._rankings.getRankEmoji,
+    renderForm: app._rankings.renderForm,
+    updateDateSelector: app._rankings.updateDateSelector,
+    updateSeasonSelector: app._rankings.updateSeasonSelector,
+    switchViewMode: app._rankings.switchViewMode,
+    setupViewModeUI: app._rankings.setupViewModeUI,
+  })
+
+  // Matches
+  app._matches = createMatchesModule(app)
+  Object.assign(app, {
+    renderMatchHistory: app._matches.renderMatchHistory,
+    recordMatch: app._matches.recordMatch,
+    editMatch: app._matches.editMatch,
+    deleteMatch: app._matches.deleteMatch,
+    updatePlayerSelects: app._matches.updatePlayerSelects,
+    updateSeasonSelect: app._matches.updateSeasonSelect,
+    onMatchSeasonChange: app._matches.onMatchSeasonChange,
+    updateMatchHistoryDateSelector: app._matches.updateMatchHistoryDateSelector,
+    resetMatchForm: app._matches.resetMatchForm,
+    updateAutoWinner: app._matches.updateAutoWinner,
+    toggleWinnerMode: app._matches.toggleWinnerMode,
+    showMatchModal: app._matches.showMatchModal,
+    fuzzyMatchPlayer: app._matches.fuzzyMatchPlayer,
+    levenshteinDistance: app._matches.levenshteinDistance,
+    _scoreWordAgainstPlayer: app._matches._scoreWordAgainstPlayer,
+    mapTeamToPlayerPair: app._matches.mapTeamToPlayerPair,
+  })
+  // Note: switchMatchType and updateTeamLabelsForMatchType are defined on prototype directly
+
+  // Batch mode
+  app._batchMode = createBatchModeModule(app)
+  Object.assign(app, app._batchMode)
+
+  // Screenshot
+  app._screenshot = createScreenshotModule(app)
+  Object.assign(app, app._screenshot)
+
+  // Match modal
+  app._matchModal = createMatchModalModule(app)
+  Object.assign(app, app._matchModal)
+
+  // Seasons
+  app._seasons = createSeasonsModule(app)
+  Object.assign(app, app._seasons)
+
+  // Season results
+  app._seasonResults = createSeasonResultsModule(app)
+  Object.assign(app, app._seasonResults)
+
+  // Cups
+  app._cups = createCupsModule(app)
+  Object.assign(app, app._cups)
+
+  // Accounts
+  app._accounts = createAccountsModule(app)
+  Object.assign(app, app._accounts)
+
+  // Images
+  app._images = createImagesModule(app)
+  Object.assign(app, app._images)
+
+  // Export
+  app._export = createExportModule(app)
+  Object.assign(app, app._export)
+}
+
+// ================================================================================
+// Pure utility functions (no `this` needed)
+// ================================================================================
+function escapeHtml(unsafe) {
+  if (unsafe === null || unsafe === undefined) return ''
+  return String(unsafe).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/`/g, '&#96;')
+}
+
+function formatDate(dateValue) {
+  if (!dateValue) return ''
+  let date
+  if (dateValue instanceof Date) {
+    date = new Date(dateValue.getFullYear(), dateValue.getMonth(), dateValue.getDate())
+  } else if (typeof dateValue === 'string') {
+    const datePart = dateValue.split('T')[0]
+    const [year, month, day] = datePart.split('-').map(Number)
+    date = new Date(year, month - 1, day)
+  } else return ''
+  return date.toLocaleDateString('vi-VN', { year: 'numeric', month: '2-digit', day: '2-digit' })
+}
+
+function formatMoney(amount) {
+  return new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND' }).format(amount)
+}
+
+function showToast(message, type = 'success') {
+  const container = document.getElementById('toastContainer')
+  if (!container) return
+  const toast = document.createElement('div')
+  toast.className = `toast ${type}`
+  toast.innerHTML = `<span class="toast-message">${escapeHtml(message)}</span><button class="toast-close">&times;</button>`
+  container.appendChild(toast)
+  toast.querySelector('.toast-close').addEventListener('click', () => toast.remove())
+  setTimeout(() => {
+    if (toast.parentElement) {
+      toast.style.animation = 'toastOut 0.3s ease forwards'
+      setTimeout(() => toast.remove(), 300)
     }
-    
-    // Reset winner selection
-    const winnerSelect = document.getElementById('winner')
-    if (winnerSelect) winnerSelect.value = ''
-    this.currentWinningTeam = null
-  }
-  
-  // Update team labels based on match type (solo = 1v1, duo = 2v2)
-  updateTeamLabelsForMatchType() {
-    const player3Label = document.querySelector('.player3-label')
-    const team2Badge = document.querySelector('.team-2-badge')
-    
-    if (this.currentMatchType === 'solo') {
-      if (player3Label) player3Label.textContent = 'Người chơi 2'
-      if (team2Badge) team2Badge.textContent = 'Đối thủ'
-    } else {
-      if (player3Label) player3Label.textContent = 'Người chơi 3'
-      if (team2Badge) team2Badge.textContent = 'Đội 2'
-    }
-  }
+  }, 5000)
+}
 
-  // Handle season selection change in match form
-  async onMatchSeasonChange(seasonId) {
-    const duoPlayerSelects = ['player1', 'player2', 'player3', 'player4']
-    const soloPlayerSelects = ['soloPlayer1', 'soloPlayer2']
-    const allPlayerSelects = [...duoPlayerSelects, ...soloPlayerSelects]
-    
-    if (!seasonId) {
-      // No season selected - disable player selects
-      allPlayerSelects.forEach(id => {
-        const select = document.getElementById(id)
-        if (select) {
-          select.disabled = true
-          select.innerHTML = '<option value="">Chọn mùa giải trước...</option>'
-        }
-      })
-      // Hide season info
-      const seasonInfoEl = document.getElementById('selectedSeasonInfo')
-      if (seasonInfoEl) seasonInfoEl.style.display = 'none'
-      return
-    }
-    
-    try {
-      // Fetch players eligible for this season
-      const response = await fetch(`${this.apiBase}/seasons/${seasonId}/players`)
-      let seasonPlayers = []
-      
-      if (response.ok) {
-        seasonPlayers = await response.json()
-      }
-      
-      // If no players assigned to season, use all players (backward compatibility)
-      if (seasonPlayers.length === 0) {
-        seasonPlayers = this.players
-      }
-      
-      // Update player selects with filtered players
-      const playerOptions = seasonPlayers.map(player => 
-        `<option value="${player.id}">${this.escapeHtml(player.name)}</option>`
-      ).join('')
-      
-      allPlayerSelects.forEach(id => {
-        const select = document.getElementById(id)
-        if (select) {
-          select.disabled = false
-          select.innerHTML = `<option value="">Chọn người chơi...</option>${playerOptions}`
-        }
-      })
-      
-      // Store season players for reference
-      this.currentSeasonPlayers = seasonPlayers
-      this.selectedMatchSeason = seasonId
-      this.seasonPlayers = seasonPlayers
-      
-      // Show season info
-      const selectedSeason = this.seasons.find(s => s.id == seasonId)
-      if (selectedSeason) {
-        const seasonInfoEl = document.getElementById('selectedSeasonInfo')
-        if (seasonInfoEl) {
-          const playerCount = seasonPlayers.length !== this.players.length 
-            ? `${seasonPlayers.length} người chơi được phép` 
-            : 'Tất cả người chơi'
-          const loseMoneyAmount = selectedSeason.lose_money_per_loss ?? 20000
-          seasonInfoEl.innerHTML = `
-            <div class="season-info-badge">
-              <span class="badge-item">💰 ${this.formatMoney(loseMoneyAmount)}/trận thua</span>
-              <span class="badge-item">👥 ${playerCount}</span>
-            </div>
-          `
-          seasonInfoEl.style.display = 'block'
-        }
-      }
-      
-    } catch (error) {
-      console.error('Error loading season players:', error)
-      // Fallback to all players
-      this.updatePlayerSelects()
-    }
-  }
+function showModal(modalId) {
+  const modal = document.getElementById(modalId)
+  if (modal) { modal.classList.add('show'); document.body.style.overflow = 'hidden' }
+}
 
-  async switchTab(tabName) {
-    // First hide all view mode sections
-    this.hideAllViewModeSections()
+function hideModal(modalId) {
+  const modal = document.getElementById(modalId)
+  if (modal) { modal.classList.remove('show', 'active'); modal.style.display = ''; document.body.style.overflow = '' }
+}
 
-    // Save previous active tab for rollback on failure
-    const prevActiveBtn = document.querySelector('.nav-btn.active')
-    const prevActiveContent = document.querySelector('.tab-content.active')
+function updateFileStatus(message, type = 'info') {
+  // For backward compatibility: strip leading emoji and use toast
+  const cleanMsg = message.replace(/^[✅❌⚠️]/g, '').trim()
+  const toastType = type === 'success' ? 'success' : (type === 'error' ? 'error' : 'warning')
+  showToast(cleanMsg, toastType)
+}
 
-    // Update nav buttons (new class)
-    document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'))
-    document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'))
+function setTodaysDate() {
+  const today = new Date().toISOString().split('T')[0]
+  const matchDate = document.getElementById('matchDate')
+  if (matchDate) matchDate.value = today
+}
 
-    const tabBtn = document.querySelector(`.nav-btn[data-tab="${tabName}"]`)
-    const tabContent = document.getElementById(`${tabName}-tab`)
+function formatUptime(seconds) {
+  if (!seconds || seconds < 0) return 'N/A'
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = Math.floor(seconds % 60)
+  if (h > 0) return `${h}h ${m}m ${s}s`
+  if (m > 0) return `${m}m ${s}s`
+  return `${s}s`
+}
 
-    if (tabBtn) tabBtn.classList.add('active')
-    if (tabContent) tabContent.classList.add('active')
+// ================================================================================
+// Tab switching (enhanced with feature dispatch)
+// ================================================================================
+// Override switchTab on prototype to include feature dispatch
+TennisRankingSystem.prototype.switchTab = async function (tabName) {
+  this.hideAllViewModeSections()
 
-    try {
-      if (tabName === 'rankings') {
-        // Setup view mode UI when switching to rankings
+  const prevActiveBtn = document.querySelector('.nav-btn.active')
+  const prevActiveContent = document.querySelector('.tab-content.active')
+
+  document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'))
+  document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'))
+
+  const tabBtn = document.querySelector(`.nav-btn[data-tab="${tabName}"]`)
+  const tabContent = document.getElementById(`${tabName}-tab`)
+  if (tabBtn) tabBtn.classList.add('active')
+  if (tabContent) tabContent.classList.add('active')
+
+  try {
+    switch (tabName) {
+      case 'rankings':
         this.updateDateSelector()
         this.updateSeasonSelector()
         this.setupViewModeUI()
         await this.renderRankings()
-      } else if (tabName === 'matches') {
-        // Always start in single match mode when entering matches tab (fixes broken state on refresh)
+        break
+      case 'matches':
         this.switchToSingleMode()
-        // Ensure players are loaded before updating selects (fixes initial render race)
         await this.loadPlayers()
         this.updatePlayerSelects()
         this.setTodaysDate()
         await this.renderMatchHistory()
-      } else if (tabName === 'players') {
-        this.renderPlayers()
-      } else if (tabName === 'seasons') {
-        this.renderSeasons()
-      } else if (tabName === 'accounts') {
+        break
+      case 'players': this.renderPlayers(); break
+      case 'seasons': this.renderSeasons(); break
+      case 'accounts':
         this.renderAccounts()
-        // Also render cache status for admin users
-         if (this.user?.role === 'admin') {
-         this.renderCacheStatus()
-       }
-      } else if (tabName === 'images') {
-        this.loadSiteImages()
-      } else if (tabName === 'cups') {
-        this.loadCups()
-     }
-   } catch (error) {
-      // Revert UI to previous state so user can retry
-      if (prevActiveBtn) prevActiveBtn.classList.add('active')
-      if (prevActiveContent) prevActiveContent.classList.add('active')
-      if (tabBtn) tabBtn.classList.remove('active')
-      if (tabContent) tabContent.classList.remove('active')
-      this.showToast(`Lỗi khi tải tab ${tabName}`, 'error')
-      console.error(`Tab switch failed for ${tabName}:`, error)
-    }
-  }
-
-  async switchViewMode(mode) {
-    this.currentViewMode = mode
-    
-    // Update view buttons (new class)
-    document.querySelectorAll('.view-btn').forEach(btn => btn.classList.remove('active'))
-    const activeBtn = document.querySelector(`.view-btn[data-view="${mode}"]`)
-    if (activeBtn) activeBtn.classList.add('active')
-    
-    // Show/hide view sections
-    document.querySelectorAll('.view-section').forEach(section => section.classList.remove('active'))
-    const activeView = document.getElementById(`${mode}-view`)
-    if (activeView) activeView.classList.add('active')
-    
-    // Set default selections if needed
-    if (mode === 'daily' && !this.selectedDate && this.playDates.length > 0) {
-      this.selectedDate = this.playDates[0].play_date.split('T')[0]
-      const rankingDateSelect = document.getElementById('rankingDateSelect')
-      if (rankingDateSelect) rankingDateSelect.value = this.selectedDate
-    }
-    
-    if (mode === 'season' && !this.selectedSeason) {
-      const activeSeason = this.seasons.find(s => s.is_active)
-      if (activeSeason) {
-        this.selectedSeason = activeSeason.id
-        const seasonSelect = document.getElementById('seasonSelect')
-        if (seasonSelect) seasonSelect.value = this.selectedSeason
-      }
-    }
-    
-    await this.renderRankings()
-  }
-
-  setupViewModeUI() {
-    try {
-      // Update view buttons
-      document.querySelectorAll('.view-btn').forEach(btn => btn.classList.remove('active'))
-      const activeBtn = document.querySelector(`.view-btn[data-view="${this.currentViewMode}"]`)
-      if (activeBtn) activeBtn.classList.add('active')
-      
-      // Show/hide view sections
-      document.querySelectorAll('.view-section').forEach(section => section.classList.remove('active'))
-      const activeView = document.getElementById(`${this.currentViewMode}-view`)
-      if (activeView) activeView.classList.add('active')
-    } catch (error) {
-      console.error('Error setting up view mode UI:', error)
-    }
-  }
-
-  async addPlayer() {
-    // Support both old input (playerName) and new input (newPlayerName)
-    const oldInput = document.getElementById('playerName')
-    const newInput = document.getElementById('newPlayerName')
-    const inputElement = (newInput && newInput.value.trim()) ? newInput : oldInput
-    
-    const playerName = inputElement?.value?.trim()
-    if (!playerName) {
-      this.showToast('Vui lòng nhập tên người chơi', 'error')
-      return
-    }
-
-    if (!this.isAuthenticated) {
-      this.showToast('Cần đăng nhập để thêm người chơi', 'error')
-      return
-    }
-
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/players`, {
-        method: 'POST',
-        body: JSON.stringify({ name: playerName })
-      })
-
-      const data = await response.json()
-      
-      if (response.ok) {
-        this.invalidateCache(['players']) // Only players changed
-        await this.loadPlayers()
-        this.renderPlayers()
-        this.updatePlayerSelects()
-        // Clear both inputs
-        if (oldInput) oldInput.value = ''
-        if (newInput) newInput.value = ''
-        this.showToast(`Đã thêm người chơi: ${playerName}`, 'success')
-      } else {
-        this.showToast(data.error, 'error')
-      }
-    } catch (error) {
-      console.error('Error adding player:', error)
-      this.showToast('Lỗi khi thêm người chơi', 'error')
-    }
-  }
-
-  async removePlayer(playerId) {
-    if (!this.isAuthenticated) {
-      this.showToast('Cần đăng nhập để xóa người chơi', 'error')
-      return
-    }
-
-    const player = this.players.find(p => p.id === playerId)
-    if (!player) return
-
-    const confirmDelete = confirm(`Bạn có chắc muốn xóa người chơi "${player.name}"? Tất cả lịch sử thi đấu của người này cũng sẽ bị xóa.`)
-    if (!confirmDelete) return
-
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/players/${playerId}`, {
-        method: 'DELETE'
-      })
-
-      if (response.ok) {
-        this.invalidateCache(['players', 'rankings', 'matches']) // Player deletion affects all
-        await this.loadPlayers()
-        await this.loadMatches()
-        this.renderPlayers()
-        this.renderRankings()
-        this.updatePlayerSelects()
-        this.showToast(`Đã xóa người chơi: ${player.name}`, 'success')
-      } else {
-        const data = await response.json()
-        this.showToast(data.error, 'error')
-      }
-    } catch (error) {
-      console.error('Error removing player:', error)
-      this.showToast('Lỗi khi xóa người chơi', 'error')
-    }
-  }
-  
-  // Alias for table button onclick
-  async deletePlayer(playerId, playerName) {
-    await this.removePlayer(playerId)
-  }
-
-  async recordMatch() {
-    if (!this.isAuthenticated) {
-      this.showToast('Cần đăng nhập để ghi nhận kết quả', 'error')
-      return
-    }
-
-    const playDate = document.getElementById('matchDate')?.value
-    const matchType = this.currentMatchType || 'duo'
-    
-    // Get selected season
-    const seasonId = parseInt(document.getElementById('matchSeasonSelect')?.value)
-    if (!seasonId) {
-      this.showToast('Vui lòng chọn mùa giải', 'error')
-      return
-    }
-    
-    // Get lose money from selected season (used for display only — computed server-side for DB)
-    const selectedSeason = this.seasons.find(s => s.id === seasonId)
-
-    let player1Id, player2Id, player3Id, player4Id, team1Score, team2Score
-    
-    // Get scores - same inputs for both duo and solo modes
-    team1Score = parseInt(document.getElementById('team1Score')?.value) || 0
-    team2Score = parseInt(document.getElementById('team2Score')?.value) || 0
-    
-    if (matchType === 'solo') {
-      // Solo mode - player1 vs player3 (opponents)
-      player1Id = parseInt(document.getElementById('player1')?.value)
-      player2Id = null  // No partner in solo mode
-      player3Id = parseInt(document.getElementById('player3')?.value)
-      player4Id = null  // No partner in solo mode
-    } else {
-      // Duo mode - all 4 players
-      player1Id = parseInt(document.getElementById('player1')?.value)
-      player2Id = parseInt(document.getElementById('player2')?.value)
-      player3Id = parseInt(document.getElementById('player3')?.value)
-      player4Id = parseInt(document.getElementById('player4')?.value)
-    }
-    
-    // Get winner from select
-    const winnerValue = document.getElementById('winner')?.value
-    let winningTeam = winnerValue === 'team1' ? 1 : (winnerValue === 'team2' ? 2 : null)
-
-    // Validation
-    if (!playDate) {
-      this.showToast('Vui lòng chọn ngày đánh', 'error')
-      return
-    }
-
-    // Validate players based on match type
-    if (matchType === 'solo') {
-      if (isNaN(player1Id) || isNaN(player3Id)) {
-        this.showToast('Vui lòng chọn đủ 2 người chơi', 'error')
-        return
-      }
-      if (player1Id === player3Id) {
-        this.showToast('Cần 2 người chơi khác nhau', 'error')
-        return
-      }
-    } else {
-      const playerIds = [player1Id, player2Id, player3Id, player4Id]
-      if (playerIds.some(id => isNaN(id))) {
-        this.showToast('Vui lòng chọn đủ 4 người chơi', 'error')
-        return
-      }
-
-      const uniquePlayerIds = [...new Set(playerIds)]
-      if (uniquePlayerIds.length !== 4) {
-        this.showToast('Cần 4 người chơi khác nhau', 'error')
-        return
-      }
-    }
-
-    if (team1Score < 0 || team2Score < 0) {
-      this.showToast('Vui lòng nhập tỷ số hợp lệ', 'error')
-      return
-    }
-
-    // Use auto-selected winner if available
-    if (!winningTeam && this.currentWinningTeam) {
-      winningTeam = this.currentWinningTeam
-    }
-
-    if (winningTeam !== 1 && winningTeam !== 2) {
-      this.showToast('Vui lòng chọn đội thắng', 'error')
-      return
-    }
-
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/matches`, {
-        method: 'POST',
-        body: JSON.stringify({
-          seasonId,
-          playDate,
-          player1Id,
-          player2Id,
-          player3Id,
-          player4Id,
-          team1Score,
-          team2Score,
-          winningTeam,
-          matchType
-        })
-      })
-
-      const data = await response.json()
-      
-      if (response.ok) {
-        this.invalidateCache(['rankings', 'matches', 'playDates']) // Only match-related data
-        await this.loadMatches()
-        await this.loadPlayDates()
-        
-        // Reset form
-        this.resetMatchForm()
-        
-        // Update displays
-        this.renderRankings()
-        // Only refresh match history if user is on the matches tab
-        const activeTabId = document.querySelector('.tab-content.active')?.id
-        if (activeTabId === 'matches-tab') {
-          this.renderMatchHistory()
-        }
-        this.updateDateSelector()
-
-        this.showToast('Đã ghi nhận kết quả trận đấu', 'success')
-      } else {
-        this.showToast(data.error || 'Lỗi khi ghi nhận kết quả', 'error')
-      }
-    } catch (error) {
-      console.error('Error recording match:', error)
-      this.showToast('Lỗi khi ghi nhận kết quả', 'error')
-    }
-  }
-
-  // ── Screenshot Upload → AI Parse → Bulk Confirm ──────────────────────────────
-
-  /** State for parsed matches pending confirmation */
-  parsedMatchesBuffer = []
-
-  /** Fuzzy match an AI-extracted name against database players.
-   *  Returns the matching player ID, or null if no close match found.
-   *  Handles Vietnamese accent normalization and common nickname/abbreviation patterns. */
-  fuzzyMatchPlayer(name, players) {
-    if (!name || !players?.length) return null
-
-    const normalized = normalizeText(name).toLowerCase().trim()
-    if (!normalized) return null
-
-    // Use the pre-built normalized index if available (built during loadPlayers).
-    // Falls back to the players array argument for backward compatibility.
-    const index = this.normalizedPlayers || (players && players.map(p => ({
-      normalized: normalizeText(p.name).toLowerCase(),
-      id: p.id,
-      name: p.name
-    })))
-
-    // Exact match via index (O(1) average with Map-like lookup)
-    if (index) {
-      const exact = index.find(e => e.normalized === normalized)
-      if (exact) return exact.id
-    }
-
-    // Check if the AI name is a substring of a DB player name
-    const substringMatch = index ? index.find(e => {
-      return e.normalized.includes(normalized) || normalized.includes(e.normalized)
-    }) : players.find(p => {
-      const dbNorm = normalizeText(p.name).toLowerCase()
-      return dbNorm.includes(normalized) || normalized.includes(dbNorm)
-    })
-    if (substringMatch) return substringMatch.id
-
-    // Check first word match (e.g. "Hưng Tâm" matches "Hưng" or "Tâm" individually)
-    const words = normalized.split(/\s+/)
-    if (words.length >= 2) {
-      // Try last word (common Vietnamese nickname)
-      const lastWord = words[words.length - 1]
-      const nicknameMatch = index ? index.find(e => {
-        const dbWords = e.normalized.split(/\s+/)
-        return dbWords.some(w => w === lastWord || lastWord.startsWith(w) || w.startsWith(lastWord))
-      }) : players.find(p => {
-        const dbNorm = normalizeText(p.name).toLowerCase()
-        const dbWords = dbNorm.split(/\s+/)
-        return dbWords.some(w => w === lastWord || lastWord.startsWith(w) || w.startsWith(lastWord))
-      })
-      if (nicknameMatch) return nicknameMatch.id
-    }
-
-    // Try matching just the first word
-    const firstWord = words[0]
-    const firstWordMatch = index ? index.find(e => {
-      const dbWords = e.normalized.split(/\s+/)
-      return dbWords.some(w => w === firstWord || firstWord.startsWith(w) || w.startsWith(firstWord))
-    }) : players.find(p => {
-      const dbNorm = normalizeText(p.name).toLowerCase()
-      const dbWords = dbNorm.split(/\s+/)
-      return dbWords.some(w => w === firstWord || firstWord.startsWith(w) || w.startsWith(firstWord))
-    })
-    if (firstWordMatch) return firstWordMatch.id
-
-    // Last resort: Levenshtein distance — only compute if name has >3 words
-    // (short names are unlikely to be typos worth expensive computation)
-    // Also skip if normalized string is too long (>20 chars) to avoid O(m*n) blowup.
-    if (words.length > 3 || normalized.length <= 20) {
-      let bestScore = Infinity
-      let bestPlayer = null
-      const source = index || players
-      for (const player of source) {
-        const entry = index ? player : player
-        const dbNorm = index ? entry.normalized : normalizeText(player.name).toLowerCase()
-        const score = this.levenshteinDistance(normalized, dbNorm)
-        if (score < bestScore && score <= 3) {
-          bestScore = score
-          bestPlayer = entry.id
-        }
-      }
-      return bestPlayer
-    }
-
-    return null
-  }
-
-  /** Simple Levenshtein distance */
-  levenshteinDistance(a, b) {
-    const matrix = Array.from({ length: b.length + 1 }, (_, i) =>
-      Array.from({ length: a.length + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
-    )
-    for (let i = 1; i <= b.length; i++) {
-      for (let j = 1; j <= a.length; j++) {
-        if (b.charAt(i - 1) === a.charAt(j - 1)) {
-          matrix[i][j] = matrix[i - 1][j - 1]
-        } else {
-          matrix[i][j] = Math.min(
-            matrix[i - 1][j - 1] + 1,
-            matrix[i][j - 1] + 1,
-            matrix[i - 1][j] + 1
-          )
-        }
-      }
-    }
-    return matrix[b.length][a.length]
-  }
-
-  // ── Team Nickname → Player Pair Mapping ──────────────────────────────
-  // In this tennis group, team names are compound nicknames made from
-  // syllables of two actual players' names. E.g. "Hưng Tâm" = "Tuấn Hưng"
-  // + "Tâm Neo". This function maps a team nickname back to the pair of
-  // database player IDs.
-
-  /** Score a single player against a single word from a team nickname.
-   *  Returns 0-10 (higher = better match). */
-  _scoreWordAgainstPlayer(word, playerNorm) {
-    // Exact match (word is the player's full name)
-    if (word === playerNorm) return 10
-
-    // Exact match: word is the player's last word (common Vietnamese nickname)
-    const playerWords = playerNorm.split(/\s+/)
-    if (playerWords.length > 0 && word === playerWords[playerWords.length - 1]) return 10
-
-    // Exact match: word is the player's first word
-    if (playerWords.length > 0 && word === playerWords[0]) return 7
-
-    // Substring: word appears somewhere in the player name
-    if (playerNorm.includes(word)) return 7
-
-    // Partial: word starts with the player's last word
-    if (playerWords.length > 0 && playerWords[playerWords.length - 1].startsWith(word)) return 5
-
-    // Partial: player's last word starts with the given word
-    if (playerWords.length > 0 && word.startsWith(playerWords[playerWords.length - 1])) return 5
-
-    return 0
-  }
-
-  /** Map a team nickname (e.g. "Hưng Tâm") to a pair of player IDs.
-   *  The team name is split into words; each word is matched against
-   *  all players. The best pair that covers all words is returned.
-   *
-   *  @param {string} teamName — e.g. "Hưng Tâm"
-   *  @param {Array} players  — database players
-   *  @returns {{ player1Id: number, player2Id: number } | null}
-   */
-  mapTeamToPlayerPair(teamName, players) {
-    if (!teamName || !players?.length) return null
-
-    const normalized = normalizeText(teamName).toLowerCase().trim()
-    if (!normalized) return null
-
-    const words = normalized.split(/\s+/)
-    if (words.length === 0) return null
-
-    // Score every player against every word
-    const playerScores = players.map(player => {
-      const playerNorm = normalizeText(player.name).toLowerCase()
-      let totalScore = 0
-      for (const word of words) {
-        totalScore += this._scoreWordAgainstPlayer(word, playerNorm)
-      }
-      return { id: player.id, name: player.name, score: totalScore }
-    })
-
-    // Only consider players with at least some match
-    const candidates = playerScores.filter(p => p.score > 0)
-    if (candidates.length === 0) return null
-
-    // Single player covers all words perfectly → probably a solo match
-    // But only if the team name is a single word (multi-word names are likely team nicknames)
-    const singlePerfect = candidates.find(p => {
-      if (words.length > 1) return false // multi-word → likely a team nickname, skip single-player fallback
-      let coverage = 0
-      for (const word of words) {
-        if (this._scoreWordAgainstPlayer(word, normalizeText(p.name).toLowerCase()) > 0) {
-          coverage++
-        }
-      }
-      return coverage === words.length && candidates.length <= 2
-    })
-    if (singlePerfect && candidates.length <= 2) {
-      return { player1Id: singlePerfect.id, player2Id: null }
-    }
-
-    // Find best pair: iterate all pairs, score by total coverage
-    let bestPair = null
-    let bestTotalScore = -1
-
-    for (let i = 0; i < candidates.length; i++) {
-      for (let j = i + 1; j < candidates.length; j++) {
-        const a = candidates[i]
-        const b = candidates[j]
-        const totalScore = a.score + b.score
-
-        // Check word coverage: how many words are covered by at least one player?
-        let coveredWords = 0
-        for (const word of words) {
-          const aScore = this._scoreWordAgainstPlayer(word, normalizeText(a.name).toLowerCase())
-          const bScore = this._scoreWordAgainstPlayer(word, normalizeText(b.name).toLowerCase())
-          if (aScore > 0 || bScore > 0) coveredWords++
-        }
-
-        // Bonus: full coverage of all words
-        const coverageBonus = coveredWords === words.length ? 20 : 0
-
-        // Penalty: both players covering the same word (overlap)
-        // (implicit — if overlap is high, one player's score drops)
-
-        if (totalScore + coverageBonus > bestTotalScore) {
-          bestTotalScore = totalScore + coverageBonus
-          bestPair = { player1Id: a.id, player2Id: b.id }
-        }
-      }
-    }
-
-    // Require minimum score threshold (at least some words must be covered)
-    if (bestPair && bestTotalScore >= words.length * 3) {
-      return bestPair
-    }
-
-    // Fallback: best single player (for solo matches)
-    if (candidates.length > 0) {
-      const best = candidates.reduce((a, b) => (a.score > b.score ? a : b))
-      return { player1Id: best.id, player2Id: null }
-    }
-
-    return null
-  }
-
-  /** Handle file selection from screenshot upload */
-  async handleScreenshotUpload(event) {
-    const file = event.target.files?.[0]
-    if (!file) return
-
-    // Show file name
-    const fileNameEl = document.getElementById('screenshotFileName')
-    const statusEl = document.getElementById('screenshotStatus')
-    const clearBtn = document.getElementById('clearScreenshotBtn')
-    const resultsSection = document.getElementById('parsedResultsSection')
-
-    if (fileNameEl) fileNameEl.textContent = file.name
-    if (clearBtn) clearBtn.style.display = ''
-    if (statusEl) {
-      statusEl.textContent = 'Đang phân tích...'
-      statusEl.style.color = 'var(--text-secondary)'
-    }
-    if (resultsSection) resultsSection.style.display = 'none'
-
-    // Read file as base64
-    try {
-      const base64 = await this.readFileAsBase64(file)
-
-      // Call AI parse endpoint
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/matches/parse-image`, {
-        method: 'POST',
-        body: JSON.stringify({ imageBase64: base64, mimeType: file.type })
-      })
-
-      if (!response.ok) {
-        const error = await response.json()
-        if (statusEl) {
-          statusEl.textContent = `❌ ${error.error || 'Phân tích thất bại'}`
-          statusEl.style.color = 'var(--error-color)'
-        }
-        return
-      }
-
-      const data = await response.json()
-      this.parsedMatchesBuffer = data.matches || []
-
-      if (statusEl) {
-        statusEl.textContent = `✅ Đã trích xuất ${this.parsedMatchesBuffer.length} trận đấu. Vui lòng kiểm tra và xác nhận.`
-        statusEl.style.color = 'var(--success-color)'
-      }
-
-      // Render preview table
-      if (this.parsedMatchesBuffer.length > 0) {
-        this.renderParsedMatchesTable()
-        if (resultsSection) resultsSection.style.display = ''
-      } else {
-        if (statusEl) statusEl.textContent = '⚠️ Không tìm thấy trận đấu nào trong hình ảnh.'
-      }
-    } catch (error) {
-      console.error('Screenshot upload error:', error)
-      if (statusEl) {
-        statusEl.textContent = 'Lỗi khi tải lên hình ảnh.'
-        statusEl.style.color = 'var(--error-color)'
-      }
-    } finally {
-      // Reset file input so re-selecting the same file triggers change
-      if (event.target) event.target.value = ''
-    }
-  }
-
-  /** Read a file as base64 string (without data URI prefix) */
-  readFileAsBase64(file) {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onload = () => {
-        // Strip "data:image/xxx;base64," prefix
-        const base64 = reader.result?.split?.(',')[1] || reader.result
-        resolve(base64)
-      }
-      reader.onerror = reject
-      reader.readAsDataURL(file)
-    })
-  }
-
-  /** Clear the screenshot upload UI and buffer */
-  clearScreenshot() {
-    const fileInput = document.getElementById('screenshotFile')
-    const fileNameEl = document.getElementById('screenshotFileName')
-    const statusEl = document.getElementById('screenshotStatus')
-    const resultsSection = document.getElementById('parsedResultsSection')
-    const clearBtn = document.getElementById('clearScreenshotBtn')
-
-    if (fileInput) fileInput.value = ''
-    if (fileNameEl) fileNameEl.textContent = ''
-    if (statusEl) {
-      statusEl.textContent = ''
-      statusEl.style.color = ''
-    }
-    if (resultsSection) resultsSection.style.display = 'none'
-    if (clearBtn) clearBtn.style.display = 'none'
-    this.parsedMatchesBuffer = []
-
-    // Also clear the preview table
-    const tbody = document.getElementById('parsedMatchesBody')
-    if (tbody) tbody.innerHTML = ''
-
-    // Also clear batch state
-    this.batchMatches = []
-    this.batchMatchId = 0
-    const batchSection = document.getElementById('batchSection')
-    if (batchSection) batchSection.style.display = 'none'
-    const batchTbody = document.getElementById('batchMatchesBody')
-    if (batchTbody) batchTbody.innerHTML = ''
-  }
-
-  /** Cancel and hide the parsed results section */
-  cancelParsedMatches() {
-    this.clearScreenshot()
-  }
-
-  // ── Manual Batch Match Creation ─────────────────────────────────────────────
-
-  /** Switch to single-match mode (show form, hide batch) */
-  switchToSingleMode() {
-    this.currentViewMode = 'single'
-    const singleBtn = document.getElementById('modeSingleBtn')
-    const batchBtn = document.getElementById('modeBatchBtn')
-    const matchTypeArea = document.getElementById('matchTypeToggleArea')
-    const batchSection = document.getElementById('batchSection')
-    const matchForm = document.getElementById('matchForm')
-    const screenshotSection = document.getElementById('screenshotSection')
-
-    if (singleBtn) singleBtn.classList.add('active')
-    if (batchBtn) batchBtn.classList.remove('active')
-    if (matchTypeArea) matchTypeArea.style.display = ''
-    if (batchSection) batchSection.style.display = 'none'
-    if (matchForm) matchForm.style.display = ''
-    if (screenshotSection) screenshotSection.style.display = ''
-
-    // Reset batch state
-    this.batchMatches = []
-    this.batchMatchId = 0
-  }
-
-  /** Switch to batch-match mode (hide form, show batch) */
-  switchToBatchMode() {
-    this.currentViewMode = 'batch'
-    const singleBtn = document.getElementById('modeSingleBtn')
-    const batchBtn = document.getElementById('modeBatchBtn')
-    const matchTypeArea = document.getElementById('matchTypeToggleArea')
-    const batchSection = document.getElementById('batchSection')
-    const matchForm = document.getElementById('matchForm')
-    const screenshotSection = document.getElementById('screenshotSection')
-
-    if (singleBtn) singleBtn.classList.remove('active')
-    if (batchBtn) batchBtn.classList.add('active')
-    if (matchTypeArea) matchTypeArea.style.display = 'none'
-    if (batchSection) this.showBatchSection()
-    if (matchForm) matchForm.style.display = 'none'
-    if (screenshotSection) screenshotSection.style.display = 'none'
-  }
-
-  /** Show and initialise the batch match creation section */
-  showBatchSection() {
-    const section = document.getElementById('batchSection')
-    if (!section) return
-    section.style.display = ''
-
-    // Populate shared season selector — use `selected` on the option, not `value` on select
-    const batchSeasonSelect = document.getElementById('batchSeasonSelect')
-    const batchDateInput = document.getElementById('batchDateInput')
-    if (batchSeasonSelect) {
-      const activeSeasons = (this.seasons || []).filter(s => s.is_active)
-      const latestSeasonId = activeSeasons.length > 0 ? activeSeasons[0].id : null
-      const options = activeSeasons.map(s => {
-        const sel = s.id === latestSeasonId ? ' selected' : ''
-        return `<option value="${s.id}"${sel}>${this.escapeHtml(s.name)}</option>`
-      }).join('')
-      batchSeasonSelect.innerHTML = `<option value="">-- Chọn --</option>${options}`
-    }
-    if (batchDateInput) {
-      const latestPlayDate = this.playDates?.[0]?.play_date?.split('T')[0] || new Date().toISOString().split('T')[0]
-      batchDateInput.value = latestPlayDate
-    }
-
-    this.renderBatchMatchesTable()
-  }
-
-  /** Hide the batch match creation section */
-  hideBatchSection() {
-    const section = document.getElementById('batchSection')
-    if (section) section.style.display = 'none'
-    this.batchMatches = []
-    this.batchMatchId = 0
-    // Switch back to single mode
-    this.switchToSingleMode()
-  }
-
-  /** Build <option> strings for a player dropdown, pre-selecting selectedId */
-  _buildPlayerOptions(selectedId) {
-    const options = (this.players || []).map(p => {
-      const sel = p.id === selectedId ? ' selected' : ''
-      return `<option value="${p.id}"${sel}>${this.escapeHtml(p.name)}</option>`
-    }).join('')
-    return `<option value="">-- Chọn --</option>${options}`
-  }
-
-  /** Render the batch matches table */
-  renderBatchMatchesTable() {
-    const container = document.getElementById('batchCardsContainer')
-    if (!container) return
-
-    container.innerHTML = this.batchMatches.map((match, index) => {
-      const isSolo = match.matchType === 'solo'
-      const typeLabel = isSolo ? '1v1' : '4v4'
-      const player2Options = isSolo ? '' : `<select class="select-field" data-field="player2Id">${this._buildPlayerOptions(match.player2Id)}</select>`
-      const player4Options = isSolo ? '' : `<select class="select-field" data-field="player4Id">${this._buildPlayerOptions(match.player4Id)}</select>`
-
-      return `
-        <div class="match-card" data-batch-index="${index}" data-match-type="${isSolo ? 'solo' : 'duo'}">
-          <div class="match-card-header">
-            <span class="match-type-badge">${typeLabel}</span>
-            <button class="match-delete-btn" data-batch-remove="${index}" title="Xoá trận đấu">✕</button>
-          </div>
-          <div class="match-teams">
-            <!-- Team 1 -->
-            <div class="match-team match-team-1">
-              <span class="match-team-label">Đội 1</span>
-              <div class="match-player-selects">
-                <select class="select-field" data-field="player1Id">${this._buildPlayerOptions(match.player1Id)}</select>
-                ${player2Options}
-              </div>
-            </div>
-            <!-- Score -->
-            <div class="match-score">
-              <input type="number" class="input-field score-field" data-field="team1Score" value="${match.team1Score}" min="0" placeholder="0">
-              <span class="score-separator">:</span>
-              <input type="number" class="input-field score-field" data-field="team2Score" value="${match.team2Score}" min="0" placeholder="0">
-            </div>
-            <!-- Team 2 -->
-            <div class="match-team match-team-2">
-              <span class="match-team-label">Đội 2</span>
-              <div class="match-player-selects">
-                <select class="select-field" data-field="player3Id">${this._buildPlayerOptions(match.player3Id)}</select>
-                ${player4Options}
-              </div>
-            </div>
-          </div>
-          <div class="match-footer">
-            <select class="select-field match-winner-select" data-field="winningTeam">
-              <option value="">Chọn đội thắng</option>
-              <option value="1" ${match.winningTeam === 1 ? 'selected' : ''}>Đội 1</option>
-              <option value="2" ${match.winningTeam === 2 ? 'selected' : ''}>Đội 2</option>
-            </select>
-          </div>
-        </div>
-      `
-    }).join('')
-
-    // Wire up remove buttons
-    container.querySelectorAll('[data-batch-remove]').forEach(btn => {
-      const idx = parseInt(btn.dataset.batchRemove, 10)
-      btn.addEventListener('click', () => this.removeBatchMatchRow(idx))
-    })
-
-    // Wire up auto-winner on score input
-    container.querySelectorAll('.match-card').forEach(card => {
-      const team1ScoreInput = card.querySelector('[data-field="team1Score"]')
-      const team2ScoreInput = card.querySelector('[data-field="team2Score"]')
-      const winningTeamSelect = card.querySelector('[data-field="winningTeam"]')
-      const matchIndex = parseInt(card.dataset.batchIndex, 10)
-
-      const updateBatchRowWinner = () => {
-        if (!winningTeamSelect) return
-        const team1Score = parseInt(team1ScoreInput?.value) || 0
-        const team2Score = parseInt(team2ScoreInput?.value) || 0
-
-        if (team1Score !== team2Score && (team1Score > 0 || team2Score > 0)) {
-          const winningTeam = team1Score > team2Score ? 1 : 2
-          winningTeamSelect.value = winningTeam
-          this.batchMatches[matchIndex].winningTeam = winningTeam
-        } else {
-          winningTeamSelect.value = ''
-        }
-      }
-
-      team1ScoreInput?.addEventListener('input', updateBatchRowWinner)
-      team2ScoreInput?.addEventListener('input', updateBatchRowWinner)
-    })
-  }
-
-  /** Add a new batch match row with default values (uses batchMatchType) */
-  addBatchMatchRow() {
-    this.batchMatches.push({
-      matchType: this.batchMatchType,
-      player1Id: null,
-      player2Id: null,
-      player3Id: null,
-      player4Id: null,
-      team1Score: 0,
-      team2Score: 0,
-      winningTeam: 1
-    })
-    this.renderBatchMatchesTable()
-  }
-
-  /** Remove a batch match row by index */
-  removeBatchMatchRow(index) {
-    this.batchMatches.splice(index, 1)
-    this.renderBatchMatchesTable()
-  }
-
-  /** Validate and send all batch matches to the server */
-  async confirmBatchMatches() {
-    const container = document.getElementById('batchCardsContainer')
-    if (!container || !this.batchMatches.length) {
-      this.showToast('Vui lòng thêm ít nhất một trận đấu', 'error')
-      return
-    }
-
-    // Read shared season and date
-    const batchSeasonSelect = document.getElementById('batchSeasonSelect')
-    const batchDateInput = document.getElementById('batchDateInput')
-    const seasonId = parseInt(batchSeasonSelect?.value)
-    const playDate = batchDateInput?.value
-
-    if (!seasonId || !playDate) {
-      this.showToast('Vui lòng chọn mùa giải và ngày', 'error')
-      return
-    }
-
-    const cards = container.querySelectorAll('.match-card')
-    const matches = []
-
-    for (const card of cards) {
-      const index = parseInt(card.dataset.batchIndex, 10)
-      const match = this.batchMatches[index]
-
-      const player1Id = parseInt(card.querySelector('[data-field="player1Id"]')?.value)
-      const player2Id = parseInt(card.querySelector('[data-field="player2Id"]')?.value)
-      const player3Id = parseInt(card.querySelector('[data-field="player3Id"]')?.value)
-      const player4Id = parseInt(card.querySelector('[data-field="player4Id"]')?.value)
-      const team1Score = parseInt(card.querySelector('[data-field="team1Score"]')?.value) || 0
-      const team2Score = parseInt(card.querySelector('[data-field="team2Score"]')?.value) || 0
-      let winningTeam = parseInt(card.querySelector('[data-field="winningTeam"]')?.value)
-
-      const isSolo = match.matchType === 'solo'
-
-      // If winner not manually selected, derive from scores (same as single match)
-      if (winningTeam !== 1 && winningTeam !== 2) {
-        if (team1Score > team2Score) {
-          winningTeam = 1
-        } else if (team2Score > team1Score) {
-          winningTeam = 2
-        } else {
-          // Tied scores — can't determine winner, require manual selection
-          this.showToast(`Vui lòng chọn đội thắng cho trận ${index + 1} (hòa — chưa xác định được người thắng)`, 'error')
-          return
-        }
-        // Update the batch match data so the dropdown reflects the derived value
-        this.batchMatches[index].winningTeam = winningTeam
-      }
-
-      if (isSolo) {
-        if (isNaN(player1Id) || isNaN(player3Id) || player1Id === player3Id) {
-          this.showToast(`Vui lòng chọn 2 người chơi khác nhau cho trận ${index + 1}`, 'error')
-          return
-        }
-        matches.push({
-          seasonId, playDate, player1Id, player2Id: null, player3Id, player4Id: null,
-          team1Score, team2Score, winningTeam, matchType: 'solo'
-        })
-      } else {
-        if ([player1Id, player2Id, player3Id, player4Id].some(id => isNaN(id))) {
-          this.showToast(`Vui lòng chọn đủ 4 người chơi cho trận ${index + 1}`, 'error')
-          return
-        }
-        if (new Set([player1Id, player2Id, player3Id, player4Id]).size !== 4) {
-          this.showToast(`Cần 4 người chơi khác nhau cho trận ${index + 1}`, 'error')
-          return
-        }
-        matches.push({
-          seasonId, playDate, player1Id, player2Id, player3Id, player4Id,
-          team1Score, team2Score, winningTeam, matchType: 'duo'
-        })
-      }
-    }
-
-    // Send bulk create request
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/matches/bulk-create`, {
-        method: 'POST',
-        body: JSON.stringify({ matches })
-      })
-
-      const data = await response.json()
-
-      if (response.ok) {
-        this.invalidateCache(['rankings', 'matches', 'playDates'])
-        await this.loadMatches()
-        await this.loadPlayDates()
-        this.renderRankings()
-        // Only refresh match history if user is on the matches tab
-        const activeTabId = document.querySelector('.tab-content.active')?.id
-        if (activeTabId === 'matches-tab') {
-          this.renderMatchHistory()
-        }
-        this.updateDateSelector()
-
-        this.hideBatchSection()
-
-        const created = data.created || matches.length
-        this.showToast(`Đã ghi nhận ${created} trận đấu`, 'success')
-      } else {
-        this.showToast(data.error || 'Lỗi khi ghi nhận kết quả', 'error')
-      }
-    } catch (error) {
-      console.error('Batch create error:', error)
-      this.showToast('Lỗi kết nối khi ghi nhận kết quả', 'error')
-    }
-  }
-
-  /** Render parsed matches into the preview table.
-   *  For solo matches: 2 player dropdowns (player 1 & 3).
-   *  For duo matches: 2 team columns, each with 2 player dropdowns.
-   *  Team nicknames (e.g. "Hưng Tâm") are mapped to player pairs via
-   *  mapTeamToPlayerPair so the best matches are pre-selected. */
-  renderParsedMatchesTable() {
-    const container = document.getElementById('parsedCardsContainer')
-    if (!container) return
-
-    const activeSeasons = (this.seasons || []).filter(s => s.is_active)
-    const today = new Date().toISOString().split('T')[0]
-    const latestPlayDate = this.playDates?.[0]?.play_date?.split('T')[0] || today
-    const latestSeasonId = activeSeasons.length > 0 ? activeSeasons[0].id : null
-    const seasonOptions = activeSeasons.map(s => {
-      const sel = s.id === latestSeasonId ? ' selected' : ''
-      return `<option value="${s.id}"${sel}>${this.escapeHtml(s.name)}</option>`
-    }).join('')
-
-    const buildOptions = (selectedId) => {
-      const options = this.players.map(p => {
-        const sel = p.id === selectedId ? ' selected' : ''
-        return `<option value="${p.id}"${sel}>${this.escapeHtml(p.name)}</option>`
-      }).join('')
-      return `<option value="">-- Chọn --</option>${options}`
-    }
-
-    container.innerHTML = this.parsedMatchesBuffer.map((match, index) => {
-      const isSolo = match.matchType === 'solo'
-      const typeLabel = isSolo ? '1v1' : '4v4'
-
-      if (isSolo) {
-        const player1Id = this.fuzzyMatchPlayer(match.player1Name, this.players)
-        const player3Id = this.fuzzyMatchPlayer(match.player3Name, this.players)
-
-        return `
-          <div class="match-card parsed-match-card" data-index="${index}" data-match-type="solo">
-            <div class="match-card-header">
-              <span class="match-type-badge">${typeLabel}</span>
-              <button class="match-delete-btn" data-parsed-remove="${index}" title="Xoá trận đấu">✕</button>
-            </div>
-            <div class="match-teams">
-              <div class="match-team match-team-1">
-                <span class="match-team-label">Đội 1</span>
-                <div class="match-player-selects">
-                  <select class="select-field" data-field="player1Id">${buildOptions(player1Id)}</select>
-                </div>
-              </div>
-              <div class="match-score">
-                <input type="number" class="input-field score-field" data-field="team1Score" value="${match.team1Score}" min="0" placeholder="0">
-                <span class="score-separator">:</span>
-                <input type="number" class="input-field score-field" data-field="team2Score" value="${match.team2Score}" min="0" placeholder="0">
-              </div>
-              <div class="match-team match-team-2">
-                <span class="match-team-label">Đội 2</span>
-                <div class="match-player-selects">
-                  <select class="select-field" data-field="player3Id">${buildOptions(player3Id)}</select>
-                </div>
-              </div>
-            </div>
-            <div class="match-footer">
-              <select class="select-field match-winner-select" data-field="winningTeam">
-                <option value="">Chọn đội thắng</option>
-                <option value="1" ${match.winningTeam === 1 ? 'selected' : ''}>Đội 1</option>
-                <option value="2" ${match.winningTeam === 2 ? 'selected' : ''}>Đội 2</option>
-              </select>
-              <select class="select-field match-season-select" data-field="seasonId">
-                <option value="">-- Chọn --</option>
-                ${seasonOptions}
-              </select>
-              <input type="date" class="input-field match-date-input" data-field="playDate" value="${latestPlayDate}">
-            </div>
-          </div>
-        `
-      }
-
-      // ── Duo match ──
-      const team1Pair = this.mapTeamToPlayerPair(
-        [match.player1Name, match.player2Name].filter(Boolean).join(' '),
-        this.players
-      )
-      const team2Pair = this.mapTeamToPlayerPair(
-        [match.player3Name, match.player4Name].filter(Boolean).join(' '),
-        this.players
-      )
-
-      const team1P1 = team1Pair?.player1Id || null
-      const team1P2 = team1Pair?.player2Id || null
-      const team2P1 = team2Pair?.player1Id || null
-      const team2P2 = team2Pair?.player2Id || null
-
-      const buildTeamLabel = (pair) => {
-        if (!pair) return ''
-        const names = [pair.player1Id, pair.player2Id]
-          .filter(id => id)
-          .map(id => {
-            const p = this.players.find(pl => pl.id === id)
-            return p ? p.name : ''
-          })
-          .filter(Boolean)
-        return names.join(' + ')
-      }
-
-      const team1Label = this.escapeHtml(buildTeamLabel(team1Pair))
-      const team2Label = this.escapeHtml(buildTeamLabel(team2Pair))
-
-      const player2Html = team1P2 ? `<select class="select-field" data-field="player2Id">${buildOptions(team1P2)}</select>` : ''
-      const player4Html = team2P2 ? `<select class="select-field" data-field="player4Id">${buildOptions(team2P2)}</select>` : ''
-      const label1Html = team1Label ? `<span class="match-player-label">${team1Label}</span>` : ''
-      const label2Html = team2Label ? `<span class="match-player-label">${team2Label}</span>` : ''
-
-      return `
-        <div class="match-card parsed-match-card" data-index="${index}" data-match-type="duo">
-          <div class="match-card-header">
-            <span class="match-type-badge">${typeLabel}</span>
-            <button class="match-delete-btn" data-parsed-remove="${index}" title="Xoá trận đấu">✕</button>
-          </div>
-          <div class="match-teams">
-            <div class="match-team match-team-1">
-              <span class="match-team-label">Đội 1</span>
-              <div class="match-player-selects">
-                <select class="select-field" data-field="player1Id">${buildOptions(team1P1)}</select>
-                ${player2Html}
-                ${label1Html}
-              </div>
-            </div>
-            <div class="match-score">
-              <input type="number" class="input-field score-field" data-field="team1Score" value="${match.team1Score}" min="0" placeholder="0">
-              <span class="score-separator">:</span>
-              <input type="number" class="input-field score-field" data-field="team2Score" value="${match.team2Score}" min="0" placeholder="0">
-            </div>
-            <div class="match-team match-team-2">
-              <span class="match-team-label">Đội 2</span>
-              <div class="match-player-selects">
-                <select class="select-field" data-field="player3Id">${buildOptions(team2P1)}</select>
-                ${player4Html}
-                ${label2Html}
-              </div>
-            </div>
-          </div>
-          <div class="match-footer">
-            <select class="select-field match-winner-select" data-field="winningTeam">
-              <option value="">Chọn đội thắng</option>
-              <option value="1" ${match.winningTeam === 1 ? 'selected' : ''}>Đội 1</option>
-              <option value="2" ${match.winningTeam === 2 ? 'selected' : ''}>Đội 2</option>
-            </select>
-            <select class="select-field match-season-select" data-field="seasonId">
-              <option value="">-- Chọn --</option>
-              ${seasonOptions}
-            </select>
-            <input type="date" class="input-field match-date-input" data-field="playDate" value="${latestPlayDate}">
-          </div>
-        </div>
-      `
-    }).join('')
-
-    // Wire up remove buttons
-    container.querySelectorAll('[data-parsed-remove]').forEach(btn => {
-      const idx = parseInt(btn.dataset.parsedRemove, 10)
-      btn.addEventListener('click', () => this.removeParsedMatchRow(idx))
-    })
-  }
-
-  /** Remove a parsed match row by index */
-  removeParsedMatchRow(index) {
-    this.parsedMatchesBuffer.splice(index, 1)
-    this.renderParsedMatchesTable()
-  }
-
-  /** Bulk confirm all parsed matches and create them in the database */
-  async confirmParsedMatches() {
-    const container = document.getElementById('parsedCardsContainer')
-    if (!container || !this.parsedMatchesBuffer.length) {
-      this.showToast('Không có dữ liệu để xác nhận', 'error')
-      return
-    }
-
-    // Read all data from the preview cards
-    const cards = container.querySelectorAll('.match-card')
-    const matches = []
-
-    for (const card of cards) {
-      const index = card.dataset.index
-      const match = this.parsedMatchesBuffer[index]
-
-      const player1Id = parseInt(card.querySelector('[data-field="player1Id"]')?.value)
-      const player2Id = parseInt(card.querySelector('[data-field="player2Id"]')?.value)
-      const player3Id = parseInt(card.querySelector('[data-field="player3Id"]')?.value)
-      const player4Id = parseInt(card.querySelector('[data-field="player4Id"]')?.value)
-      const team1Score = parseInt(card.querySelector('[data-field="team1Score"]')?.value) || 0
-      const team2Score = parseInt(card.querySelector('[data-field="team2Score"]')?.value) || 0
-      const winningTeam = parseInt(card.querySelector('[data-field="winningTeam"]')?.value)
-      const seasonId = parseInt(card.querySelector('[data-field="seasonId"]')?.value)
-      const playDate = card.querySelector('[data-field="playDate"]')?.value
-
-      const isSolo = match.matchType === 'solo'
-
-      if (!seasonId || !playDate) {
-        this.showToast('Vui lòng chọn mùa giải và ngày cho tất cả trận', 'error')
-        return
-      }
-
-      if (winningTeam !== 1 && winningTeam !== 2) {
-        this.showToast('Vui lòng chọn đội thắng cho tất cả trận', 'error')
-        return
-      }
-
-      if (isSolo) {
-        if (isNaN(player1Id) || isNaN(player3Id) || player1Id === player3Id) {
-          this.showToast('Vui lòng chọn 2 người chơi khác nhau', 'error')
-          return
-        }
-        matches.push({
-          seasonId, playDate, player1Id, player2Id: null, player3Id, player4Id: null,
-          team1Score, team2Score, winningTeam, matchType: 'solo'
-        })
-      } else {
-        if ([player1Id, player2Id, player3Id, player4Id].some(id => isNaN(id))) {
-          this.showToast('Vui lòng chọn đủ 4 người chơi', 'error')
-          return
-        }
-        if (new Set([player1Id, player2Id, player3Id, player4Id]).size !== 4) {
-          this.showToast('Cần 4 người chơi khác nhau', 'error')
-          return
-        }
-        matches.push({
-          seasonId, playDate, player1Id, player2Id, player3Id, player4Id,
-          team1Score, team2Score, winningTeam, matchType: 'duo'
-        })
-      }
-    }
-
-    // Send bulk create request
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/matches/bulk-create`, {
-        method: 'POST',
-        body: JSON.stringify({ matches })
-      })
-
-      const data = await response.json()
-
-      if (response.ok) {
-        this.invalidateCache(['rankings', 'matches', 'playDates'])
-        await this.loadMatches()
-        await this.loadPlayDates()
-        this.renderRankings()
-        // Only refresh match history if user is on the matches tab
-        const activeTabId = document.querySelector('.tab-content.active')?.id
-        if (activeTabId === 'matches-tab') {
-          this.renderMatchHistory()
-        }
-        this.updateDateSelector()
-
-        // Clear the buffer and UI
-        this.clearScreenshot()
-
-        const created = data.created || matches.length
-        this.showToast(`Đã ghi nhận ${created} trận đấu từ ảnh`, 'success')
-      } else {
-        this.showToast(data.error || 'Lỗi khi ghi nhận kết quả', 'error')
-      }
-    } catch (error) {
-      console.error('Bulk create error:', error)
-      this.showToast('Lỗi kết nối khi ghi nhận kết quả', 'error')
-    }
-  }
-
-  renderPlayers() {
-    try {
-      const userRole = this.user?.role
-      const canDelete = userRole === 'admin'
-      
-      // Render old style player list (if container exists)
-      const container = document.getElementById('playersList')
-      if (container) {
-        container.innerHTML = this.players.map(player => `
-          <div class="player-card">
-            <span class="player-name">${this.escapeHtml(player.name)}</span>
-            ${canDelete ? `
-              <button class="delete-btn" data-player-id="${player.id}">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <polyline points="3 6 5 6 21 6"/>
-                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                </svg>
-              </button>
-            ` : ''}
-          </div>
-        `).join('')
-      }
-      
-      // Render Players tab table
-      const tableBody = document.getElementById('playersTableBody')
-      if (tableBody) {
-        tableBody.innerHTML = this.players.map(player => `
-          <tr>
-            <td><span class="id-badge">#${player.id}</span></td>
-            <td>
-              <div class="player-cell">
-                <span class="player-avatar-small">${this.escapeHtml(player.name.charAt(0).toUpperCase())}</span>
-                <span class="player-name-text">${this.escapeHtml(player.name)}</span>
-              </div>
-            </td>
-            <td>${player.created_at ? this.formatDate(player.created_at) : '-'}</td>
-            ${canDelete ? `
-              <td>
-                <button class="btn btn-sm btn-danger delete-player-btn" data-player-id="${player.id}">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="3 6 5 6 21 6"/>
-                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                  </svg>
-                  Xóa
-                </button>
-              </td>
-            ` : ''}
-          </tr>
-        `).join('')
-        
-        // Event listeners handled by event delegation in setupEventListeners
-      }
-      
-      // Update player count badge
-      const countBadge = document.getElementById('playerCount')
-      if (countBadge) {
-        countBadge.textContent = `${this.players.length} người chơi`
-      }
-    } catch (error) {
-      console.error('Error rendering players:', error)
-    }
-  }
-
-  renderSeasons() {
-    try {
-      const container = document.getElementById('seasonsList')
-      if (!container) {
-        console.warn('Seasons list container not found')
-        return
-      }
-
-      const userRole = this.user?.role
-      const activeSeasons = this.seasons.filter(s => s.is_active)
-      const endedSeasons = this.seasons.filter(s => !s.is_active)
-      
-      let html = ''
-      
-      // Active seasons section
-      if (activeSeasons.length > 0) {
-        html += `<div class="seasons-section">
-          <h3 class="season-heading-active">✅ Mùa giải đang hoạt động (${activeSeasons.length})</h3>
-          ${activeSeasons.length > 1 ? `<div class="info-message info-message-compact">ℹ️ Hiện có ${activeSeasons.length} mùa giải đang hoạt động cùng lúc</div>` : ''}
-          <div class="seasons-grid">`
-        
-        activeSeasons.forEach(season => {
-          const hasEndDate = season.end_date && season.end_date !== 'null' && season.end_date !== ''
-          const endDateDisplay = hasEndDate 
-            ? this.formatDate(season.end_date)
-            : '<span class="season-text-muted">Không có ngày kết thúc</span>'
-          const autoEndInfo = season.auto_end && hasEndDate ? ` <span class="season-auto-end">(Tự động kết thúc)</span>` : ''
-          const descriptionInfo = season.description ? `<p class="season-description">📝 ${this.escapeHtml(season.description)}</p>` : ''
-          const loseMoneyInfo = `<p>💰 Tiền thua: ${this.formatMoney(season.lose_money_per_loss ?? 20000)}/trận</p>`
-          
-          html += `
-            <div class="season-card active-season">
-              <div class="season-header">
-                <h4>${this.escapeHtml(season.name)}</h4>
-                <span class="season-status active">Đang hoạt động</span>
-              </div>
-              <div class="season-info">
-                <p>📅 Từ: ${this.formatDate(season.start_date)}</p>
-                <p>🏁 Đến: ${endDateDisplay}${autoEndInfo}</p>
-                ${loseMoneyInfo}
-                ${descriptionInfo}
-                ${!hasEndDate ? `<p class="info-warning">⚠️ Cần kết thúc thủ công</p>` : ''}
-              </div>
-              ${userRole === 'admin' || userRole === 'editor' ? `
-                <div class="season-actions">
-                  <button data-action="end-season" data-id="${season.id}" class="btn btn-sm btn-secondary">🏁 Kết thúc</button>
-                  <button data-action="edit-season" data-id="${season.id}" class="btn btn-sm btn-ghost">✏️ Sửa</button>
-                  <button data-action="delete-season" data-id="${season.id}" class="btn btn-sm btn-danger">🗑️ Xóa</button>
-                </div>
-              ` : ''}
-            </div>`
-        })
-        
-        html += `</div></div>`
-      }
-      
-      // Ended seasons section
-      if (endedSeasons.length > 0) {
-        html += `<div class="seasons-section seasons-section--spaced">
-          <h3 class="season-heading-ended">⏸️ Mùa giải đã kết thúc (${endedSeasons.length})</h3>
-          <div class="seasons-grid">`
-        
-        endedSeasons.forEach(season => {
-          const hasEndDate = season.end_date && season.end_date !== 'null' && season.end_date !== ''
-          const endDateDisplay = hasEndDate 
-            ? this.formatDate(season.end_date)
-            : '<span class="season-text-muted">Không có ngày kết thúc</span>'
-          const descriptionInfo = season.description ? `<p class="season-description">📝 ${this.escapeHtml(season.description)}</p>` : ''
-          const endedAtInfo = season.ended_at ? `<p>⏰ Kết thúc lúc: ${new Date(season.ended_at).toLocaleString('vi-VN')}</p>` : ''
-          const endedByInfo = season.ended_by ? `<p>👤 Kết thúc bởi: ${this.escapeHtml(season.ended_by)}</p>` : ''
-          const loseMoneyInfo = `<p>💰 Tiền thua: ${this.formatMoney(season.lose_money_per_loss ?? 20000)}/trận</p>`
-          
-          html += `
-            <div class="season-card ended-season">
-              <div class="season-header">
-                <h4>${this.escapeHtml(season.name)}</h4>
-                <span class="season-status ended">Đã kết thúc</span>
-              </div>
-              <div class="season-info">
-                <p>📅 Từ: ${this.formatDate(season.start_date)}</p>
-                <p>🏁 Đến: ${endDateDisplay}</p>
-                ${loseMoneyInfo}
-                ${endedAtInfo}
-                ${endedByInfo}
-                ${descriptionInfo}
-                ${season.final_results ? `<div class="season-final-results"><strong>🏆 Kết quả cuối cùng:</strong><p class="season-results-text">${this.escapeHtml(season.final_results).replace(/\n/g, '<br>')}</p></div>` : ''}
-                ${season.conclusion_image_path ? `<div class="season-conclusion-image"><img src="${this.apiBase}/images/season/${season.id}/conclusion/file" alt="Ảnh tổng kết" style="max-width:100%;max-height:120px;object-fit:contain;border-radius:8px;margin-top:8px;"></div>` : ''}
-              </div>
-              ${userRole === 'admin' || userRole === 'editor' ? `
-                <div class="season-actions">
-                  <button data-action="view-results" data-id="${season.id}" class="btn btn-sm btn-secondary">📋 Xem kết quả</button>
-                  <button data-action="reactivate-season" data-id="${season.id}" class="btn btn-sm btn-primary">✅ Kích hoạt lại</button>
-                  <button data-action="delete-season" data-id="${season.id}" class="btn btn-sm btn-danger">🗑️ Xóa</button>
-                </div>
-              ` : (season.final_results || season.conclusion_image_path) ? `
-                <div class="season-actions">
-                  <button data-action="view-results" data-id="${season.id}" class="btn btn-sm btn-secondary">📋 Xem kết quả</button>
-                </div>
-              ` : ''}
-            </div>`
-        })
-        
-        html += `</div></div>`
-      }
-      
-      // Empty state
-      if (this.seasons.length === 0) {
-        html = `<div class="empty-state"><p>📋 Chưa có mùa giải nào. Tạo mùa giải đầu tiên để bắt đầu!</p></div>`
-      }
-      
-      container.innerHTML = html
-
-      // Add event listeners for season actions
-      container.querySelectorAll('[data-action]').forEach(button => {
-        button.addEventListener('click', (e) => {
-          const action = e.target.dataset.action
-          const seasonId = parseInt(e.target.dataset.id)
-          
-          if (action === 'view-results') {
-            this.showSeasonResultsModal(seasonId)
-          } else if (userRole === 'admin' || userRole === 'editor') {
-            if (action === 'end-season') {
-              this.endSeason(seasonId)
-            } else if (action === 'reactivate-season') {
-              this.reactivateSeason(seasonId)
-            } else if (action === 'edit-season') {
-              this.editSeason(seasonId)
-            } else if (action === 'delete-season') {
-              this.deleteSeason(seasonId)
-            }
-          }
-        })
-      })
-    } catch (error) {
-      console.error('Error rendering seasons:', error)
-    }
-  }
-
-  async renderRankings() {
-    let rankings = []
-    
-    try {
-      let cacheKey = ''
-      let apiUrl = ''
-      
-      if (this.currentViewMode === 'daily' && this.selectedDate) {
-        cacheKey = `daily:${this.selectedDate}`
-        apiUrl = `${this.apiBase}/rankings/date/${this.selectedDate}`
-      } else if (this.currentViewMode === 'season' && this.selectedSeason) {
-        cacheKey = `season:${this.selectedSeason}`
-        apiUrl = `${this.apiBase}/rankings/season/${this.selectedSeason}`
-      } else if (this.currentViewMode === 'lifetime') {
-        cacheKey = 'lifetime'
-        apiUrl = `${this.apiBase}/rankings/lifetime`
-      }
-      
-      if (cacheKey) {
-        // Use smart cache with type-specific TTL
-        rankings = this.getCache('rankings', cacheKey)
-        if (!rankings && apiUrl) {
-          const response = await fetch(apiUrl)
-          if (response.ok) {
-            rankings = await response.json()
-            this.setCache('rankings', cacheKey, rankings)
-          }
-        }
-      }
-      rankings = rankings || []
-    } catch (error) {
-      console.error('Error loading rankings:', error)
-      rankings = []
-    }
-
-    // Determine which table to use based on view mode
-    let tableId = 'dailyRankingTable'
-    if (this.currentViewMode === 'season') tableId = 'seasonRankingTable'
-    else if (this.currentViewMode === 'lifetime') tableId = 'lifetimeRankingTable'
-    
-    const container = document.getElementById(tableId)
-    if (!container) return
-
-    const tbody = container.querySelector('tbody')
-    if (!tbody) return
-    
-    const diffColor = (val) => val > 0 ? 'positive' : (val < 0 ? 'negative' : '')
-    const diffLabel = (val) => (val > 0 ? '+' : '') + (val ?? 0)
-    tbody.innerHTML = rankings.length === 0
-      ? '<tr><td colspan="10" style="text-align: center; padding: 2rem; color: var(--text-muted);">Không có dữ liệu</td></tr>'
-      : rankings.map((player, index) => {
-        const balanceClass = player.money_balance > 0 ? 'positive' : (player.money_balance < 0 ? 'negative' : '')
-        const balanceValue = player.money_balance ?? (player.money_won ?? 0) - (player.money_lost ?? 0)
-        const formHtml = this.renderForm(player.form ?? player.recent_form ?? [])
-        const points = player.points ?? 0
-        const pointsClass = points > 0 ? 'positive' : (points < 0 ? 'negative' : '')
-        const scoreDiff = player.score_difference ?? 0
-        return `
-          <tr>
-            <td class="col-rank">${this.getRankEmoji(index + 1)}${index + 1}</td>
-            <td class="col-name">${this.escapeHtml(player.name)}</td>
-            <td class="col-form"><div class="form-dots">${formHtml || '-'}</div></td>
-            <td>${player.total_matches || 0}</td>
-            <td>${player.wins || 0}</td>
-            <td>${player.losses || 0}</td>
-            <td>${player.win_percentage || 0}%</td>
-            <td class="col-points ${pointsClass}">${points}</td>
-            <td class="col-difference ${diffColor(scoreDiff)}">${diffLabel(scoreDiff)}</td>
-            <td class="col-balance ${balanceClass}">${this.formatMoney(balanceValue)}</td>
-          </tr>
-        `
-      }).join('')
-  }
-  
-  getRankEmoji(rank) {
-    if (rank === 1) return '🥇 '
-    if (rank === 2) return '🥈 '
-    if (rank === 3) return '🥉 '
-    return ''
-  }
-
-  renderForm(form) {
-    if (!form || form.length === 0) return ''
-    
-    return form.map(match => {
-      const cssClass = match.result === 'win' ? 'form-dot-win' : 'form-dot-loss'
-      return `<span class="form-dot ${cssClass}" title="${match.result === 'win' ? 'Thắng' : 'Thua'} - ${this.formatDate(match.play_date)}"></span>`
-    }).join('')
-  }
-
-  async renderMatchHistory() {
-    // Guard: return BEFORE any API calls if matches tab is not active
-    const matchesTab = document.getElementById('matches-tab')
-    if (!matchesTab || !matchesTab.classList.contains('active')) return
-
-    // Defensive: also verify the table element exists
-    const tableBody = document.querySelector('#matchHistoryTable tbody')
-    if (!tableBody) return
-
-    let matches = []
-    
-    try {
-      // Check for filter date
-      const matchHistoryDate = document.getElementById('matchHistoryDate')?.value
-      let cacheKey = ''
-      let apiUrl = ''
-      
-      if (matchHistoryDate) {
-        cacheKey = `date:${matchHistoryDate}`
-        apiUrl = `${this.apiBase}/matches/by-date/${matchHistoryDate}`
-      } else if (this.currentViewMode === 'daily' && this.selectedDate) {
-        cacheKey = `date:${this.selectedDate}`
-        apiUrl = `${this.apiBase}/matches/by-date/${this.selectedDate}`
-      } else if (this.currentViewMode === 'season' && this.selectedSeason) {
-        cacheKey = `season:${this.selectedSeason}`
-        apiUrl = `${this.apiBase}/matches/by-season/${this.selectedSeason}`
-      } else {
-        cacheKey = 'all'
-        apiUrl = `${this.apiBase}/matches`
-      }
-      
-      // Check cache first
-      matches = this.getCache('matches', cacheKey)
-      if (!matches && apiUrl) {
-        const response = await fetch(apiUrl)
-        if (response.ok) {
-          matches = await response.json()
-          this.setCache('matches', cacheKey, matches)
-        }
-      }
-      matches = matches || []
-    } catch (error) {
-      console.error('Error loading matches:', error)
-    }
-
-    const container = document.querySelector('#matchHistoryTable tbody')
-    if (!container) return
-
-    const userRole = this.user?.role
-    const canEdit = userRole === 'admin' || userRole === 'editor'
-    
-    container.innerHTML = matches.length === 0 
-      ? `<tr><td colspan="${canEdit ? 6 : 5}" style="text-align: center; padding: 2rem; color: var(--text-muted);">Không có trận đấu nào</td></tr>`
-      : matches.map(match => {
-        const isSolo = match.match_type === 'solo'
-        
-        let team1Players, team2Players
-        if (isSolo) {
-          team1Players = match.player1_name
-          team2Players = match.player3_name
-        } else {
-          team1Players = `${match.player1_name} & ${match.player2_name}`
-          team2Players = `${match.player3_name} & ${match.player4_name}`
-        }
-        
-        const team1Class = match.winning_team === 1 ? 'winner-cell' : ''
-        const team2Class = match.winning_team === 2 ? 'winner-cell' : ''
-        const matchMoney = match.lose_money_per_loss ?? 0
-        const winnerBadge = `<svg class="winner-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/></svg>`
-        
-        return `
-          <tr>
-            <td>${this.formatDate(match.play_date)}</td>
-            <td class="${team1Class}">${this.escapeHtml(team1Players)} ${match.winning_team === 1 ? winnerBadge : ''}</td>
-            <td style="text-align: center; font-weight: 600;">${match.team1_score} - ${match.team2_score}</td>
-            <td class="${team2Class}">${this.escapeHtml(team2Players)} ${match.winning_team === 2 ? winnerBadge : ''}</td>
-            <td>${this.formatMoney(matchMoney)}</td>
-            ${canEdit ? `
-              <td>
-                <div class="action-btns">
-                  <button class="btn btn-sm btn-icon edit-match-btn" data-match-id="${match.id}" title="Sửa">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                    </svg>
-                  </button>
-                  <button class="btn btn-sm btn-icon btn-danger delete-match-btn" data-match-id="${match.id}" title="Xóa">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <polyline points="3 6 5 6 21 6"/>
-                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                    </svg>
-                  </button>
-                </div>
-              </td>
-            ` : ''}
-          </tr>
-        `
-      }).join('')
-    
-    // Add event listeners for edit/delete buttons
-    if (container) {
-      container.querySelectorAll('.edit-match-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const matchId = parseInt(btn.dataset.matchId)
-          this.editMatch(matchId)
-        })
-      })
-      container.querySelectorAll('.delete-match-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const matchId = parseInt(btn.dataset.matchId)
-          this.deleteMatch(matchId)
-        })
-      })
-    }
-  }
-
-  updatePlayerSelects() {
-    try {
-      // Filter players by selected season if a season is selected
-      let availablePlayers = this.players
-      
-      if (this.selectedMatchSeason && this.seasonPlayers.length > 0) {
-        // Only show players who are allowed in this season
-        const allowedPlayerIds = this.seasonPlayers.map(p => p.player_id || p.id)
-        availablePlayers = this.players.filter(player => 
-          allowedPlayerIds.includes(player.id)
-        )
-      }
-      
-      const playerOptions = availablePlayers.map(player => 
-        `<option value="${player.id}">${this.escapeHtml(player.name)}</option>`
-      ).join('')
-
-      // For duo mode
-      const duoSelects = ['player1', 'player2', 'player3', 'player4']
-      duoSelects.forEach(selectId => {
-        const select = document.getElementById(selectId)
-        if (select) {
-          const currentValue = select.value
-          select.innerHTML = `<option value="">Chọn người chơi...</option>${playerOptions}`
-          // Restore previous selection if still valid
-          if (currentValue && availablePlayers.some(p => p.id == currentValue)) {
-            select.value = currentValue
-          }
-        }
-      })
-      
-      // For solo mode
-      const soloSelects = ['soloPlayer1', 'soloPlayer2']
-      soloSelects.forEach(selectId => {
-        const select = document.getElementById(selectId)
-        if (select) {
-          const currentValue = select.value
-          select.innerHTML = `<option value="">Chọn người chơi...</option>${playerOptions}`
-          // Restore previous selection if still valid
-          if (currentValue && availablePlayers.some(p => p.id == currentValue)) {
-            select.value = currentValue
-          }
-        }
-      })
-    } catch (error) {
-      console.error('Error updating player selects:', error)
-    }
-  }
-
-  updateSeasonSelect() {
-    try {
-      const matchSeasonSelect = document.getElementById('matchSeasonSelect')
-      if (!matchSeasonSelect) return
-
-      // Get only active seasons
-      const activeSeasons = this.seasons.filter(s => s.is_active)
-      
-      const seasonOptions = activeSeasons.map(season => {
-        const endDateStr = season.end_date ? ` (Kết thúc: ${this.formatDate(season.end_date)})` : ''
-        const loseMoneyStr = season.lose_money_per_loss ? ` - ${this.formatMoney(season.lose_money_per_loss)}/thua` : ''
-        return `<option value="${season.id}">${this.escapeHtml(season.name)}${endDateStr}${loseMoneyStr}</option>`
-      }).join('')
-
-      matchSeasonSelect.innerHTML = `<option value="">-- Chọn mùa giải trước --</option>${seasonOptions}`
-      
-      // Auto-select if only one active season
-      if (activeSeasons.length === 1) {
-        matchSeasonSelect.value = activeSeasons[0].id
-        // Trigger the season change to load players
-        this.onMatchSeasonChange(activeSeasons[0].id)
-      }
-    } catch (error) {
-      console.error('Error updating season select:', error)
-    }
-  }
-
-  async handleMatchSeasonChange(seasonId) {
-    this.selectedMatchSeason = seasonId ? parseInt(seasonId) : null
-    
-    const playerSelectionArea = document.getElementById('playerSelectionArea')
-    
-    if (!seasonId) {
-      // No season selected - hide player selection
-      this.seasonPlayers = []
-      if (playerSelectionArea) {
-        playerSelectionArea.style.display = 'none'
-      }
-      return
-    }
-    
-    // Fetch players allowed in this season
-    try {
-      const response = await fetch(`${this.apiBase}/seasons/${seasonId}/players`)
-      if (response.ok) {
-        this.seasonPlayers = await response.json()
-      } else {
-        // If no specific players, allow all players
-        this.seasonPlayers = []
-      }
-    } catch (error) {
-      console.error('Error loading season players:', error)
-      this.seasonPlayers = []
-    }
-    
-    // Show player selection area
-    if (playerSelectionArea) {
-      playerSelectionArea.style.display = 'block'
-    }
-    
-    // Update player dropdowns with filtered list
-    this.updatePlayerSelects()
-    
-    // Also update the season info display
-    const selectedSeason = this.seasons.find(s => s.id == seasonId)
-    if (selectedSeason) {
-      const seasonInfoEl = document.getElementById('selectedSeasonInfo')
-      if (seasonInfoEl) {
-        const playerCount = this.seasonPlayers.length > 0 
-          ? `${this.seasonPlayers.length} người chơi được phép` 
-          : 'Tất cả người chơi'
-        seasonInfoEl.innerHTML = `
-          <div class="season-info-badge">
-            <span>💰 ${this.formatMoney(selectedSeason.lose_money_per_loss ?? 20000)}/trận thua</span>
-            <span>👥 ${playerCount}</span>
-          </div>
-        `
-        seasonInfoEl.style.display = 'block'
-      }
-    }
-  }
-
-  updateDateSelector() {
-    const selector = document.getElementById('rankingDateSelect')
-    if (!selector) return
-
-    // Keep the placeholder option and add dates
-    const placeholder = '<option value="">-- Chọn ngày --</option>'
-    selector.innerHTML = placeholder + this.playDates.map(dateObj => {
-      // Convert to date-only format (YYYY-MM-DD) to avoid timezone issues
-      const dateOnly = dateObj.play_date.split('T')[0]
-      return `<option value="${dateOnly}">${this.formatDate(dateObj.play_date)}</option>`
-    }).join('')
-
-    if (this.selectedDate) {
-      // Also ensure selectedDate is in date-only format
-      const selectedDateOnly = this.selectedDate.split('T')[0]
-      selector.value = selectedDateOnly
-    }
-    
-    // Also update match history date selector
-    this.updateMatchHistoryDateSelector()
-  }
-  
-  updateMatchHistoryDateSelector() {
-    const selector = document.getElementById('matchHistoryDate')
-    if (!selector) return
-    
-    const placeholder = '<option value="">Tất cả ngày</option>'
-    selector.innerHTML = placeholder + this.playDates.map(dateObj => {
-      const dateOnly = dateObj.play_date.split('T')[0]
-      return `<option value="${dateOnly}">${this.formatDate(dateObj.play_date)}</option>`
-    }).join('')
-  }
-
-  updateSeasonSelector() {
-    const selector = document.getElementById('seasonSelect')
-    if (!selector) return
-
-    selector.innerHTML = this.seasons.map(season => 
-      `<option value="${season.id}">${this.escapeHtml(season.name)}${season.is_active ? ' (Đang hoạt động)' : ''}</option>`
-    ).join('')
-
-    if (this.selectedSeason) {
-      selector.value = this.selectedSeason
-    }
-  }
-
-  updateViewModeDisplay() {
-    const display = document.getElementById('currentViewMode')
-    if (!display) return
-
-    let modeText = ''
-    let exportText = '📊 Xuất Excel'
-    
-    if (this.currentViewMode === 'daily') {
-      modeText = `Bảng xếp hạng theo ngày: ${this.formatDate(this.selectedDate)}`
-      exportText = `📊 Xuất Excel (${this.formatDate(this.selectedDate)})`
-    } else if (this.currentViewMode === 'season') {
-      const season = this.seasons.find(s => s.id === this.selectedSeason)
-      const seasonName = season ? season.name : 'Không xác định'
-      modeText = `Bảng xếp hạng mùa giải: ${seasonName}`
-      exportText = `📊 Xuất Excel (${seasonName})`
-    } else {
-      modeText = 'Bảng xếp hạng tổng (toàn thời gian)'
-      exportText = '📊 Xuất Excel (Toàn thời gian)'
-    }
-    
-    display.textContent = modeText
-    
-    // Update export button text
-    const exportBtn = document.getElementById('exportRankings')
-    if (exportBtn) {
-      exportBtn.textContent = exportText
-    }
-  }
-
-  showSeasonModal(seasonId = null) {
-    const isEdit = seasonId !== null
-    const season = isEdit ? this.seasons.find(s => s.id === seasonId) : null
-    
-    // Update modal title
-    const titleEl = document.getElementById('seasonModalTitle')
-    if (titleEl) {
-      titleEl.textContent = isEdit ? 'Chỉnh Sửa Mùa Giải' : 'Tạo Mùa Giải Mới'
-    }
-    
-    // Build player checkboxes
-    const checkboxContainer = document.getElementById('seasonPlayersCheckboxes')
-    if (checkboxContainer) {
-      checkboxContainer.innerHTML = this.players.map(player => `
-        <label class="player-checkbox">
-          <input type="checkbox" name="seasonPlayers" value="${player.id}" data-player-name="${this.escapeHtml(player.name)}">
-          <span>${this.escapeHtml(player.name)}</span>
-        </label>
-      `).join('')
-    }
-    
-    // Set form values
-    document.getElementById('seasonId').value = seasonId || ''
-    document.getElementById('seasonName').value = season ? season.name : ''
-    document.getElementById('seasonLoseMoney').value = season ? (season.lose_money_per_loss ?? 20000) : 20000
-    document.getElementById('seasonStartDate').value = season ? season.start_date : ''
-    document.getElementById('seasonEndDate').value = season ? (season.end_date || '') : ''
-    document.getElementById('seasonDescription').value = season ? (season.description || '') : ''
-    document.getElementById('seasonAutoEnd').checked = season ? season.auto_end : false
-    
-    // Clear error
-    const errorDiv = document.getElementById('seasonError')
-    if (errorDiv) errorDiv.textContent = ''
-    
-    // Update submit button text
-    const submitBtn = document.getElementById('seasonSubmitBtn')
-    if (submitBtn) {
-      submitBtn.textContent = isEdit ? 'Cập nhật' : 'Tạo mùa giải'
-    }
-    
-    // If editing, load season players
-    if (isEdit) {
-      this.loadSeasonPlayersForEdit(seasonId)
-    }
-    
-    // Setup select/deselect all buttons
-    const selectAllBtn = document.getElementById('selectAllPlayers')
-    const deselectAllBtn = document.getElementById('deselectAllPlayers')
-    
-    if (selectAllBtn) {
-      selectAllBtn.onclick = () => {
-        document.querySelectorAll('input[name="seasonPlayers"]').forEach(cb => cb.checked = true)
-      }
-    }
-    
-    if (deselectAllBtn) {
-      deselectAllBtn.onclick = () => {
-        document.querySelectorAll('input[name="seasonPlayers"]').forEach(cb => cb.checked = false)
-      }
-    }
-    
-    // Setup form submission
-    const form = document.getElementById('seasonForm')
-    if (form) {
-      // Remove old listener and add new one
-      const newForm = form.cloneNode(true)
-      form.parentNode.replaceChild(newForm, form)
-      
-      // Re-bind checkbox listeners after form clone
-      const newSelectAll = document.getElementById('selectAllPlayers')
-      const newDeselectAll = document.getElementById('deselectAllPlayers')
-      if (newSelectAll) {
-        newSelectAll.onclick = () => {
-          document.querySelectorAll('input[name="seasonPlayers"]').forEach(cb => cb.checked = true)
-        }
-      }
-      if (newDeselectAll) {
-        newDeselectAll.onclick = () => {
-          document.querySelectorAll('input[name="seasonPlayers"]').forEach(cb => cb.checked = false)
-        }
-      }
-      
-      newForm.addEventListener('submit', async (e) => {
-        e.preventDefault()
-        await this.handleSeasonFormSubmit(isEdit, seasonId)
-      })
-    }
-    
-    // Show the modal
-    this.showModal('seasonModal')
-  }
-  
-  async handleSeasonFormSubmit(isEdit, seasonId) {
-    const name = document.getElementById('seasonName').value.trim()
-    const description = document.getElementById('seasonDescription').value.trim()
-    const startDate = document.getElementById('seasonStartDate').value
-    const endDate = document.getElementById('seasonEndDate').value || null
-    const autoEnd = document.getElementById('seasonAutoEnd').checked
-    const loseMoneyPerLoss = parseInt(document.getElementById('seasonLoseMoney').value) || 20000
-    const errorDiv = document.getElementById('seasonError')
-    
-    // Get selected players
-    const selectedPlayers = Array.from(document.querySelectorAll('input[name="seasonPlayers"]:checked'))
-      .map(cb => parseInt(cb.value))
-    
-    if (!name || !startDate) {
-      if (errorDiv) errorDiv.textContent = 'Vui lòng điền đầy đủ thông tin'
-      return
-    }
-    
-    // Validate end date is after start date
-    if (endDate && endDate <= startDate) {
-      if (errorDiv) errorDiv.textContent = 'Ngày kết thúc phải sau ngày bắt đầu'
-      return
-    }
-    
-    // Auto-end requires end date
-    if (autoEnd && !endDate) {
-      if (errorDiv) errorDiv.textContent = 'Cần chọn ngày kết thúc để bật tự động kết thúc'
-      return
-    }
-    
-    const result = isEdit ? 
-      await this.updateSeason(seasonId, name, description, startDate, endDate, autoEnd, loseMoneyPerLoss, selectedPlayers) :
-      await this.createSeason(name, description, startDate, endDate, autoEnd, loseMoneyPerLoss, selectedPlayers)
-    
-    if (result.success) {
-      this.hideModal('seasonModal')
-      this.showToast(result.message, 'success')
-    } else {
-      if (errorDiv) errorDiv.textContent = result.message
-    }
-  }
-
-  async loadSeasonPlayersForEdit(seasonId) {
-    try {
-      const response = await fetch(`${this.apiBase}/seasons/${seasonId}/players`)
-      if (response.ok) {
-        const seasonPlayers = await response.json()
-        const seasonPlayerIds = seasonPlayers.map(p => p.id)
-        
-        // Check the checkboxes for players in this season
-        document.querySelectorAll('input[name="seasonPlayers"]').forEach(cb => {
-          cb.checked = seasonPlayerIds.includes(parseInt(cb.value))
-        })
-      }
-    } catch (error) {
-      console.error('Error loading season players for edit:', error)
-    }
-  }
-
-  async createSeason(name, description, startDate, endDate, autoEnd, loseMoneyPerLoss = 20000, playerIds = []) {
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons`, {
-        method: 'POST',
-        body: JSON.stringify({ 
-          name, 
-          description,
-          startDate,
-          endDate,
-          autoEnd,
-          loseMoneyPerLoss,
-          playerIds
-        })
-      })
-
-      const data = await response.json()
-      
-      if (response.ok) {
-        this.invalidateCache(['seasons', 'rankings']) // Season changes affect rankings
-        await this.loadSeasons()
-        this.renderSeasons()
-        this.updateSeasonSelector()
-        return { success: true, message: 'Đã tạo mùa giải mới thành công' }
-      } else {
-        return { success: false, message: data.error }
-      }
-    } catch (error) {
-      console.error('Error creating season:', error)
-      return { success: false, message: 'Lỗi khi tạo mùa giải' }
-    }
-  }
-
-  async updateSeason(seasonId, name, description, startDate, endDate, autoEnd, loseMoneyPerLoss = null, playerIds = null) {
-    try {
-      // Update season details
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons/${seasonId}`, {
-        method: 'PUT',
-        body: JSON.stringify({ name, description, startDate, endDate, autoEnd, loseMoneyPerLoss })
-      })
-
-      const data = await response.json()
-      
-      if (!response.ok) {
-        return { success: false, message: data.error }
-      }
-      
-      // Update season players if provided
-      if (playerIds !== null) {
-        const playersResponse = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons/${seasonId}/players`, {
-          method: 'POST',
-          body: JSON.stringify({ playerIds })
-        })
-        
-        if (!playersResponse.ok) {
-          const playersData = await playersResponse.json()
-          return { success: false, message: playersData.error || 'Lỗi khi cập nhật người chơi' }
-        }
-      }
-      
-      this.invalidateCache(['seasons', 'rankings']) // Season update affects rankings
-      await this.loadSeasons()
-      this.renderSeasons()
-      this.updateSeasonSelector()
-      return { success: true, message: 'Đã cập nhật mùa giải thành công' }
-    } catch (error) {
-      console.error('Error updating season:', error)
-      return { success: false, message: 'Lỗi khi cập nhật mùa giải' }
-    }
-  }
-
-  async endSeason(seasonId) {
-    if (!this.isAuthenticated) {
-      this.updateFileStatus('❌ Cần đăng nhập để kết thúc mùa giải', 'error')
-      return
-    }
-
-    const season = this.seasons.find(s => s.id === seasonId)
-    if (!season) {
-      this.updateFileStatus('❌ Không tìm thấy mùa giải', 'error')
-      return
-    }
-
-    const hasEndDate = season.end_date && season.end_date !== 'null' && season.end_date !== ''
-    const confirmMessage = hasEndDate
-      ? `Bạn có chắc chắn muốn kết thúc mùa giải "${season.name}"?\n\nNgày kết thúc: ${this.formatDate(season.end_date)}`
-      : `Mùa giải "${season.name}" không có ngày kết thúc được đặt trước.\n\nBạn có chắc chắn muốn kết thúc mùa giải này ngay bây giờ?`
-
-    if (!confirm(confirmMessage)) {
-      return
-    }
-
-    const endDate = new Date().toISOString().split('T')[0]
-    
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons/${seasonId}/end`, {
-        method: 'POST',
-        body: JSON.stringify({ endDate })
-      })
-
-      const data = await response.json()
-      
-      if (response.ok) {
-        await this.loadSeasons()
-        this.renderSeasons()
-        this.updateSeasonSelector()
-        this.updateFileStatus('✅ Đã kết thúc mùa giải', 'success')
-      } else {
-        this.updateFileStatus(`❌ ${data.error}`, 'error')
-      }
-    } catch (error) {
-      console.error('Error ending season:', error)
-      this.updateFileStatus('❌ Lỗi khi kết thúc mùa giải', 'error')
-    }
-  }
-
-  async reactivateSeason(seasonId) {
-    if (!this.isAuthenticated) {
-      this.updateFileStatus('❌ Cần đăng nhập để kích hoạt lại mùa giải', 'error')
-      return
-    }
-
-    const season = this.seasons.find(s => s.id === seasonId)
-    if (!season) {
-      this.updateFileStatus('❌ Không tìm thấy mùa giải', 'error')
-      return
-    }
-
-    if (!confirm(`Bạn có chắc chắn muốn kích hoạt lại mùa giải "${season.name}"?`)) {
-      return
-    }
-
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons/${seasonId}/reactivate`, {
-        method: 'POST'
-      })
-
-      const data = await response.json()
-      
-      if (response.ok) {
-        await this.loadSeasons()
-        this.renderSeasons()
-        this.updateSeasonSelector()
-        this.updateFileStatus('✅ Đã kích hoạt lại mùa giải', 'success')
-      } else {
-        this.updateFileStatus(`❌ ${data.error}`, 'error')
-      }
-    } catch (error) {
-      console.error('Error reactivating season:', error)
-      this.updateFileStatus('❌ Lỗi khi kích hoạt lại mùa giải', 'error')
-    }
-  }
-
-  editSeason(seasonId) {
-    this.showSeasonModal(seasonId)
-  }
-
-  async deleteSeason(seasonId) {
-    if (!this.isAuthenticated) {
-      this.updateFileStatus('❌ Cần đăng nhập để xóa mùa giải', 'error')
-      return
-    }
-
-    const season = this.seasons.find(s => s.id === seasonId)
-    if (!season) {
-      this.updateFileStatus('❌ Không tìm thấy mùa giải', 'error')
-      return
-    }
-
-    // Check if this is an active season
-    if (season.is_active) {
-      this.updateFileStatus('❌ Không thể xóa mùa giải đang hoạt động. Vui lòng kết thúc mùa giải trước khi xóa.', 'error')
-      return
-    }
-
-    // Show confirmation dialog
-    const confirmDelete = confirm(
-      `Bạn có chắc chắn muốn xóa mùa giải "${season.name}"?\n\n` +
-      `⚠️ CẢNH BÁO: Tất cả dữ liệu trận đấu và thống kê liên quan đến mùa giải này sẽ bị xóa vĩnh viễn!\n\n` +
-      `Hành động này không thể hoàn tác.`
-    )
-
-    if (!confirmDelete) {
-      return
-    }
-
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/seasons/${seasonId}`, {
-        method: 'DELETE'
-      })
-
-      const data = await response.json()
-      
-      if (response.ok) {
-        // Invalidate all related caches
-        this.invalidateCache(['seasons', 'rankings', 'matches', 'playDates'])
-        
-        // Reload all data since deleting a season affects matches and rankings
-        await Promise.all([
-          this.loadSeasons(),
-          this.loadMatches(),
-          this.loadPlayDates()
-        ])
-        
-        this.renderSeasons()
-        this.updateSeasonSelector()
-        
-        // If we're in season view mode and this was the selected season, switch to lifetime view
-        if (this.currentViewMode === 'season' && this.selectedSeason === seasonId) {
-          await this.switchViewMode('lifetime')
-        }
-        
-        this.updateFileStatus(`✅ Đã xóa mùa giải "${season.name}" thành công`, 'success')
-      } else {
-        this.updateFileStatus(`❌ ${data.error || 'Lỗi khi xóa mùa giải'}`, 'error')
-      }
-    } catch (error) {
-      console.error('Error deleting season:', error)
-      this.updateFileStatus('❌ Lỗi kết nối khi xóa mùa giải', 'error')
-    }
-  }
-
-  async exportToExcel(explicitMode = null) {
-    try {
-      // Use explicit mode if provided, otherwise fall back to currentViewMode
-      const mode = explicitMode || this.currentViewMode
-      
-      // Determine the export type based on mode
-      let exportUrl = `${this.apiBase}/export-excel`
-      let fileName = 'tennis-rankings'
-      let statusSuffix = ''
-      
-      if (mode === 'daily') {
-        if (!this.selectedDate) {
-          this.showToast('Vui lòng chọn ngày để xuất Excel', 'error')
-          return
-        }
-        exportUrl += `/date/${this.selectedDate}`
-        fileName += `-${this.selectedDate}`
-        statusSuffix = ` (theo ngày: ${this.formatDate(this.selectedDate)})`
-      } else if (mode === 'season') {
-        if (!this.selectedSeason) {
-          this.showToast('Vui lòng chọn mùa giải để xuất Excel', 'error')
-          return
-        }
-        exportUrl += `/season/${this.selectedSeason}`
-        fileName += `-season-${this.selectedSeason}`
-        const season = this.seasons.find(s => s.id === this.selectedSeason)
-        statusSuffix = ` (theo mùa giải: ${season ? season.name : this.selectedSeason})`
-      } else if (mode === 'lifetime') {
-        exportUrl += '/lifetime'
-        fileName += '-lifetime'
-        statusSuffix = ' (toàn thời gian)'
-      }
-      
-      fileName += `-${new Date().toISOString().split('T')[0]}.xlsx`
-      
-      const response = await fetch(exportUrl)
-      
-      if (response.ok) {
-        const blob = await response.blob()
-        const url = window.URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.classList.add('hidden')
-        a.href = url
-        a.download = fileName
-        document.body.appendChild(a)
-        a.click()
-        window.URL.revokeObjectURL(url)
-        document.body.removeChild(a)
-        
-        this.updateFileStatus(`✅ Đã xuất dữ liệu ra Excel thành công${statusSuffix}`, 'success')
-      } else {
-        this.updateFileStatus('❌ Lỗi khi xuất dữ liệu ra Excel', 'error')
-      }
-    } catch (error) {
-      console.error('Error exporting to Excel:', error)
-      this.updateFileStatus('❌ Lỗi khi xuất dữ liệu ra Excel', 'error')
-    }
-  }
-  
-  // Backup entire database to JSON
-  async backupToJson() {
-    try {
-      this.showToast('Đang tạo bản sao lưu...', 'info')
-      
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/backup`, {
-        method: 'GET'
-      })
-      
-      if (!response.ok) {
-        const data = await response.json()
-        this.showToast(data.error || 'Lỗi khi tạo bản sao lưu', 'error')
-        return
-      }
-      
-      const backupData = await response.json()
-      
-      // Create download
-      const jsonStr = JSON.stringify(backupData, null, 2)
-      const blob = new Blob([jsonStr], { type: 'application/json' })
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `tennis-backup-${new Date().toISOString().split('T')[0]}.json`
-      document.body.appendChild(a)
-      a.click()
-      window.URL.revokeObjectURL(url)
-      document.body.removeChild(a)
-      
-      this.showToast('Đã tạo bản sao lưu thành công!', 'success')
-    } catch (error) {
-      console.error('Error creating backup:', error)
-      this.showToast('Lỗi khi tạo bản sao lưu', 'error')
-    }
-  }
-  
-  // Restore database from JSON backup
-  async restoreFromJson(event) {
-    const file = event.target.files?.[0]
-    if (!file) return
-    
-    // Reset file input
-    event.target.value = ''
-    
-    // Warning confirmation
-    const confirmRestore = confirm(
-      '⚠️ CẢNH BÁO ⚠️\n\n' +
-      'Khôi phục dữ liệu sẽ XÓA TẤT CẢ dữ liệu hiện tại và thay thế bằng dữ liệu từ file backup.\n\n' +
-      'Bao gồm:\n' +
-      '• Tất cả người chơi\n' +
-      '• Tất cả trận đấu\n' +
-      '• Tất cả mùa giải\n' +
-      '• Tài khoản người dùng (nếu có trong backup)\n\n' +
-      'Bạn có chắc chắn muốn tiếp tục?'
-    )
-    
-    if (!confirmRestore) return
-    
-    // Second confirmation
-    const confirmText = prompt(
-      'Để xác nhận khôi phục, vui lòng gõ: RESTORE\n\n' +
-      '(Gõ chính xác "RESTORE" để xác nhận)'
-    )
-    
-    if (confirmText !== 'RESTORE') {
-      this.showToast('Đã hủy khôi phục', 'info')
-      return
-    }
-    
-    try {
-      this.showToast('Đang khôi phục dữ liệu...', 'info')
-      
-      // Read file content
-      const reader = new FileReader()
-      reader.onload = async (e) => {
-        try {
-          const backupData = JSON.parse(e.target.result)
-          
-          // Validate backup structure
-          if (!backupData.players || !backupData.seasons || !backupData.matches) {
-            this.showToast('File backup không hợp lệ - thiếu dữ liệu players, seasons hoặc matches', 'error')
-            return
-          }
-          
-          console.log(`📤 Sending restore request with ${backupData.players.length} players, ${backupData.seasons.length} seasons, ${backupData.matches.length} matches`)
-          
-          // Send to server with confirmRestore flag (server requires explicit confirmation)
-          const response = await this.makeAuthenticatedRequest(`${this.apiBase}/restore`, {
-            method: 'POST',
-            body: JSON.stringify({ ...backupData, confirmRestore: true })
-          })
-          
-          // Check if response is OK before parsing JSON
-          const contentType = response.headers.get('content-type')
-          if (!contentType || !contentType.includes('application/json')) {
-            const textResponse = await response.text()
-            console.error('Server returned non-JSON response:', textResponse)
-            this.showToast(`Lỗi server: ${response.status} ${response.statusText}`, 'error')
-            return
-          }
-          
-          const result = await response.json()
-          
-          if (response.ok) {
-            this.showToast('Khôi phục dữ liệu thành công! Đang tải lại...', 'success')
-            
-            // Invalidate all client cache
-            this.clearCache()
-            
-            // Reload all data
-            await this.loadPlayers()
-            await this.loadSeasons()
-            await this.loadMatches()
-            await this.loadPlayDates()
-            
-            // Update UI
-            this.renderRankings()
-            this.renderSeasons()
-            this.updatePlayerSelects()
-            this.updateSeasonSelector()
-            this.updateDateSelector()
-            this.updateSeasonSelect()
-          } else {
-            console.error('Restore failed:', result)
-            this.showToast(result.error || 'Lỗi khi khôi phục dữ liệu', 'error')
-          }
-        } catch (parseError) {
-          console.error('Error in restore process:', parseError)
-          if (parseError.message?.includes('JSON')) {
-            this.showToast('Lỗi đọc file JSON - kiểm tra định dạng file', 'error')
-          } else {
-            this.showToast(`Lỗi: ${parseError.message}`, 'error')
-          }
-        }
-      }
-      
-      reader.onerror = () => {
-        console.error('FileReader error')
-        this.showToast('Lỗi đọc file', 'error')
-      }
-      
-      reader.readAsText(file)
-    } catch (error) {
-      console.error('Error restoring backup:', error)
-      this.showToast('Lỗi khi khôi phục dữ liệu', 'error')
-    }
-  }
-
-  formatDate(dateValue) {
-    if (!dateValue) return ''
-    
-    let date
-    if (dateValue instanceof Date) {
-      // If it's already a Date object, use local date components to avoid timezone issues
-      date = new Date(dateValue.getFullYear(), dateValue.getMonth(), dateValue.getDate())
-    } else if (typeof dateValue === 'string') {
-      // If it's a string, parse it as local date to avoid UTC timezone conversion
-      if (dateValue.includes('T') || dateValue.includes('Z')) {
-        // ISO string format - extract date part only
-        const datePart = dateValue.split('T')[0]
-        const [year, month, day] = datePart.split('-').map(Number)
-        date = new Date(year, month - 1, day) // month is 0-based
-      } else {
-        // Date-only string format like "2025-09-30"
-        const [year, month, day] = dateValue.split('-').map(Number)
-        date = new Date(year, month - 1, day) // month is 0-based
-      }
-    } else {
-      return ''
-    }
-    
-    return date.toLocaleDateString('vi-VN', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    })
-  }
-
-  formatMoney(amount) {
-    return new Intl.NumberFormat('vi-VN', {
-      style: 'currency',
-      currency: 'VND'
-    }).format(amount)
-  }
-
-  updateFileStatus(message, type = 'info') {
-    try {
-      const statusElement = document.getElementById('fileStatus')
-      if (statusElement) {
-        statusElement.textContent = message
-        statusElement.className = `status-message status-${type}`
-        
-        setTimeout(() => {
-          if (statusElement.textContent === message) {
-            statusElement.textContent = ''
-            statusElement.className = 'status-message'
-          }
-        }, 5000)
-      } else {
-        console.log(`Status: ${message} (${type})`)
-      }
-    } catch (error) {
-      console.error('Error updating file status:', error)
-      console.log(`Status: ${message} (${type})`)
-    }
-  }
-
-  setTodaysDate() {
-    const today = new Date().toISOString().split('T')[0]
-    const matchDateInput = document.getElementById('matchDate')
-    if (matchDateInput) {
-      matchDateInput.value = today
-    }
-  }
-
-  async clearAllData() {
-    if (!this.isAuthenticated) {
-      this.updateFileStatus('❌ Cần đăng nhập để xóa dữ liệu', 'error')
-      return
-    }
-
-    // First confirmation
-    const firstConfirm = confirm(
-      '⚠️ CẢNH BÁO NGHIÊM TRỌNG ⚠️\n\n' +
-      'Bạn sắp XÓA TẤT CẢ DỮ LIỆU trong hệ thống bao gồm:\n' +
-      '• Tất cả người chơi\n' +
-      '• Tất cả trận đấu\n' +
-      '• Tất cả mùa giải\n' +
-      '• Tất cả thống kê\n\n' +
-      'HÀNH ĐỘNG NÀY KHÔNG THỂ HOÀN TÁC!\n\n' +
-      'Bạn có chắc chắn muốn tiếp tục?'
-    )
-
-    if (!firstConfirm) return
-
-    // Second confirmation with type verification
-    const confirmText = prompt(
-      'Để xác nhận việc xóa tất cả dữ liệu, vui lòng gõ chính xác từ: DELETE_ALL\n\n' +
-      '(Gõ chính xác "DELETE_ALL" để xác nhận)'
-    )
-
-    if (confirmText !== 'DELETE_ALL') {
-      this.updateFileStatus('❌ Đã hủy xóa dữ liệu (từ xác nhận không đúng)', 'info')
-      return
-    }
-
-    // Final confirmation
-    const finalConfirm = confirm(
-      '🚨 XÁC NHẬN CUỐI CÙNG 🚨\n\n' +
-      'Đây là cơ hội cuối cùng để hủy bỏ.\n' +
-      'Sau khi nhấn OK, TẤT CẢ DỮ LIỆU sẽ bị xóa vĩnh viễn.\n\n' +
-      'Bạn có THỰC SỰ muốn xóa tất cả dữ liệu?'
-    )
-
-    if (!finalConfirm) {
-      this.updateFileStatus('❌ Đã hủy xóa dữ liệu (xác nhận cuối cùng)', 'info')
-      return
-    }
-
-    try {
-      this.updateFileStatus('🔄 Đang xóa tất cả dữ liệu...', 'info')
-
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/clear-all-data`, {
-        method: 'DELETE'
-      })
-
-      const data = await response.json()
-
-      if (response.ok) {
-        // Clear local data
-        this.players = []
-        this.matches = []
-        this.seasons = []
-        this.playDates = []
-        this.selectedDate = null
-        this.selectedSeason = null
-
-        // Refresh all UI
-        this.renderPlayers()
-        this.renderSeasons()
-        this.renderRankings()
-        this.updatePlayerSelects()
-        this.updateDateSelector()
-        this.updateSeasonSelector()
-
-        this.updateFileStatus('✅ Đã xóa tất cả dữ liệu thành công. Hệ thống đã được reset hoàn toàn.', 'success')
-      } else {
-        this.updateFileStatus(`❌ ${data.error || 'Lỗi khi xóa dữ liệu'}`, 'error')
-      }
-    } catch (error) {
-      console.error('Error clearing all data:', error)
-      this.updateFileStatus('❌ Lỗi kết nối khi xóa dữ liệu', 'error')
-    }
-  }
-
-  async backupData() {
-    if (!this.isAuthenticated) {
-      this.updateFileStatus('❌ Cần đăng nhập để sao lưu dữ liệu', 'error')
-      return
-    }
-
-    try {
-      this.updateFileStatus('📦 Đang tạo bản sao lưu...', 'info')
-
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/backup-data`, {
-        method: 'GET'
-      })
-
-      if (response.ok) {
-        const blob = await response.blob()
-        const url = window.URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.classList.add('hidden')
-        a.href = url
-        
-        // Get filename from response header or create default
-        const contentDisposition = response.headers.get('content-disposition')
-        let fileName = 'tennis-backup.json'
-        if (contentDisposition) {
-          const fileNameMatch = contentDisposition.match(/filename="?([^"]+)"?/)
-          if (fileNameMatch) {
-            fileName = fileNameMatch[1]
-          }
-        }
-        
-        a.download = fileName
-        document.body.appendChild(a)
-        a.click()
-        window.URL.revokeObjectURL(url)
-        document.body.removeChild(a)
-
-        this.updateFileStatus('✅ Đã tạo bản sao lưu thành công', 'success')
-      } else {
-        const errorData = await response.json()
-        this.updateFileStatus(`❌ ${errorData.error || 'Lỗi khi tạo bản sao lưu'}`, 'error')
-      }
-    } catch (error) {
-      console.error('Error creating backup:', error)
-      this.updateFileStatus('❌ Lỗi kết nối khi tạo bản sao lưu', 'error')
-    }
-  }
-
-  async restoreData() {
-    if (!this.isAuthenticated) {
-      this.updateFileStatus('❌ Cần đăng nhập để khôi phục dữ liệu', 'error')
-      return
-    }
-
-    // Show file input dialog
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = '.json'
-    input.classList.add('hidden')
-    
-    input.onchange = async (event) => {
-      const file = event.target.files[0]
-      if (!file) return
-
-      try {
-        // Validate file type
-        if (!file.name.endsWith('.json')) {
-          this.updateFileStatus('❌ Vui lòng chọn file JSON (.json)', 'error')
-          return
-        }
-
-        // Read file
-        const fileContent = await new Promise((resolve, reject) => {
-          const reader = new FileReader()
-          reader.onload = e => resolve(e.target.result)
-          reader.onerror = reject
-          reader.readAsText(file)
-        })
-
-        // Parse JSON
-        let backupData
-        try {
-          backupData = JSON.parse(fileContent)
-        } catch (error) {
-          this.updateFileStatus('❌ File không phải là JSON hợp lệ', 'error')
-          return
-        }
-
-        // Validate backup structure
-        if (!backupData.version || !backupData.data) {
-          this.updateFileStatus('❌ File sao lưu không đúng định dạng', 'error')
-          return
-        }
-
-        // Show restore options
-        this.showRestoreDialog(backupData)
-
-      } catch (error) {
-        console.error('Error reading backup file:', error)
-        this.updateFileStatus('❌ Lỗi khi đọc file sao lưu', 'error')
-      }
-    }
-
-    document.body.appendChild(input)
-    input.click()
-    document.body.removeChild(input)
-  }
-
-  showRestoreDialog(backupData) {
-    const modal = document.createElement('div')
-    modal.className = 'modal'
-    modal.innerHTML = `
-      <div class="modal-content">
-        <h2>Khôi Phục Dữ Liệu</h2>
-        <div class="backup-info">
-          <p><strong>Thông tin bản sao lưu:</strong></p>
-          <ul>
-            <li>Phiên bản: ${this.escapeHtml(String(backupData.version || ''))}</li>
-            <li>Ngày tạo: ${this.escapeHtml(new Date(backupData.timestamp).toLocaleString('vi-VN'))}</li>
-            <li>Người tạo: ${this.escapeHtml(backupData.exportedBy || 'Không rõ')}</li>
-            <li>Số người chơi: ${backupData.metadata?.playersCount || 0}</li>
-            <li>Số mùa giải: ${backupData.metadata?.seasonsCount || 0}</li>
-            <li>Số trận đấu: ${backupData.metadata?.matchesCount || 0}</li>
-          </ul>
-        </div>
-        <div class="form-group">
-          <label>
-            <input type="checkbox" id="clearExisting" />
-            Xóa tất cả dữ liệu hiện tại trước khi khôi phục
-          </label>
-          <small class="inline-warning-note">
-            ⚠️ Nếu không chọn, dữ liệu mới sẽ được thêm vào dữ liệu hiện tại (có thể bị trùng lặp)
-          </small>
-        </div>
-        <div class="form-actions">
-          <button type="button" id="confirmRestore">Khôi Phục</button>
-          <button type="button" id="cancelRestore">Hủy</button>
-        </div>
-      </div>
-    `
-
-    document.body.appendChild(modal)
-
-    const confirmBtn = modal.querySelector('#confirmRestore')
-    const cancelBtn = modal.querySelector('#cancelRestore')
-    const clearExistingCheckbox = modal.querySelector('#clearExisting')
-
-    confirmBtn.onclick = async () => {
-      const clearExisting = clearExistingCheckbox.checked
-
-      if (clearExisting) {
-        const confirmClear = confirm(
-          '⚠️ CẢNH BÁO ⚠️\n\n' +
-          'Bạn đã chọn xóa tất cả dữ liệu hiện tại.\n' +
-          'Điều này sẽ XÓA TẤT CẢ dữ liệu hiện tại và thay thế bằng dữ liệu từ bản sao lưu.\n\n' +
-          'Bạn có chắc chắn muốn tiếp tục?'
-        )
-        if (!confirmClear) return
-      }
-
-      document.body.removeChild(modal)
-      await this.performRestore(backupData, clearExisting)
-    }
-
-    cancelBtn.onclick = () => {
-      document.body.removeChild(modal)
-      this.updateFileStatus('❌ Đã hủy khôi phục dữ liệu', 'info')
-    }
-
-    // Close modal when clicking outside
-    modal.onclick = (e) => {
-      if (e.target === modal) {
-        document.body.removeChild(modal)
-        this.updateFileStatus('❌ Đã hủy khôi phục dữ liệu', 'info')
-      }
-    }
-  }
-
-  async performRestore(backupData, clearExisting) {
-    try {
-      this.updateFileStatus('🔄 Đang khôi phục dữ liệu...', 'info')
-
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/restore-data`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          backupData,
-          clearExisting
-        })
-      })
-
-      const data = await response.json()
-
-      if (response.ok) {
-        // Reload all data after restore
-        await Promise.all([
-          this.loadPlayers(),
-          this.loadSeasons(),
-          this.loadMatches(),
-          this.loadPlayDates()
-        ])
-
-        this.renderPlayers()
-        this.renderSeasons()
-        this.renderRankings()
-        this.updatePlayerSelects()
-        this.updateDateSelector()
-        this.updateSeasonSelector()
-
-        let statusMessage = '✅ Đã khôi phục dữ liệu thành công!'
-        statusMessage += `\n📊 Kết quả: ${data.results.playersImported} người chơi, ${data.results.seasonsImported} mùa giải, ${data.results.matchesImported} trận đấu`
-        
-        if (data.results.errors && data.results.errors.length > 0) {
-          statusMessage += `\n⚠️ ${data.results.errors.length} lỗi nhỏ (có thể do dữ liệu trùng lặp)`
-        }
-
-        this.updateFileStatus(statusMessage, 'success')
-      } else {
-        this.updateFileStatus(`❌ ${data.error || 'Lỗi khi khôi phục dữ liệu'}`, 'error')
-      }
-    } catch (error) {
-      console.error('Error restoring data:', error)
-      this.updateFileStatus('❌ Lỗi kết nối khi khôi phục dữ liệu', 'error')
-    }
-  }
-
-  async editMatch(matchId) {
-    if (!this.isAuthenticated) {
-      this.showToast('Cần đăng nhập để sửa trận đấu', 'error')
-      return
-    }
-
-    try {
-      // Fetch fresh match data from server
-      const response = await fetch(`${this.apiBase}/matches/${matchId}`, {
-        credentials: 'include'
-      })
-      
-      if (!response.ok) {
-        this.showToast('Không tìm thấy trận đấu', 'error')
-        return
-      }
-      
-      const match = await response.json()
-      this.showMatchEditModal(match)
-    } catch (error) {
-      console.error('Error fetching match:', error)
-      this.showToast('Lỗi khi tải thông tin trận đấu', 'error')
-    }
-  }
-
-  async deleteMatch(matchId) {
-    if (!this.isAuthenticated) {
-      this.showToast('Cần đăng nhập để xóa trận đấu', 'error')
-      return
-    }
-
-    // Get match info for confirmation
-    let matchInfo = this.matches.find(m => m.id === matchId)
-    
-    const confirmDelete = confirm(
-      `Bạn có chắc chắn muốn xóa trận đấu này?\n\n` +
-      (matchInfo ? 
-        `📅 ${this.formatDate(matchInfo.play_date)}\n` +
-        `👥 ${matchInfo.player1_name}${matchInfo.player2_name ? ' & ' + matchInfo.player2_name : ''} vs ${matchInfo.player3_name}${matchInfo.player4_name ? ' & ' + matchInfo.player4_name : ''}\n` +
-        `📊 ${matchInfo.team1_score} - ${matchInfo.team2_score}\n\n` :
-        ''
-      ) +
-      `Hành động này không thể hoàn tác.`
-    )
-
-    if (!confirmDelete) return
-
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/matches/${matchId}`, {
-        method: 'DELETE'
-      })
-
-      const data = await response.json()
-      
-      if (response.ok) {
-        this.invalidateCache(['rankings', 'matches', 'playDates']) // Only match-related data
-        await this.loadMatches()
-        await this.loadPlayDates()
-        this.renderRankings()
-        // Only refresh match history if user is on the matches tab
-        const activeTabId = document.querySelector('.tab-content.active')?.id
-        if (activeTabId === 'matches-tab') {
-          this.renderMatchHistory()
-        }
-        this.updateDateSelector()
-        this.showToast('Đã xóa trận đấu thành công', 'success')
-      } else {
-        this.showToast(data.error || 'Lỗi khi xóa trận đấu', 'error')
-      }
-    } catch (error) {
-      console.error('Error deleting match:', error)
-      this.showToast('Lỗi kết nối khi xóa trận đấu', 'error')
-    }
-  }
-
-  showMatchEditModal(match) {
-    const isSolo = match.match_type === 'solo'
-    const modal = document.createElement('div')
-    modal.className = 'modal'
-    modal.innerHTML = `
-      <div class="modal-backdrop"></div>
-      <div class="modal-content modal-match-edit">
-        <div class="modal-header">
-          <h2 class="modal-title">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-            </svg>
-            Sửa trận đấu ${isSolo ? '(1v1)' : '(Đôi)'}
-          </h2>
-          <button type="button" class="modal-close" id="closeEditModal">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"/>
-              <line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-          </button>
-        </div>
-        <form id="editMatchForm" class="modal-body">
-          <div class="form-row">
-            <div class="form-group">
-              <label for="editMatchDate">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-                  <line x1="16" y1="2" x2="16" y2="6"/>
-                  <line x1="8" y1="2" x2="8" y2="6"/>
-                  <line x1="3" y1="10" x2="21" y2="10"/>
-                </svg>
-                Ngày đánh
-              </label>
-              <input type="date" id="editMatchDate" value="${match.play_date.split('T')[0]}" required>
-            </div>
-            <div class="form-group">
-              <label for="editSeasonId">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/>
-                  <line x1="4" y1="22" x2="4" y2="15"/>
-                </svg>
-                Mùa giải
-              </label>
-              <select id="editSeasonId" required>
-                ${this.seasons.map(season => 
-                  `<option value="${season.id}" ${season.id === match.season_id ? 'selected' : ''}>${this.escapeHtml(season.name)}</option>`
-                ).join('')}
-              </select>
-            </div>
-          </div>
-
-          <div class="teams-grid">
-            <div class="team-card team-1">
-              <div class="team-header">
-                <span class="team-badge">${isSolo ? 'Người chơi' : 'Đội 1'}</span>
-              </div>
-              <div class="form-group">
-                <label for="editPlayer1">${isSolo ? 'Người chơi' : 'Người chơi 1'}</label>
-                <select id="editPlayer1" required>
-                  ${this.players.map(player => 
-                    `<option value="${player.id}" ${player.id === match.player1_id ? 'selected' : ''}>${this.escapeHtml(player.name)}</option>`
-                  ).join('')}
-                </select>
-              </div>
-              ${!isSolo ? `
-              <div class="form-group">
-                <label for="editPlayer2">Người chơi 2</label>
-                <select id="editPlayer2" required>
-                  ${this.players.map(player => 
-                    `<option value="${player.id}" ${player.id === match.player2_id ? 'selected' : ''}>${this.escapeHtml(player.name)}</option>`
-                  ).join('')}
-                </select>
-              </div>
-              ` : ''}
-              <div class="form-group score-input">
-                <label for="editTeam1Score">Tỷ số</label>
-                <input type="number" id="editTeam1Score" value="${match.team1_score}" min="0" required class="score-field">
-              </div>
-            </div>
-
-            <div class="vs-divider">
-              <span>VS</span>
-            </div>
-
-            <div class="team-card team-2">
-              <div class="team-header">
-                <span class="team-badge">${isSolo ? 'Đối thủ' : 'Đội 2'}</span>
-              </div>
-              <div class="form-group">
-                <label for="editPlayer3">${isSolo ? 'Người chơi' : 'Người chơi 3'}</label>
-                <select id="editPlayer3" required>
-                  ${this.players.map(player => 
-                    `<option value="${player.id}" ${player.id === match.player3_id ? 'selected' : ''}>${this.escapeHtml(player.name)}</option>`
-                  ).join('')}
-                </select>
-              </div>
-              ${!isSolo ? `
-              <div class="form-group">
-                <label for="editPlayer4">Người chơi 4</label>
-                <select id="editPlayer4" required>
-                  ${this.players.map(player => 
-                    `<option value="${player.id}" ${player.id === match.player4_id ? 'selected' : ''}>${this.escapeHtml(player.name)}</option>`
-                  ).join('')}
-                </select>
-              </div>
-              ` : ''}
-              <div class="form-group score-input">
-                <label for="editTeam2Score">Tỷ số</label>
-                <input type="number" id="editTeam2Score" value="${match.team2_score}" min="0" required class="score-field">
-              </div>
-            </div>
-          </div>
-
-          <div class="form-group winner-select">
-            <label for="editWinningTeam">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/>
-                <path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/>
-                <path d="M4 22h16"/>
-                <path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/>
-                <path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/>
-                <path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>
-              </svg>
-              Đội thắng
-            </label>
-            <select id="editWinningTeam" required>
-              <option value="1" ${match.winning_team === 1 ? 'selected' : ''}>${isSolo ? 'Người chơi 1' : 'Đội 1'}</option>
-              <option value="2" ${match.winning_team === 2 ? 'selected' : ''}>${isSolo ? 'Đối thủ' : 'Đội 2'}</option>
-            </select>
-          </div>
-
-          <div id="editMatchError" class="error-message"></div>
-        </form>
-        <div class="modal-footer">
-          <button type="button" class="btn btn-secondary" id="cancelEditMatch">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <line x1="18" y1="6" x2="6" y2="18"/>
-              <line x1="6" y1="6" x2="18" y2="18"/>
-            </svg>
-            Hủy
-          </button>
-          <button type="submit" form="editMatchForm" class="btn btn-primary">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="20 6 9 17 4 12"/>
-            </svg>
-            Cập nhật
-          </button>
-        </div>
-      </div>
-    `
-    
-    document.body.appendChild(modal)
-    
-    // Show the modal with animation
-    requestAnimationFrame(() => {
-      modal.classList.add('show')
-    })
-    
-    // Close button handler
-    document.getElementById('closeEditModal').addEventListener('click', () => {
-      modal.classList.remove('show')
-      setTimeout(() => document.body.removeChild(modal), 200)
-    })
-    
-    document.getElementById('editMatchForm').addEventListener('submit', async (e) => {
-      e.preventDefault()
-      
-      const seasonId = parseInt(document.getElementById('editSeasonId').value)
-      const playDate = document.getElementById('editMatchDate').value
-      const player1Id = parseInt(document.getElementById('editPlayer1').value)
-      const player2Select = document.getElementById('editPlayer2')
-      const player2Id = player2Select ? parseInt(player2Select.value) : null
-      const player3Id = parseInt(document.getElementById('editPlayer3').value)
-      const player4Select = document.getElementById('editPlayer4')
-      const player4Id = player4Select ? parseInt(player4Select.value) : null
-      const team1Score = parseInt(document.getElementById('editTeam1Score').value)
-      const team2Score = parseInt(document.getElementById('editTeam2Score').value)
-      const winningTeam = parseInt(document.getElementById('editWinningTeam').value)
-      const errorDiv = document.getElementById('editMatchError')
-      
-      // Validation
-      if (!playDate || !seasonId || !player1Id || !player3Id || 
-          isNaN(team1Score) || isNaN(team2Score) || !winningTeam) {
-        errorDiv.textContent = 'Vui lòng điền đầy đủ thông tin'
-        return
-      }
-
-      // Validate based on match type
-      if (isSolo) {
-        if (player1Id === player3Id) {
-          errorDiv.textContent = 'Cần 2 người chơi khác nhau'
-          return
-        }
-      } else {
-        if (!player2Id || !player4Id) {
-          errorDiv.textContent = 'Vui lòng chọn đủ 4 người chơi'
-          return
-        }
-        const playerIds = [player1Id, player2Id, player3Id, player4Id]
-        const uniquePlayerIds = [...new Set(playerIds)]
-        if (uniquePlayerIds.length !== 4) {
-          errorDiv.textContent = 'Cần 4 người chơi khác nhau'
-          return
-        }
-      }
-
-      if (team1Score < 0 || team2Score < 0) {
-        errorDiv.textContent = 'Tỷ số phải là số không âm'
-        return
-      }
-
-      try {
-        const response = await this.makeAuthenticatedRequest(`${this.apiBase}/matches/${match.id}`, {
-          method: 'PUT',
-          body: JSON.stringify({
-            seasonId,
-            playDate,
-            player1Id,
-            player2Id,
-            player3Id,
-            player4Id,
-            team1Score,
-            team2Score,
-            winningTeam,
-            matchType: isSolo ? 'solo' : 'duo'
-          })
-        })
-
-        const data = await response.json()
-        
-        if (response.ok) {
-          document.body.removeChild(modal)
-          await this.loadMatches()
-          await this.loadPlayDates()
-          this.renderRankings()
-          // Only refresh match history if user is on the matches tab
-          const activeTabId = document.querySelector('.tab-content.active')?.id
-          if (activeTabId === 'matches-tab') {
-            this.renderMatchHistory()
-          }
-          this.updateDateSelector()
-          this.showToast('Đã cập nhật trận đấu thành công', 'success')
-        } else {
-          errorDiv.textContent = data.error
-        }
-      } catch (error) {
-        console.error('Error updating match:', error)
-        errorDiv.textContent = 'Lỗi kết nối khi cập nhật trận đấu'
-      }
-    })
-    
-    document.getElementById('cancelEditMatch').addEventListener('click', () => {
-      modal.classList.remove('show')
-      setTimeout(() => document.body.removeChild(modal), 200)
-    })
-    
-    // Close on backdrop click
-    modal.querySelector('.modal-backdrop').addEventListener('click', () => {
-      modal.classList.remove('show')
-      setTimeout(() => document.body.removeChild(modal), 200)
-    })
-  }
-
-  // Auto-winner detection based on scores - works for both duo and solo modes
-  updateAutoWinner() {
-    if (this.isManualWinnerMode) return // Don't auto-update if in manual mode
-
-    // Get score inputs - same inputs used for both duo and solo modes
-    const team1ScoreInput = document.getElementById('team1Score')
-    const team2ScoreInput = document.getElementById('team2Score')
-    const team1Score = team1ScoreInput ? parseInt(team1ScoreInput.value) || 0 : 0
-    const team2Score = team2ScoreInput ? parseInt(team2ScoreInput.value) || 0 : 0
-    
-    const winnerSelect = document.getElementById('winner')
-    if (!winnerSelect) return
-
-    // Only auto-select winner if scores are different and at least one is > 0
-    if (team1Score !== team2Score && (team1Score > 0 || team2Score > 0)) {
-      const winningTeam = team1Score > team2Score ? 1 : 2
-      
-      // Update the select value
-      winnerSelect.value = winningTeam === 1 ? 'team1' : 'team2'
-      
-      // Store the current winning team
-      this.currentWinningTeam = winningTeam
-    } else if (team1Score === team2Score && team1Score > 0) {
-      // Handle tie case - need manual selection
-      winnerSelect.value = ''
-      this.currentWinningTeam = null
-    } else {
-      // No scores or both are 0
-      winnerSelect.value = ''
-      this.currentWinningTeam = null
-    }
-  }
-
-  // Show match modal for quick match entry
-  showMatchModal() {
-    // For now, just switch to the matches tab
-    this.switchTab('matches')
-    
-    // Scroll to the match form
-    const matchForm = document.querySelector('#matches-tab .match-form')
-    if (matchForm) {
-      matchForm.scrollIntoView({ behavior: 'smooth' })
-    }
-  }
-
-  // Toggle between auto and manual winner selection mode
-  toggleWinnerMode(isManual) {
-    this.isManualWinnerMode = isManual
-    
-    const autoWinnerDiv = document.querySelector('.auto-winner')
-    const manualWinnerDiv = document.querySelector('.manual-winner')
-    const useManualWinnerBtn = document.getElementById('useManualWinner')
-    const useAutoWinnerBtn = document.getElementById('useAutoWinner')
-    const winningTeamSelect = document.getElementById('winningTeam')
-
-    if (isManual) {
-      // Switch to manual mode
-      if (autoWinnerDiv) autoWinnerDiv.classList.add('hidden')
-      if (manualWinnerDiv) {
-        manualWinnerDiv.classList.remove('hidden')
-        manualWinnerDiv.classList.add('flex')
-      }
-      if (useManualWinnerBtn) useManualWinnerBtn.classList.add('hidden')
-      if (useAutoWinnerBtn) {
-        useAutoWinnerBtn.classList.remove('hidden')
-        useAutoWinnerBtn.classList.add('inline-block')
-      }
-    } else {
-      // Switch to auto mode
-      if (autoWinnerDiv) autoWinnerDiv.classList.remove('hidden')
-      if (manualWinnerDiv) manualWinnerDiv.classList.add('hidden')
-      if (useManualWinnerBtn) {
-        useManualWinnerBtn.classList.remove('hidden')
-        useManualWinnerBtn.classList.add('inline-block')
-      }
-      if (useAutoWinnerBtn) useAutoWinnerBtn.classList.add('hidden')
-      
-      // Reset manual winner selection
-      if (winningTeamSelect) winningTeamSelect.value = ''
-      
-      // Update winner based on current scores
-      this.updateAutoWinner()
-    }
-  }
-
-  // ========== Modal Helpers ==========
-  showModal(modalId) {
-    const modal = document.getElementById(modalId)
-    if (modal) {
-      modal.classList.add('show')
-      document.body.style.overflow = 'hidden'
-    }
-  }
-
-  hideModal(modalId) {
-    const modal = document.getElementById(modalId)
-    if (modal) {
-      modal.classList.remove('show', 'active')
-      modal.style.display = ''
-      document.body.style.overflow = ''
-    }
-  }
-
-  // ========== Toast Notifications ==========
-
-  showToast(message, type = 'success') {
-    const container = document.getElementById('toastContainer')
-    if (!container) return
-
-    const toast = document.createElement('div')
-    toast.className = `toast ${type}`
-    toast.innerHTML = `
-      <span class="toast-message">${this.escapeHtml(message)}</span>
-      <button class="toast-close">&times;</button>
-    `
-    
-    container.appendChild(toast)
-    
-    // Close button
-    toast.querySelector('.toast-close').addEventListener('click', () => {
-      toast.remove()
-    })
-    
-    // Auto-remove after 5 seconds
-    setTimeout(() => {
-      if (toast.parentElement) {
-        toast.style.animation = 'toastOut 0.3s ease forwards'
-        setTimeout(() => toast.remove(), 300)
-      }
-    }, 5000)
-  }
-
-  // ========== Account Management ==========
-  showAccountModal(account = null) {
-    const modal = document.getElementById('accountModal')
-    const title = document.getElementById('accountModalTitle')
-    const form = document.getElementById('accountForm')
-    const passwordHint = document.getElementById('passwordHint')
-    const passwordRequired = document.getElementById('passwordRequired')
-    
-    // Reset form
-    form.reset()
-    document.getElementById('accountId').value = ''
-    document.getElementById('accountActive').checked = true
-    
-    if (account) {
-      // Edit mode
-      title.textContent = 'Chỉnh sửa Tài Khoản'
-      document.getElementById('accountId').value = account.id
-      document.getElementById('accountUsername').value = account.username
-      document.getElementById('accountDisplayName').value = account.display_name || ''
-      document.getElementById('accountEmail').value = account.email || ''
-      document.getElementById('accountRole').value = account.role
-      document.getElementById('accountNotes').value = account.notes || ''
-      document.getElementById('accountActive').checked = account.is_active
-      
-      // Password is optional when editing
-      passwordHint.textContent = 'Để trống nếu không muốn thay đổi mật khẩu'
-      passwordRequired.style.display = 'none'
-      document.getElementById('accountPassword').required = false
-    } else {
-      // Create mode
-      title.textContent = 'Tạo Tài Khoản Mới'
-      passwordHint.textContent = ''
-      passwordRequired.style.display = 'inline'
-      document.getElementById('accountPassword').required = true
-    }
-    
-    this.showModal('accountModal')
-  }
-
-  async saveAccount() {
-    const accountId = document.getElementById('accountId').value
-    const accountData = {
-      username: document.getElementById('accountUsername').value.trim(),
-      displayName: document.getElementById('accountDisplayName').value.trim(),
-      email: document.getElementById('accountEmail').value.trim(),
-      role: document.getElementById('accountRole').value,
-      notes: document.getElementById('accountNotes').value.trim(),
-      isActive: document.getElementById('accountActive').checked
-    }
-    
-    const password = document.getElementById('accountPassword').value
-    
-    // Validate password strength if provided
-    if (password) {
-      const passwordValidation = this.validatePasswordStrength(password)
-      if (!passwordValidation.valid) {
-        this.showToast(passwordValidation.message, 'error')
-        return
-      }
-      accountData.password = password
-    }
-    
-    try {
-      let response
-      if (accountId) {
-        // Update existing account
-        response = await this.makeAuthenticatedRequest(`${this.apiBase}/auth/users/${accountId}`, {
-          method: 'PUT',
-          body: JSON.stringify(accountData)
-        })
-      } else {
-        // Create new account
-        if (!password) {
-          this.showToast('Vui lòng nhập mật khẩu', 'error')
-          return
-        }
-        response = await this.makeAuthenticatedRequest(`${this.apiBase}/auth/users`, {
-          method: 'POST',
-          body: JSON.stringify(accountData)
-        })
-      }
-      
-      const data = await response.json()
-      
-      if (response.ok) {
-        this.hideModal('accountModal')
-        this.showToast(accountId ? 'Đã cập nhật tài khoản' : 'Đã tạo tài khoản mới', 'success')
-        this.renderAccounts()
-      } else {
-        this.showToast(data.error || 'Lỗi khi lưu tài khoản', 'error')
-      }
-    } catch (error) {
-      console.error('Error saving account:', error)
-      this.showToast('Lỗi kết nối server', 'error')
-    }
-  }
-
-  async deleteAccount(accountId) {
-    if (!confirm('Bạn có chắc chắn muốn xóa tài khoản này?')) return
-    
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/auth/users/${accountId}`, {
-        method: 'DELETE'
-      })
-      
-      if (response.ok) {
-        this.showToast('Đã xóa tài khoản', 'success')
-        this.renderAccounts()
-      } else {
-        const data = await response.json()
-        this.showToast(data.error || 'Lỗi khi xóa tài khoản', 'error')
-      }
-    } catch (error) {
-      console.error('Error deleting account:', error)
-      this.showToast('Lỗi kết nối server', 'error')
-    }
-  }
-
-  async renderAccounts() {
-    const container = document.querySelector('#accountsTable tbody')
-    if (!container) return
-    
-    // Safe date formatter — handles null, undefined, {}, Invalid Date
-    const formatDate = (val) => {
-      if (!val || typeof val === 'object') return null
-      try {
-        const d = new Date(val)
-        if (isNaN(d.getTime())) return null
-        return d.toLocaleString('vi-VN')
-      } catch { return null }
-    }
-
-    try {
-      const response = await fetch(`${this.apiBase}/auth/users?t=${Date.now()}`, {
-        credentials: 'include'
-      })
-      
-      if (!response.ok) {
-        container.innerHTML = '<tr><td colspan="9" class="text-center">Không thể tải danh sách tài khoản</td></tr>'
-        return
-      }
-      
-      const raw = await response.json()
-      const accounts = Array.isArray(raw) ? raw : (raw.users || raw.data || [])
-      
-      if (accounts.length === 0) {
-        container.innerHTML = '<tr><td colspan="9" class="text-center">Chưa có tài khoản nào</td></tr>'
-        return
-      }
-      
-      container.innerHTML = accounts.map(account => {
-        const roleClass = account.role === 'admin' ? 'role-admin' : (account.role === 'editor' ? 'role-editor' : 'role-viewer')
-        const statusClass = account.is_active ? 'status-active' : 'status-inactive'
-        const lastLogin = formatDate(account.last_login) || 'Chưa đăng nhập'
-        const isSelf = this.user && this.user.username === account.username
-        const notifMatch = account.receive_match_notifications !== false ? '🎯' : ''
-        const notifSeason = account.receive_season_notifications !== false ? '🏆' : ''
-        const notifStatus = (notifMatch || notifSeason) ? `${notifMatch} ${notifSeason}`.trim() : '<span class="badge badge-notif-off">Tắt</span>'
-        
-        return `
-          <tr>
-            <td>${this.escapeHtml(account.id)}</td>
-            <td><strong>${this.escapeHtml(account.username)}</strong>${isSelf ? ' <span class="badge role-viewer">Bạn</span>' : ''}</td>
-            <td>${this.escapeHtml(account.display_name) || '-'}</td>
-            <td>${this.escapeHtml(account.email) || '-'}</td>
-            <td><span class="badge ${roleClass}">${this.escapeHtml(account.role || 'viewer').toUpperCase()}</span></td>
-            <td><span class="${statusClass}">${account.is_active ? '✅ Hoạt động' : '❌ Vô hiệu'}</span></td>
-            <td>${notifStatus}</td>
-            <td>${this.escapeHtml(lastLogin)}</td>
-            <td>
-              <div class="action-btns">
-                <button class="edit-btn" data-account-id="${account.id}" title="Chỉnh sửa">✏️</button>
-                <button class="delete-btn" data-account-id="${account.id}" ${isSelf ? 'disabled title="Không thể xóa tài khoản của chính mình"' : 'title="Xóa"'}>🗑️</button>
-              </div>
-            </td>
-          </tr>
-        `
-      }).join('')
-      
-      // Add event listeners for edit/delete buttons
-      container.querySelectorAll('.edit-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const accountId = parseInt(btn.dataset.accountId)
-          const account = accounts.find(a => a.id === accountId)
-          if (account) this.showAccountModal(account)
-        })
-      })
-      
-      container.querySelectorAll('.delete-btn:not([disabled])').forEach(btn => {
-        btn.addEventListener('click', () => {
-          const accountId = parseInt(btn.dataset.accountId)
-          this.deleteAccount(accountId)
-        })
-      })
-    } catch (error) {
-      console.error('Error rendering accounts:', error)
-      container.innerHTML = '<tr><td colspan="9" class="text-center">Lỗi tải danh sách tài khoản</td></tr>'
-    }
-  }
-
-  // ========== Cache Status Display (Admin Only) ==========
-  async renderCacheStatus() {
-    const container = document.getElementById('cacheStatusContainer')
-    if (!container) return
-
-    // Only render for admin users
-    if (!this.isAuthenticated || this.user?.role !== 'admin') {
-      container.innerHTML = '<p class="cache-status-error">⚠️ Chỉ admin mới có thể xem trạng thái cache</p>'
-      return
-    }
-
-    // Show loading state
-    container.innerHTML = `
-      <div class="cache-status-loading">
-        <div class="loading-spinner"></div>
-        <span>Đang tải trạng thái cache...</span>
-      </div>
-    `
-
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/cache-stats`, {
-        method: 'GET'
-      })
-
-      if (!response.ok) {
-        const errorData = await response.json()
-        throw new Error(errorData.error || 'Không thể tải trạng thái cache')
-      }
-
-      const data = await response.json()
-      const stats = data.cacheStats
-      const recommendations = data.recommendations
-      const serverInfo = data.serverInfo
-
-      // Calculate hit rate class
-      const hitRateValue = parseFloat(stats.hitRate) || 0
-      const hitRateClass = hitRateValue >= 70 ? 'positive' : (hitRateValue >= 40 ? 'warning' : 'negative')
-      
-      // Connection status
-      const connectionClass = stats.isConnected ? 'positive' : 'negative'
-      const connectionText = stats.isConnected ? '✅ Kết nối' : '❌ Mất kết nối'
-
-      container.innerHTML = `
-        <div class="cache-status-grid">
-          <div class="cache-stat-card">
-            <span class="stat-label">Trạng thái Redis</span>
-            <span class="stat-value ${connectionClass}">${connectionText}</span>
-          </div>
-          <div class="cache-stat-card">
-            <span class="stat-label">Tỷ lệ Hit</span>
-            <span class="stat-value ${hitRateClass}">${this.escapeHtml(stats.hitRate)}</span>
-          </div>
-          <div class="cache-stat-card">
-            <span class="stat-label">Hits / Misses</span>
-            <span class="stat-value">${stats.hits} / ${stats.misses}</span>
-          </div>
-          <div class="cache-stat-card">
-            <span class="stat-label">Số entry</span>
-            <span class="stat-value">${stats.currentEntries || 0}</span>
-          </div>
-          <div class="cache-stat-card">
-            <span class="stat-label">Bộ nhớ sử dụng</span>
-            <span class="stat-value">${this.escapeHtml(stats.memoryUsage || 'N/A')}</span>
-          </div>
-          <div class="cache-stat-card">
-            <span class="stat-label">Sets / Invalidations</span>
-            <span class="stat-value">${stats.sets || 0} / ${stats.invalidations || 0}</span>
-          </div>
-        </div>
-
-        ${recommendations ? `
-          <div class="cache-recommendations">
-            <h4>💡 Khuyến nghị</h4>
-            <ul>
-              <li><strong>Hiệu suất:</strong> ${this.escapeHtml(recommendations.performance)}</li>
-              <li><strong>Bộ nhớ:</strong> ${this.escapeHtml(recommendations.memory)}</li>
-              <li><strong>Ghi chú:</strong> ${this.escapeHtml(recommendations.info)}</li>
-            </ul>
-          </div>
-        ` : ''}
-
-        ${serverInfo ? `
-          <div class="cache-server-info">
-            <h4>🖥️ Thông tin Server</h4>
-            <div class="server-info-grid">
-              <span><strong>Uptime:</strong> ${this.formatUptime(serverInfo.uptime)}</span>
-              <span><strong>Môi trường:</strong> ${this.escapeHtml(serverInfo.environment)}</span>
-              <span><strong>Redis:</strong> ${serverInfo.redisConnected ? '✅ Đã kết nối' : '❌ Chưa kết nối'}</span>
-            </div>
-          </div>
-        ` : ''}
-      `
-
-    } catch (error) {
-      console.error('Error fetching cache status:', error)
-      container.innerHTML = `
-        <p class="cache-status-error">
-          ❌ Lỗi tải trạng thái cache: ${this.escapeHtml(error.message)}
-        </p>
-      `
-    }
-  }
-
-  // Format uptime in human-readable format
-  formatUptime(seconds) {
-    if (!seconds || seconds < 0) return 'N/A'
-    
-    const hours = Math.floor(seconds / 3600)
-    const minutes = Math.floor((seconds % 3600) / 60)
-    const secs = Math.floor(seconds % 60)
-    
-    if (hours > 0) {
-      return `${hours}h ${minutes}m ${secs}s`
-    } else if (minutes > 0) {
-      return `${minutes}m ${secs}s`
-    } else {
-      return `${secs}s`
-    }
-  }
-
-  // ==========================================
-  // FCM Management
-  // ==========================================
-
-  async fetchFcmStatus() {
-    if (this.user?.role !== 'admin') return
-
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/admin/fcm/status`, {
-        method: 'GET'
-      })
-      const data = await response.json()
-      if (data.success && data.status) {
-        const { isPaused, dispatcher, sender } = data.status
-        const pending = (dispatcher?.wait || 0) + (sender?.wait || 0)
-        const active = (dispatcher?.active || 0) + (sender?.active || 0)
-        const failed = (dispatcher?.failed || 0) + (sender?.failed || 0)
-        
-        document.getElementById('fcmDevicesCount').textContent = data.deviceCount || 0
-        document.getElementById('fcmJobsPending').textContent = pending
-        document.getElementById('fcmJobsActive').textContent = active
-        document.getElementById('fcmJobsFailed').textContent = failed
-
-        const pauseBtn = document.getElementById('fcmPauseBtn')
-        const resumeBtn = document.getElementById('fcmResumeBtn')
-        if (pauseBtn) pauseBtn.style.display = isPaused ? 'none' : 'inline-flex'
-        if (resumeBtn) resumeBtn.style.display = isPaused ? 'inline-flex' : 'none'
-      } else {
-        this.showToast('Không thể lấy trạng thái FCM (Workers có thể đang tắt)', 'warning')
-      }
-    } catch (error) {
-      console.warn('Lỗi khi lấy trạng thái FCM:', error)
-    }
-  }
-
-  async controlFcm(action) {
-    if (!confirm(`Bạn có chắc muốn ${action === 'pause' ? 'TẠM DỪNG' : 'TIẾP TỤC'} hàng đợi thông báo?`)) return
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/admin/fcm/${action}`, {
-        method: 'POST'
-      })
-      const data = await response.json()
-      if (data.success) {
-        this.showToast(data.message, 'success')
-        this.fetchFcmStatus()
-      } else {
-        this.showToast(data.error || 'Thao tác thất bại', 'error')
-      }
-    } catch (error) {
-      this.showToast('Lỗi mạng khi điều khiển FCM', 'error')
-    }
-  }
-
-  async sendFcmBroadcast(e) {
-    e.preventDefault()
-    if (!confirm('Gửi thông báo này đến TẤT CẢ người dùng?')) return
-
-    const title = document.getElementById('fcmBroadcastTitle').value.trim()
-    const body = document.getElementById('fcmBroadcastBody').value.trim()
-    const submitBtn = document.getElementById('fcmBroadcastSubmitBtn')
-    
-    submitBtn.disabled = true
-    submitBtn.innerHTML = '<span class="spinner-small"></span> Đang gửi...'
-
-    try {
-      const response = await this.makeAuthenticatedRequest(`${this.apiBase}/admin/fcm/send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title, body })
-      })
-      const data = await response.json()
-      if (data.success) {
-        this.showToast('Đã đưa thông báo vào hàng đợi gửi (Broadcast)', 'success')
-        document.getElementById('fcmBroadcastForm').reset()
-        setTimeout(() => this.fetchFcmStatus(), 1500)
-      } else {
-        this.showToast(data.error || 'Gửi thất bại', 'error')
-      }
-    } catch (error) {
-      this.showToast('Lỗi mạng khi gửi Broadcast', 'error')
-    } finally {
-      submitBtn.disabled = false
-      submitBtn.innerHTML = 'Gửi Broadcast'
-    }
-  }
-
-  // ========== Reset Match Form ==========
-  resetMatchForm() {
-    const form = document.getElementById('matchForm')
-    if (form) {
-      form.reset()
-      document.getElementById('matchType').value = 'duo'
-      this.currentMatchType = 'duo'
-      this.currentWinningTeam = null
-      
-      // Reset match type UI
-      document.querySelectorAll('.type-btn').forEach(btn => {
-        btn.classList.toggle('active', btn.dataset.type === 'duo')
-      })
-      
-      // Show duo, hide solo
-      document.querySelectorAll('.duo-only').forEach(el => el.style.display = '')
-      document.querySelectorAll('.solo-only').forEach(el => el.style.display = 'none')
-      
-      // Reset match season selector
-      const matchSeasonSelect = document.getElementById('matchSeasonSelect')
-      if (matchSeasonSelect) matchSeasonSelect.value = ''
-      
-      // Disable player selects until season is chosen
-      const playerSelects = ['player1', 'player2', 'player3', 'player4']
-      playerSelects.forEach(id => {
-        const select = document.getElementById(id)
-        if (select) {
-          select.disabled = true
-          select.innerHTML = '<option value="">Chọn mùa giải trước...</option>'
-        }
-      })
-      
-      // Set today's date
-      this.setTodaysDate()
-      
-      // Reset team labels
-      this.updateTeamLabelsForMatchType()
-    }
-  }
-  
-  // ========== Password Validation ==========
-  validatePasswordStrength(password) {
-    if (!password || password.length < 6) {
-      return { valid: false, message: 'Mật khẩu phải có ít nhất 6 ký tự' }
-    }
-    
-    // Check for common weak passwords
-    const weakPasswords = ['123456', 'password', 'abc123', '111111', '123123', 'admin', 'qwerty', '12345678', 'password123']
-    if (weakPasswords.includes(password.toLowerCase())) {
-      return { valid: false, message: 'Mật khẩu quá đơn giản, vui lòng chọn mật khẩu khác' }
-    }
-    
-    // Check for at least one letter and one number
-    const hasLetter = /[a-zA-Z]/.test(password)
-    const hasNumber = /[0-9]/.test(password)
-    
-    if (!hasLetter || !hasNumber) {
-      return { valid: false, message: 'Mật khẩu phải chứa ít nhất 1 chữ cái và 1 số' }
-    }
-    
-    return { valid: true, message: '' }
-  }
-
-  // ========== Update Login Modal ==========
-  showLoginModal() {
-    this.showModal('loginModal')
-  }
-
-  // ========== Update File Status (for backward compatibility) ==========
-  updateFileStatus(message, type) {
-    this.showToast(message.replace(/^[✅❌⚠️]/g, '').trim(), type === 'success' ? 'success' : (type === 'error' ? 'error' : 'warning'))
-  }
-
-  // ========== Hero Banner (dynamic loading) ==========
-  async loadHeroBanner() {
-    if (!this.serverMode) return
-    try {
-      const response = await this.makeAuthenticatedRequest('/images/hero_banner/file')
-      if (response.ok) {
-        const dynamicBanner = document.getElementById('dynamicHeroBanner')
-        const staticBanner = document.querySelector('.hero-banner-image:not(#dynamicHeroBanner)')
-        if (dynamicBanner) {
-          dynamicBanner.style.display = 'block'
-          dynamicBanner.src = `${this.apiBase}/images/hero_banner/file?t=${Date.now()}`
-          if (staticBanner) staticBanner.style.display = 'none'
-        }
-      }
-    } catch { /* fallback to static /image.png */ }
-  }
-
-  // ========== Image Editor ==========
-  setupImageEditorListeners() {
-    document.querySelectorAll('.image-upload-input').forEach(input => {
-      input.addEventListener('change', (e) => this.handleImageUpload(e))
-    })
-    document.querySelectorAll('.image-delete-btn').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const key = e.currentTarget.dataset.key
-        if (key) this.deleteSiteImage(key)
-      })
-    })
-    document.querySelectorAll('.image-alt-input').forEach(input => {
-      let debounceTimer
-      input.addEventListener('input', (e) => {
-        clearTimeout(debounceTimer)
-        debounceTimer = setTimeout(() => {
-          const key = e.currentTarget.dataset.key
-          if (key) this.updateImageMeta(key, { altText: e.currentTarget.value })
-        }, 800)
-      })
-    })
-    const refreshBtn = document.getElementById('refreshImagesBtn')
-    if (refreshBtn) refreshBtn.addEventListener('click', () => this.loadSiteImages())
-    const migrateBtn = document.getElementById('migrateHeroBtn')
-    if (migrateBtn) migrateBtn.addEventListener('click', () => this.migrateHeroBanner())
-  }
-
-  async loadSiteImages() {
-    if (!this.serverMode) return
-    try {
-      const response = await this.makeAuthenticatedRequest('/images')
-      const data = await response.json()
-      if (!data || !Array.isArray(data)) return
-      for (const img of data) {
-        this.renderImageEditor(img)
-      }
-    } catch (error) {
-      console.error('Failed to load site images:', error)
-    }
-  }
-
-  renderImageEditor(img) {
-    const { key, filename, file_size, uploaded_at, alt_text, is_active } = img
-    const previewEl = document.getElementById(`${key}-preview`)
-    if (previewEl) {
-      if (is_active && img.storage_path) {
-        previewEl.innerHTML = `<img src="${this.apiBase}/images/${key}/file" alt="${this.escapeHtml(alt_text || '')}" style="max-width:100%;max-height:200px;object-fit:contain;border-radius:8px;">`
-      } else {
-        previewEl.innerHTML = '<div class="image-preview-placeholder">Chưa có hình ảnh</div>'
-      }
-    }
-    const statusEl = document.getElementById(`${key}-status`)
-    if (statusEl) {
-      statusEl.textContent = is_active ? '✅ Đang hoạt động' : '⏸️ Đã tắt'
-      statusEl.className = `image-status-badge ${is_active ? 'active' : 'inactive'}`
-    }
-    const infoEl = document.getElementById(`${key}-info`)
-    if (infoEl) {
-      const sizeStr = file_size ? `${(file_size / 1024).toFixed(1)} KB` : ''
-      const dateStr = uploaded_at ? new Date(uploaded_at).toLocaleDateString('vi-VN') : ''
-      infoEl.textContent = [sizeStr, dateStr].filter(Boolean).join(' • ')
-    }
-    const altInput = document.querySelector(`.image-alt-input[data-key="${key}"]`)
-    if (altInput) altInput.value = alt_text || ''
-  }
-
-  async handleImageUpload(e) {
-    const input = e.target
-    const key = input.dataset.key
-    if (!input.files || !input.files[0]) return
-    const file = input.files[0]
-    if (file.size > 10 * 1024 * 1024) {
-      this.showToast('File quá lớn (tối đa 10MB)', 'error')
-      input.value = ''
-      return
-    }
-    const allowed = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml']
-    if (!allowed.includes(file.type)) {
-      this.showToast('Định dạng không hợp lệ', 'error')
-      input.value = ''
-      return
-    }
-    try {
-      const formData = new FormData()
-      formData.append('image', file)
-      const altInput = document.querySelector(`.image-alt-input[data-key="${key}"]`)
-      if (altInput) formData.append('altText', altInput.value)
-      const res = await this.makeAuthenticatedRequest(`/images/${key}`, {
-        method: 'POST',
-        body: formData
-      })
-      const data = await res.json()
-      if (data.success) {
-        this.showToast(`Hình ảnh "${key}" đã được cập nhật`, 'success')
-        if (key === 'hero_banner') this.loadHeroBanner()
-        this.loadSiteImages()
-      } else {
-        this.showToast(data.error || 'Lỗi khi tải lên', 'error')
-      }
-    } catch (error) {
-      this.showToast(error.message, 'error')
-    }
-    input.value = ''
-  }
-
-  async deleteSiteImage(key) {
-    if (!confirm(`Bạn có chắc muốn xóa hình ảnh "${key}"?`)) return
-    try {
-      const res = await this.makeAuthenticatedRequest(`/images/${key}`, {
-        method: 'DELETE'
-      })
-      const data = await res.json()
-      if (data.success) {
-        this.showToast(`Đã xóa hình ảnh "${key}"`, 'success')
-        if (key === 'hero_banner') this.loadHeroBanner()
-        this.loadSiteImages()
-      } else {
-        this.showToast(data.error || 'Lỗi khi xóa', 'error')
-      }
-    } catch (error) {
-      this.showToast(error.message, 'error')
-    }
-  }
-
-  async updateImageMeta(key, meta) {
-    try {
-      const res = await this.makeAuthenticatedRequest(`/images/${key}/meta`, {
-        method: 'PUT',
-        body: JSON.stringify(meta)
-      })
-      const data = await res.json()
-      if (!data.success) this.showToast(data.error || 'Lỗi khi cập nhật', 'error')
-    } catch (error) {
-      console.error('updateImageMeta error:', error)
-    }
-  }
-
-  async migrateHeroBanner() {
-    if (!confirm('Dời banner từ file public/image.png vào hệ thống quản lý?')) return
-    try {
-      const res = await this.makeAuthenticatedRequest(`/images/migrate-hero`, {
-        method: 'POST'
-      })
-      const data = await res.json()
-      if (data.success) {
-        this.showToast('Đã dời banner thành công!', 'success')
-        this.loadSiteImages()
-        this.loadHeroBanner()
-      } else {
-        this.showToast(data.error || 'Lỗi khi dời banner', 'error')
-      }
-    } catch (error) {
-      this.showToast(error.message, 'error')
-    }
-  }
-
-  // ========== Season Results ==========
-  setupSeasonResultsListeners() {
-    const saveBtn = document.getElementById('saveSeasonResultsBtn')
-    if (saveBtn) saveBtn.addEventListener('click', () => this.saveSeasonResults())
-    const imageInput = document.getElementById('seasonConclusionImageInput')
-    if (imageInput) imageInput.addEventListener('change', (e) => this.uploadConclusionImage(e))
-    const deleteImgBtn = document.getElementById('deleteConclusionImageBtn')
-    if (deleteImgBtn) deleteImgBtn.addEventListener('click', () => this.deleteConclusionImage())
-  }
-
-  showSeasonResultsModal(seasonId) {
-    const season = this.seasons.find(s => s.id === seasonId)
-    if (!season) return
-    document.getElementById('seasonResultsSeasonId').value = seasonId
-    document.getElementById('seasonResultsModalTitle').textContent = `Kết quả: ${season.name}`
-    document.getElementById('seasonResultsText').value = season.final_results || ''
-    const previewEl = document.getElementById('seasonConclusionImagePreview')
-    const deleteBtn = document.getElementById('deleteConclusionImageBtn')
-    if (season.conclusion_image_path) {
-      previewEl.innerHTML = `<img src="${this.apiBase}/images/season/${seasonId}/conclusion/file" style="max-width:100%;max-height:150px;object-fit:contain;border-radius:8px;">`
-      deleteBtn.style.display = 'inline-block'
-    } else {
-      previewEl.innerHTML = ''
-      deleteBtn.style.display = 'none'
-    }
-    this.showModal('seasonResultsModal')
-  }
-
-  async saveSeasonResults() {
-    const seasonId = parseInt(document.getElementById('seasonResultsSeasonId').value)
-    const text = document.getElementById('seasonResultsText').value.trim()
-    if (!text) {
-      this.showToast('Vui lòng nhập kết quả giải đấu', 'error')
-      return
-    }
-    try {
-      const res = await this.makeAuthenticatedRequest(`/seasons/${seasonId}/results`, {
-        method: 'PUT',
-        body: JSON.stringify({ finalResults: text })
-      })
-      const data = await res.json()
-      if (data.success) {
-        this.showToast('Đã lưu kết quả giải đấu', 'success')
-        await this.loadSeasons()
-        this.renderSeasons()
-        this.hideModal('seasonResultsModal')
-      } else {
-        this.showToast(data.error || 'Lỗi khi lưu', 'error')
-      }
-    } catch (error) {
-      this.showToast(error.message, 'error')
-    }
-  }
-
-  async uploadConclusionImage(e) {
-    const input = e.target
-    const seasonId = parseInt(document.getElementById('seasonResultsSeasonId').value)
-    if (!input.files || !input.files[0]) return
-    const file = input.files[0]
-    if (file.size > 10 * 1024 * 1024) {
-      this.showToast('File quá lớn (tối đa 10MB)', 'error')
-      input.value = ''
-      return
-    }
-    try {
-      const formData = new FormData()
-      formData.append('image', file)
-      formData.append('seasonId', seasonId)
-      const res = await this.makeAuthenticatedRequest(`/images/season/${seasonId}/conclusion`, {
-        method: 'POST',
-        body: formData
-      })
-      const data = await res.json()
-      if (data.success) {
-        this.showToast('Đã tải lên ảnh tổng kết', 'success')
-        document.getElementById('seasonConclusionImagePreview').innerHTML =
-          `<img src="${this.apiBase}/images/season/${seasonId}/conclusion/file" style="max-width:100%;max-height:150px;object-fit:contain;border-radius:8px;">`
-        document.getElementById('deleteConclusionImageBtn').style.display = 'inline-block'
-      } else {
-        this.showToast(data.error || 'Lỗi khi tải lên', 'error')
-      }
-    } catch (error) {
-      this.showToast(error.message, 'error')
-    }
-    input.value = ''
-  }
-
-  async deleteConclusionImage() {
-    const seasonId = parseInt(document.getElementById('seasonResultsSeasonId').value)
-    if (!confirm('Bạn có chắc muốn xóa ảnh tổng kết?')) return
-    try {
-      const res = await this.makeAuthenticatedRequest(`/images/season/${seasonId}/conclusion`, {
-        method: 'DELETE'
-      })
-      const data = await res.json()
-      if (data.success) {
-        this.showToast('Đã xóa ảnh tổng kết', 'success')
-        document.getElementById('seasonConclusionImagePreview').innerHTML = ''
-        document.getElementById('deleteConclusionImageBtn').style.display = 'none'
-      } else {
-        this.showToast(data.error || 'Lỗi khi xóa', 'error')
-      }
-    } catch (error) {
-      this.showToast('Lỗi kết nối: ' + error.message, 'error')
-    }
-  }
-
-  // ========== Cup Bracket System ========== 
-
-  setupCupListeners() {
-    const createBtn = document.getElementById('createCupBtn')
-    if (createBtn) createBtn.addEventListener('click', () => this.showCreateCupModal())
-    const backBtn = document.getElementById('backToCupsList')
-    if (backBtn) backBtn.addEventListener('click', () => this.backToCupsList())
-
-    // Event delegation for dynamically generated cup cards
-    const cupsGrid = document.getElementById('cupsGrid')
-    if (cupsGrid) {
-      cupsGrid.addEventListener('click', (e) => {
-        const actionBtn = e.target.closest('[data-action]')
-        if (actionBtn) {
-          const action = actionBtn.dataset.action
-          const cupId = parseInt(actionBtn.dataset.cupId)
-          if (action === 'add-participants') {
-            e.stopPropagation()
-            this.showAddParticipantsForCup(cupId)
-          } else if (action === 'edit-cup') {
-            e.stopPropagation()
-            this.editCup(cupId)
-          }
-          return
-        }
-        // Click on card body → show detail
-        const card = e.target.closest('[data-cup-id]')
-        if (card) this.showCupDetail(parseInt(card.dataset.cupId))
-      })
-    }
-
-    // Event delegation for cup detail content (action buttons, bracket controls, etc.)
-    const cupDetailContent = document.getElementById('cupDetailContent')
-    if (cupDetailContent) {
-      cupDetailContent.addEventListener('click', (e) => this._handleCupDetailClick(e))
-      cupDetailContent.addEventListener('change', (e) => this._handleCupDetailChange(e))
-    }
-  }
-
-  async loadCups() {
-    if (!this.serverMode) return
-    try {
-      const response = await this.makeAuthenticatedRequest('/cups')
-      const data = await response.json().catch(() => null)
-      if (!response.ok || !data || !Array.isArray(data)) {
-        document.getElementById('cupsGrid').innerHTML = '<div class="empty-state"><p>Chưa có giải đấu nào</p></div>'
-        return
-      }
-      this.renderCupList(data)
-    } catch (error) {
-      this.showToast('Lỗi khi tải danh sách giải đấu', 'error')
-      console.error('Load cups error:', error)
-    }
-  }
-
-  renderCupList(cups) {
-    const grid = document.getElementById('cupsGrid')
-    if (!grid) return
-    if (cups.length === 0) {
-      grid.innerHTML = '<div class="empty-state"><p>Chưa có giải đấu nào. Nhấn "Tạo Giải Đấu Mới" để bắt đầu.</p></div>'
-      return
-    }
-    const statusLabels = { draft: 'Bản nháp', scheduled: 'Đã lên lịch', in_progress: 'Đang diễn ra', completed: 'Hoàn thành', cancelled: 'Đã hủy' }
-    const formatLabels = { single_elimination: 'Loại trực tiếp', double_elimination: 'Loại kép', round_robin: 'Vòng tròn' }
-    grid.innerHTML = cups.map(cup => {
-      const statusLabel = statusLabels[cup.status] || cup.status
-      const formatLabel = formatLabels[cup.format] || cup.format
-      const createdDate = this.formatDate(cup.created_at) || 'N/A'
-      const seasonInfo = cup.season_id ? `<span>Mùa giải: ${this.escapeHtml(cup.season_name || 'ID ' + cup.season_id)}</span>` : ''
-      return `
-        <div class="image-editor-card" data-cup-id="${cup.id}">
-          <div class="image-editor-header">
-            <h3>🏆 ${this.escapeHtml(cup.name)}</h3>
-            <span class="image-status-badge ${this.statusBadgeClass(cup.status)}">${statusLabel}</span>
-          </div>
-          <div class="cup-meta-info">
-            <span>${formatLabel} | ${cup.num_teams} đội</span>
-            ${seasonInfo}
-          </div>
-          <p class="form-hint mt-sm">Tạo: ${createdDate}</p>
-          ${cup.status === 'draft' ? `
-            <div class="cup-card-actions">
-              <button class="btn btn-primary btn-sm" data-action="add-participants" data-cup-id="${cup.id}">👥 Thêm tham gia</button>
-              <button class="btn btn-secondary btn-sm" data-action="edit-cup" data-cup-id="${cup.id}">✏️ Sửa</button>
-            </div>
-          ` : ''}
-        </div>
-      `
-    }).join('')
-  }
-
-  async showCupDetail(cupId) {
-    // Reset DOM state IMMEDIATELY — before any API calls
-    // Ensures consistent UI even if API fails or bfcache restores
-    const cupsGrid = document.getElementById('cupsGrid')
-    const createCupBtn = document.getElementById('createCupBtn')
-    const cupDetail = document.getElementById('cupDetail')
-    const cupDetailContent = document.getElementById('cupDetailContent')
-
-    if (cupsGrid) cupsGrid.style.display = 'none'
-    if (createCupBtn) createCupBtn.style.display = 'none'
-    if (cupDetail) cupDetail.style.display = 'block'
-    if (cupDetailContent) cupDetailContent.innerHTML = '<div class="spinner-wrapper"><div class="spinner"></div><p class="form-hint">Đang tải...</p></div>'
-
-    try {
-      const response = await this.makeAuthenticatedRequest(`/cups/${cupId}`)
-      const cup = await response.json().catch(() => ({}))
-      if (!response.ok || !cup) {
-        return this.showToast(cup?.error || 'Không tìm thấy giải đấu', 'error')
-      }
-
-      // Load participants and bracket
-      const [partRes, bracketRes] = await Promise.all([
-        this.makeAuthenticatedRequest(`/cups/${cupId}/participants`),
-        this.makeAuthenticatedRequest(`/cups/${cupId}/bracket`)
-      ])
-      const participants = (await partRes.json().catch(() => [])) || []
-      const matches = (await bracketRes.json().catch(() => [])) || []
-
-      const statusLabels = { draft: 'Bản nháp', scheduled: 'Đã lên lịch', in_progress: 'Đang diễn ra', completed: 'Hoàn thành', cancelled: 'Đã hủy' }
-      const formatLabels = { single_elimination: 'Loại trực tiếp', double_elimination: 'Loại kép', round_robin: 'Vòng tròn' }
-
-      let html = `
-        <div class="cup-detail-header">
-          <h2 class="section-title">🏆 ${this.escapeHtml(cup.name)}</h2>
-          <div class="cup-badge-group">
-            <span class="image-status-badge ${this.statusBadgeClass(cup.status)}">${statusLabels[cup.status] || cup.status}</span>
-            <span class="cup-badge-text">${formatLabels[cup.format] || cup.format} | ${cup.num_teams} đội</span>
-          </div>
-        </div>
-      `
-
-      // Regulation
-      if (cup.regulation_text) {
-        html += `<div class="cup-regulation"><h4 class="cup-section-title-sm">📋 Quy định</h4><p>${this.escapeHtml(cup.regulation_text)}</p></div>`
-      }
-
-      // Participants
-      html += `<div class="cup-info-section">
-        <h4 class="cup-section-title">👥 Danh sách tham gia (${participants.length}/${cup.num_teams})</h4>
-        <div class="cup-participant-grid">
-      `
-      participants.forEach(p => {
-        const name = p.team_name || (p.player1_name + (p.player2_name ? ' & ' + p.player2_name : ''))
-        const removeBtn = cup.status === 'draft' ? `<button class="remove-participant-btn" data-action="remove-participant" data-cup-id="${cupId}" data-participant-id="${p.id}" title="Xóa">&times;</button>` : ''
-        html += `<div class="cup-participant-card">${p.seed ? `<span class="participant-seed">#${p.seed}</span>` : ''}<span class="participant-name">${this.escapeHtml(name)}</span>${removeBtn}</div>`
-      })
-      html += `</div></div>`
-
-      // Action buttons
-      if (cup.status === 'draft') {
-        html += `<div class="cup-actions-bar">
-          <button class="btn btn-primary btn-sm" data-action="add-participants" data-cup-id="${cupId}">👥 Thêm người tham gia</button>
-          <button class="btn btn-secondary btn-sm" data-action="edit-cup" data-cup-id="${cupId}">✏️ Sửa</button>
-          <button class="btn btn-primary btn-sm" data-action="shuffle-seeds" data-cup-id="${cupId}">🔀 Xáo trộn hạt giống</button>
-          <button class="btn btn-success btn-sm" data-action="generate-bracket" data-cup-id="${cupId}">📊 Tạo bảng đấu</button>
-          <button class="btn btn-warning btn-sm" data-action="change-status" data-cup-id="${cupId}" data-status="scheduled">📅 Lên lịch</button>
-          <button class="btn btn-danger btn-sm" data-action="delete-cup" data-cup-id="${cupId}">🗑️ Xóa</button>
-        </div>`
-      } else if (cup.status === 'scheduled') {
-        html += `<div class="cup-actions-bar">
-          <button class="btn btn-secondary btn-sm" data-action="edit-cup" data-cup-id="${cupId}">✏️ Sửa</button>
-          <button class="btn btn-success btn-sm" data-action="change-status" data-cup-id="${cupId}" data-status="in_progress">▶️ Bắt đầu</button>
-          <button class="btn btn-warning btn-sm" data-action="change-status" data-cup-id="${cupId}" data-status="cancelled">⏹️ Hủy</button>
-        </div>`
-      } else if (cup.status === 'in_progress') {
-        html += `<div class="cup-actions-bar">
-          <button class="btn btn-success btn-sm" data-action="change-status" data-cup-id="${cupId}" data-status="completed">✅ Hoàn thành</button>
-          <button class="btn btn-warning btn-sm" data-action="change-status" data-cup-id="${cupId}" data-status="cancelled">⏹️ Hủy</button>
-        </div>`
-      } else if (cup.status === 'completed' || cup.status === 'cancelled') {
-        // Post-tournament results section
-        const hasConclusion = cup.conclusion_image_path
-        html += `<div class="cup-conclusion-section">
-          <h4 class="cup-section-title">🏆 Kết quả giải đấu</h4>
-          <textarea id="cupFinalResults" class="input-field" rows="4" placeholder="Nhập kết quả cuối cùng...">${this.escapeHtml(cup.final_results || '')}</textarea>
-          <div class="cup-form-actions">
-            <button class="btn btn-primary btn-sm" data-action="save-final-results" data-cup-id="${cupId}">💾 Lưu kết quả</button>
-          </div>
-          <div class="mt-sm">
-            <h4 class="cup-section-title-sm">📸 Ảnh tổng kết</h4>
-            ${hasConclusion ? `
-              <div id="cupConclusionPreview"><img class="cup-conclusion-image" src="${this.apiBase}/cups/${cupId}/conclusion-image/file"></div>
-              <button class="btn btn-ghost btn-sm mt-sm" data-action="delete-conclusion-image" data-cup-id="${cupId}">🗑️ Xóa ảnh</button>
-            ` : `
-              <label class="btn btn-secondary btn-sm" style="cursor:pointer;display:inline-block;margin-top:8px;">
-                📤 Tải lên ảnh tổng kết
-                <input type="file" accept="image/*" style="display:none;" data-action="upload-conclusion-image" data-cup-id="${cupId}">
-              </label>
-            `}
-          </div>
-        </div>`
-      }
-
-      // Bracket visualization
-      if (matches && matches.length > 0) {
-        html += `<div class="cup-info-section cup-info-section-spaced">
-          <h4 class="cup-section-title">📊 Bảng đấu</h4>
-          <div class="bracket-scroll">${this.renderBracket(matches, cupId, cup.status)}</div>
-        </div>`
-      }
-
-      document.getElementById('cupDetailContent').innerHTML = html
-    } catch (error) {
-      this.showToast('Lỗi khi tải chi tiết giải đấu', 'error')
-      console.error('Cup detail error:', error)
-      // Show error in the detail panel (DOM already set up above)
-      if (cupDetailContent) {
-        cupDetailContent.innerHTML = `<div class="spinner-wrapper">
-          <p>⚠️ Không thể tải chi tiết giải đấu</p>
-          <p class="form-hint">${this.escapeHtml(error.message || 'Lỗi kết nối')}</p>
-        </div>`
-      }
-    }
-  }
-
-  renderBracket(matches, cupId, cupStatus) {
-    if (!matches || matches.length === 0) return '<p class="form-hint">Chưa có bảng đấu</p>'
-    // Group by round
-    const rounds = {}
-    matches.forEach(m => {
-      if (!rounds[m.round_number]) rounds[m.round_number] = []
-      rounds[m.round_number].push(m)
-    })
-    const maxRounds = Math.max(...Object.keys(rounds).map(Number))
-    // Compute round labels relative to the final round
-    const roundNames = {}
-    for (let r = 1; r <= maxRounds; r++) {
-      const fromEnd = maxRounds - r
-      if (fromEnd === 0) roundNames[r] = 'Chung kết'
-      else if (fromEnd === 1) roundNames[r] = 'Bán kết'
-      else if (fromEnd === 2) roundNames[r] = 'Tứ kết'
-      else roundNames[r] = `Vòng ${r}`
-    }
-    let html = '<div class="bracket-container">'
-    for (let r = 1; r <= maxRounds; r++) {
-      const roundMatches = rounds[r] || []
-      const rName = roundNames[r] || `Vòng ${r}`
-      html += `<div class="bracket-round"><h5 class="bracket-round-title">${rName}</h5>`
-      roundMatches.forEach(m => {
-        const t1Name = m.t1_team_name || (m.t1_p1_name || 'Chưa xác định')
-        const t2Name = m.t2_team_name || (m.t2_p1_name || 'Chưa xác định')
-        const t1Score = m.team1_score != null ? m.team1_score : '-'
-        const t2Score = m.team2_score != null ? m.team2_score : '-'
-        const isWinner1 = m.winner_participant_id === m.team1_participant_id
-        const isWinner2 = m.winner_participant_id === m.team2_participant_id
-        const matchClass = m.status === 'completed' ? 'completed' : m.status === 'in_progress' ? 'in_progress' : ''
-        const canPickWinner = ['scheduled', 'in_progress'].includes(cupStatus)
-        const t1Pid = m.team1_participant_id
-        const t2Pid = m.team2_participant_id
-        html += `<div class="bracket-match ${matchClass}">
-          <div class="bracket-match-number">Trận ${m.match_number}</div>
-          <div class="bracket-team ${isWinner1 ? 'winner' : ''} ${canPickWinner ? 'clickable' : ''}">
-            ${canPickWinner && t1Pid ? `<button class="btn-winner-pick" data-action="set-match-winner" data-cup-id="${cupId}" data-match-id="${m.id}" data-winner-pid="${t1Pid}" title="Chọn người thắng">🏆</button>` : ''}
-            <span>${this.escapeHtml(t1Name)}</span>
-            <span class="bracket-score">${t1Score}</span>
-          </div>
-          <div class="bracket-team ${isWinner2 ? 'winner' : ''} ${canPickWinner ? 'clickable' : ''}">
-            ${canPickWinner && t2Pid ? `<button class="btn-winner-pick" data-action="set-match-winner" data-cup-id="${cupId}" data-match-id="${m.id}" data-winner-pid="${t2Pid}" title="Chọn người thắng">🏆</button>` : ''}
-            <span>${this.escapeHtml(t2Name)}</span>
-            <span class="bracket-score">${t2Score}</span>
-          </div>
-          ${cupStatus === 'scheduled' || cupStatus === 'in_progress' ? `
-            <div class="bracket-date-row">
-              <input type="date" class="input-field input-sm bracket-input-flex" id="date_${m.id}" value="${m.play_date || ''}">
-              <button class="btn btn-sm btn-secondary" data-action="schedule-match-date" data-cup-id="${cupId}" data-match-id="${m.id}">📅</button>
-            </div>
-          ` : ''}
-          ${cupStatus === 'in_progress' && m.status === 'scheduled' ? `
-            <div class="bracket-score-row">
-              <input type="number" min="0" value="0" class="input-field input-sm bracket-input-sm" id="score1_${m.id}">
-              <input type="number" min="0" value="0" class="input-field input-sm bracket-input-sm" id="score2_${m.id}">
-              <button class="btn btn-sm btn-primary btn-flex-fill" data-action="update-match-score" data-cup-id="${cupId}" data-match-id="${m.id}">Ghi điểm</button>
-            </div>
-          ` : ''}
-        </div>`
-      })
-      html += '</div>'
-    }
-    html += '</div>'
-    return html
-  }
-
-  statusBadgeClass(status) {
-    return status ? `badge-${status}` : 'badge-draft'
-  }
-
-  // Helper: make authenticated cup API call with detailed error reporting
-  async _cupApiCall(path, options = {}) {
-    try {
-      const res = await this.makeAuthenticatedRequest(path, options)
-      // Parse JSON safely — handle non-JSON responses (e.g., HTML error pages from proxies)
-      const data = await res.json().catch(() => null)
-      if (!res.ok) {
-        // Server returned an error status — report it clearly
-        console.error(`Cup API error [${res.status}] ${path}:`, data)
-        this.showToast(data?.error || `Lỗi server (${res.status})`, 'error')
-        return null
-      }
-      return data
-    } catch (error) {
-      console.error(`Cup API exception ${path}:`, error)
-      this.showToast(error.message || 'Lỗi kết nối', 'error')
-      return null
-    }
-  }
-
-  // ── CSP-compliant event delegation for cup detail content ──────────────
-  // All dynamically generated HTML uses data-action attributes instead of
-  // inline onclick/onchange handlers (blocked by CSP scriptSrcAttr: 'none').
-
-  _handleCupDetailClick(e) {
-    const btn = e.target.closest('[data-action]')
-    if (!btn) return
-
-    const action = btn.dataset.action
-    const cupId = parseInt(btn.dataset.cupId)
-    const matchId = btn.dataset.matchId ? parseInt(btn.dataset.matchId) : null
-    const participantId = btn.dataset.participantId ? parseInt(btn.dataset.participantId) : null
-    const status = btn.dataset.status || null
-
-    switch (action) {
-      case 'add-participants':
-        this.showAddParticipantsForCup(cupId)
+        if (this.user?.role === 'admin') this.renderCacheStatus()
         break
-      case 'edit-cup':
-        this.editCup(cupId)
-        break
-      case 'shuffle-seeds':
-        this.shuffleCupSeeds(cupId)
-        break
-      case 'generate-bracket':
-        this.generateCupBracket(cupId)
-        break
-      case 'change-status':
-        this.changeCupStatus(cupId, status)
-        break
-      case 'delete-cup':
-        this.deleteCup(cupId)
-        break
-      case 'remove-participant':
-        e.stopPropagation()
-        this.removeCupParticipant(cupId, participantId)
-        break
-      case 'save-final-results':
-        this.saveCupFinalResults(cupId)
-        break
-      case 'delete-conclusion-image':
-        this.deleteCupConclusionImage(cupId)
-        break
-      case 'schedule-match-date':
-        this.scheduleMatchDate(cupId, matchId)
-        break
-      case 'update-match-score':
-        this.updateMatchScore(cupId, matchId)
-        break
-      case 'set-match-winner': {
-        const winnerPid = parseInt(btn.dataset.winnerPid, 10)
-        if (!isNaN(winnerPid)) this.setCupMatchWinner(cupId, matchId, winnerPid)
-        break
-      }
+      case 'images': this.loadSiteImages(); break
+      case 'cups': this.loadCups(); break
     }
-  }
-
-  _handleCupDetailChange(e) {
-    const input = e.target.closest('[data-action]')
-    if (!input) return
-
-    const action = input.dataset.action
-    const cupId = parseInt(input.dataset.cupId)
-
-    if (action === 'upload-conclusion-image') {
-      this.uploadCupConclusionImage(e, cupId)
-    }
-  }
-
-  async showCreateCupModal() {
-    try {
-      // Load players and seasons for dropdowns
-      const [playersRes, seasonsRes] = await Promise.all([
-        this.makeAuthenticatedRequest('/players'),
-        this.makeAuthenticatedRequest('/seasons')
-      ])
-
-      if (!playersRes.ok) {
-        const err = await playersRes.json().catch(() => ({}))
-        throw new Error(err?.error || 'Không tải được danh sách người chơi')
-      }
-      if (!seasonsRes.ok) {
-        const err = await seasonsRes.json().catch(() => ({}))
-        throw new Error(err?.error || 'Không tải được danh sách mùa giải')
-      }
-
-      const [playersPayload, seasonsPayload] = await Promise.all([
-        playersRes.json(),
-        seasonsRes.json()
-      ])
-
-      const players = Array.isArray(playersPayload)
-        ? playersPayload
-        : Array.isArray(playersPayload?.data)
-          ? playersPayload.data
-          : []
-      const seasons = Array.isArray(seasonsPayload)
-        ? seasonsPayload
-        : Array.isArray(seasonsPayload?.data)
-          ? seasonsPayload.data
-          : []
-
-      const modal = document.getElementById('loginModal')
-      if (!modal) return // fallback: use confirm
-      
-      // Reuse modal pattern
-      const content = modal.querySelector('.modal-content') || modal.querySelector('[class*="modal"]')
-      if (!content) return
-
-      const prevContent = content.innerHTML
-      const modalTitle = modal.querySelector('.modal-title')
-      const prevTitle = modalTitle ? modalTitle.textContent : ''
-
-      if (modalTitle) modalTitle.textContent = '🏆 Tạo Giải Đấu Cúp'
-      content.innerHTML = `
-      <div class="modal-header">
-        <h3 class="modal-title">🏆 Tạo Giải Đấu Cúp</h3>
-        <button class="modal-close" data-dismiss="modal">&times;</button>
-      </div>
-      <div class="modal-body">
-        <form id="createCupForm">
-          <div class="cup-form-group">
-            <label>Tên giải đấu *</label>
-            <input type="text" id="cupName" class="input-field" required placeholder="VD: Cúp Vô Địch 2025">
-          </div>
-          <div class="cup-form-group">
-            <label>Liên kết mùa giải (tùy chọn)</label>
-            <select id="cupSeasonId" class="input-field">
-              <option value="">-- Không liên kết --</option>
-              ${(seasons || []).map(s => `<option value="${s.id}">${this.escapeHtml(s.name)}</option>`).join('')}
-            </select>
-          </div>
-          <div class="cup-form-group">
-            <label>Định dạng *</label>
-            <select id="cupFormat" class="input-field">
-              <option value="single_elimination">Loại trực tiếp</option>
-            </select>
-            <small class="cup-form-hint">Hiện chỉ hỗ trợ định dạng loại trực tiếp</small>
-          </div>
-          <div class="cup-form-group">
-            <label>Số đội *</label>
-            <select id="cupNumTeams" class="input-field">
-              <option value="4">4 đội</option>
-              <option value="8" selected>8 đội</option>
-              <option value="16">16 đội</option>
-              <option value="32">32 đội</option>
-            </select>
-          </div>
-          <div class="cup-form-group">
-            <label>Quy định (tùy chọn)</label>
-            <textarea id="cupRegulation" class="input-field" rows="3" placeholder="Luật chơi, quy định đặc biệt..."></textarea>
-          </div>
-          <div class="cup-form-actions">
-            <button type="button" class="btn btn-ghost" data-dismiss="modal">Hủy</button>
-            <button type="submit" class="btn btn-primary">Tạo giải đấu</button>
-          </div>
-        </form>
-      </div>
-    `
-
-      // Show modal
-      modal.classList.add('active')
-      modal.style.display = 'flex'
-
-      // Handle submit
-      const form = content.querySelector('#createCupForm')
-      if (form) {
-        form.addEventListener('submit', async (e) => {
-          e.preventDefault()
-          const result = await this.createCup(players)
-          // Restore modal
-          content.innerHTML = prevContent
-          if (modalTitle) modalTitle.textContent = prevTitle
-          if (!result) return // createCup already showed error; keep modal open
-          this.hideModal('loginModal')
-        })
-      }
-    } catch (error) {
-      this.showToast(error.message || 'Lỗi khi mở hộp thoại tạo giải đấu', 'error')
-    }
-  }
-
-  async createCup(players) {
-    try {
-      const name = document.getElementById('cupName').value.trim()
-      if (!name) return this.showToast('Vui lòng nhập tên giải đấu', 'error')
-
-      const seasonIdVal = document.getElementById('cupSeasonId').value
-      const format = document.getElementById('cupFormat').value
-      const numTeams = parseInt(document.getElementById('cupNumTeams').value)
-      const regulationText = document.getElementById('cupRegulation').value.trim()
-
-      const body = { name, format, numTeams }
-      if (seasonIdVal) body.seasonId = parseInt(seasonIdVal)
-      if (regulationText) body.regulationText = regulationText
-
-      const data = await this._cupApiCall('/cups', {
-        method: 'POST',
-        body: JSON.stringify(body)
-      })
-      if (data?.success) {
-        this.showToast('Đã tạo giải đấu mới!', 'success')
-        // Now show participant selection
-        await this.showAddParticipantsModal(data.id, players, numTeams)
-        return true
-      }
-      return false
-    } catch (error) {
-      this.showToast(error.message || 'Lỗi khi tạo giải đấu', 'error')
-      return false
-    }
-  }
-
-  // Open the participant-selection modal for an existing cup (button on list card or detail view)
-  async showAddParticipantsForCup(cupId) {
-    try {
-      // First fetch cup info to know max teams
-      const cupRes = await this.makeAuthenticatedRequest(`/cups/${cupId}`)
-      const cup = await cupRes.json().catch(() => ({}))
-      if (!cupRes.ok || !cup) {
-        return this.showToast(cup?.error || 'Không tìm thấy giải đấu', 'error')
-      }
-
-      // Load players and existing participants in parallel (independent of each other)
-      const [playersRes, partRes] = await Promise.all([
-        this.makeAuthenticatedRequest('/players'),
-        this.makeAuthenticatedRequest(`/cups/${cupId}/participants`)
-      ])
-
-      const playersPayload = await playersRes.json().catch(() => null)
-      if (!playersRes.ok) {
-        throw new Error(playersPayload?.error || 'Không tải được danh sách người chơi')
-      }
-      const players = Array.isArray(playersPayload)
-        ? playersPayload
-        : Array.isArray(playersPayload?.data)
-          ? playersPayload.data
-          : []
-
-      const participantsPayload = await partRes.json().catch(() => [])
-      const existingParticipants = Array.isArray(participantsPayload) ? participantsPayload : []
-      const existingPlayerIds = new Set(
-        existingParticipants.map(p => p.player1_id)
-      )
-
-      await this.showAddParticipantsModal(cupId, players, cup.num_teams || 8, existingPlayerIds, existingParticipants)
-    } catch (error) {
-      console.error('showAddParticipantsForCup error:', error)
-      this.showToast(error.message || 'Lỗi khi mở hộp thoại thêm người tham gia', 'error')
-    }
-  }
-
-  async showAddParticipantsModal(cupId, players, maxTeams, existingPlayerIds = new Set(), existingParticipants = []) {
-    const modal = document.getElementById('loginModal')
-    if (!modal) return
-    const content = modal.querySelector('.modal-content') || modal.querySelector('[class*="modal"]')
-    if (!content) return
-
-    const prevContent = content.innerHTML
-    const modalTitle = modal.querySelector('.modal-title')
-    const prevTitle = modalTitle ? modalTitle.textContent : ''
-
-    if (modalTitle) modalTitle.textContent = '👥 Thêm Người Tham Gia'
-    content.innerHTML = `
-      <div class="modal-header">
-        <h3 class="modal-title">👥 Thêm Người Tham Gia</h3>
-        <button class="modal-close" data-dismiss="modal">&times;</button>
-      </div>
-      <div class="modal-body">
-        <p class="form-hint">Chọn ${maxTeams} người chơi để tạo đội (mỗi người chơi = 1 đội đánh đơn)</p>
-
-        <!-- Search bar -->
-        <input type="text" id="participantSearch" class="input-field participant-search" placeholder="🔍 Tìm kiếm người chơi...">
-
-        <!-- Select all / Deselect all -->
-        <div class="participant-select-all-bar">
-          <span id="participantCount" class="participant-count">Đã chọn: 0/${maxTeams}</span>
-          <div class="participant-select-buttons">
-            <button class="btn btn-ghost btn-sm" id="selectAllParticipants">Chọn tất cả</button>
-            <button class="btn btn-ghost btn-sm" id="deselectAllParticipants">Bỏ tất cả</button>
-          </div>
-        </div>
-
-        <!-- Grid of clickable player cards -->
-        <div class="participant-grid" id="participantGrid">
-          ${(players || []).map(p => `
-            <div class="participant-card" data-player-id="${p.id}">
-              <span class="check-icon">✓</span>
-              <span class="player-name">${this.escapeHtml(p.name)}</span>
-            </div>
-          `).join('')}
-        </div>
-
-        <!-- Footer with cancel/confirm -->
-        <div class="participant-footer">
-          <button class="btn btn-ghost" data-dismiss="modal">Hủy</button>
-          <button class="btn btn-primary" id="confirmParticipantsBtn">Xác nhận</button>
-        </div>
-      </div>
-    `
-
-    modal.classList.add('active')
-    modal.style.display = 'flex'
-
-    // Store selected player IDs in a Set for easy management
-    // Pre-select existing participants
-    const selectedIds = new Set(existingPlayerIds)
-
-    // Map from player1_id to participant_id for tracking existing participants
-    const existingPartMap = {}
-    existingParticipants.forEach(p => {
-      existingPartMap[p.player1_id] = p.id
-    })
-
-    // Apply pre-selection in the DOM
-    content.querySelectorAll('.participant-card').forEach(card => {
-      const playerId = parseInt(card.dataset.playerId)
-      if (existingPlayerIds.has(playerId)) {
-        card.classList.add('selected')
-      }
-    })
-
-    // Update counter display
-    const updateCount = () => {
-      const countEl = document.getElementById('participantCount')
-      if (countEl) countEl.textContent = `Đã chọn: ${selectedIds.size}/${maxTeams}`
-    }
-    updateCount() // Initial count reflects existing participants
-
-    // Click handler for participant cards
-    content.querySelectorAll('.participant-card').forEach(card => {
-      card.addEventListener('click', () => {
-        const playerId = parseInt(card.dataset.playerId)
-        if (selectedIds.has(playerId)) {
-          selectedIds.delete(playerId)
-          card.classList.remove('selected')
-        } else {
-          selectedIds.add(playerId)
-          card.classList.add('selected')
-        }
-        updateCount()
-      })
-    })
-
-    // Search filter
-    const searchInput = document.getElementById('participantSearch')
-    if (searchInput) {
-      searchInput.addEventListener('input', () => {
-        const query = searchInput.value.toLowerCase().trim()
-        content.querySelectorAll('.participant-card').forEach(card => {
-          const name = card.querySelector('.player-name').textContent.toLowerCase()
-          card.style.display = name.includes(query) ? '' : 'none'
-        })
-      })
-    }
-
-    // Select all — only visible (non-hidden by search filter) cards
-    const selectAllBtn = document.getElementById('selectAllParticipants')
-    if (selectAllBtn) {
-      selectAllBtn.addEventListener('click', () => {
-        content.querySelectorAll('.participant-card').forEach(card => {
-          if (card.style.display === 'none') return
-          const playerId = parseInt(card.dataset.playerId)
-          selectedIds.add(playerId)
-          card.classList.add('selected')
-        })
-        updateCount()
-      })
-    }
-
-    // Deselect all
-    const deselectAllBtn = document.getElementById('deselectAllParticipants')
-    if (deselectAllBtn) {
-      deselectAllBtn.addEventListener('click', () => {
-        content.querySelectorAll('.participant-card.selected').forEach(card => {
-          const playerId = parseInt(card.dataset.playerId)
-          selectedIds.delete(playerId)
-          card.classList.remove('selected')
-        })
-        updateCount()
-      })
-    }
-
-    // Wire up confirm button
-    const confirmBtn = content.querySelector('#confirmParticipantsBtn')
-    if (confirmBtn) {
-      confirmBtn.addEventListener('click', () => {
-        this.confirmAddParticipantsFromSet(cupId, maxTeams, selectedIds, existingPlayerIds, existingPartMap)
-      })
-    }
-  }
-
-  async confirmAddParticipantsFromSet(cupId, maxTeams, selectedIds, previousPlayerIds = new Set(), existingPartMap = {}) {
-    const selected = Array.from(selectedIds)
-    const minRequired = Math.min(maxTeams, 2)
-    if (selected.length < minRequired) return this.showToast(`Cần ít nhất ${minRequired} người tham gia`, 'error')
-    if (selected.length > maxTeams) return this.showToast(`Tối đa ${maxTeams} đội`, 'error')
-
-    try {
-      // Compute additions: in current selection but NOT in previous
-      const additions = selected.filter(pid => !previousPlayerIds.has(pid))
-      // Compute removals: in previous but NOT in current selection (use Set.has for O(1))
-      const removals = Array.from(previousPlayerIds).filter(pid => !selectedIds.has(pid))
-
-      // Remove participants first (if any were deselected)
-      let removed = 0
-      for (const pid of removals) {
-        const partId = existingPartMap[pid]
-        if (partId) {
-          const data = await this._cupApiCall(`/cups/${cupId}/participants/${partId}`, { method: 'DELETE' })
-          if (data?.success) removed++
-        }
-      }
-
-      // Add new participants
-      let added = 0
-      for (let i = 0; i < additions.length; i++) {
-        const data = await this._cupApiCall(`/cups/${cupId}/participants`, {
-          method: 'POST',
-          body: JSON.stringify({ player1Id: additions[i], seed: i + 1 })
-        })
-        if (data?.success) added++
-      }
-
-      if (added > 0 || removed > 0) {
-        let msg = ''
-        if (added > 0) msg += `Thêm ${added}`
-        if (removed > 0) msg += ` ${added > 0 ? ',' : ''} Xóa ${removed}`
-        this.showToast(msg.trim(), 'success')
-      } else if (selected.length > 0) {
-        this.showToast('Không có thay đổi', 'success')
-      }
-
-      // Close modal and show cup detail
-      this.hideModal('loginModal')
-      await this.showCupDetail(cupId)
-    } catch (error) {
-      this.showToast('Lỗi khi cập nhật người tham gia', 'error')
-    }
-  }
-
-  async shuffleCupSeeds(cupId) {
-    if (!confirm('Xáo trộn hạt giống? Thứ tự đội sẽ được random.')) return
-    const data = await this._cupApiCall(`/cups/${cupId}/seed-shuffle`, { method: 'POST' })
-    if (data?.success) {
-      this.showToast('Đã xáo trộn hạt giống!', 'success')
-      await this.showCupDetail(cupId)
-    }
-  }
-
-  async generateCupBracket(cupId) {
-    if (!confirm('Tạo bảng đấu? Hành động này sẽ chuyển giải đấu sang trạng thái "Đã lên lịch".')) return
-    const data = await this._cupApiCall(`/cups/${cupId}/generate-bracket`, { method: 'POST' })
-    if (data?.success) {
-      this.showToast(`Đã tạo bảng đấu! ${data.matchesCount} trận`, 'success')
-      await this.showCupDetail(cupId)
-    }
-  }
-
-  async changeCupStatus(cupId, newStatus) {
-    const labels = { scheduled: 'lên lịch', in_progress: 'bắt đầu', completed: 'hoàn thành', cancelled: 'hủy' }
-    if (!confirm(`Bạn có chắc muốn ${labels[newStatus] || 'thay đổi trạng thái'} giải đấu?`)) return
-    const data = await this._cupApiCall(`/cups/${cupId}/status`, {
-      method: 'PUT',
-      body: JSON.stringify({ status: newStatus })
-    })
-    if (data?.success) {
-      this.showToast('Đã thay đổi trạng thái', 'success')
-      await this.showCupDetail(cupId)
-    }
-  }
-
-  async updateMatchScore(cupId, matchId) {
-    const score1El = document.getElementById(`score1_${matchId}`)
-    const score2El = document.getElementById(`score2_${matchId}`)
-    if (!score1El || !score2El) return
-    const s1 = parseInt(score1El.value) || 0
-    const s2 = parseInt(score2El.value) || 0
-
-    const data = await this._cupApiCall(`/cups/${cupId}/matches/${matchId}`, {
-      method: 'PUT',
-      body: JSON.stringify({ team1Score: s1, team2Score: s2 })
-    })
-    if (data?.success) {
-      this.showToast(`Ghi điểm ${s1}-${s2} thành công!`, 'success')
-      await this.showCupDetail(cupId)
-    }
-  }
-
-  async setCupMatchWinner(cupId, matchId, winnerParticipantId) {
-    const data = await this._cupApiCall(`/cups/${cupId}/matches/${matchId}/winner`, {
-      method: 'PUT',
-      body: JSON.stringify({ winnerParticipantId })
-    })
-    if (data?.success) {
-      this.showToast('Đã chọn người thắng!', 'success')
-      await this.showCupDetail(cupId)
-    }
-  }
-
-  async deleteCup(cupId) {
-    if (!confirm('Bạn có chắc muốn xóa giải đấu này? Hành động này không thể hoàn tác.')) return
-    const data = await this._cupApiCall(`/cups/${cupId}`, { method: 'DELETE' })
-    if (data?.success) {
-      this.showToast('Đã xóa giải đấu', 'success')
-      this.backToCupsList()
-    }
-  }
-
-  backToCupsList() {
-    const cupsGrid = document.getElementById('cupsGrid')
-    const createCupBtn = document.getElementById('createCupBtn')
-    const cupDetail = document.getElementById('cupDetail')
-    if (cupsGrid) cupsGrid.style.display = ''
-    if (createCupBtn) createCupBtn.style.display = ''
-    if (cupDetail) cupDetail.style.display = 'none'
-    this.loadCups()
-  }
-
-  // Edit cup details
-  async editCup(cupId) {
-    try {
-      const response = await this.makeAuthenticatedRequest(`/cups/${cupId}`)
-      const cup = await response.json().catch(() => ({}))
-      if (!response.ok || !cup) {
-        return this.showToast(cup?.error || 'Không tìm thấy giải đấu', 'error')
-      }
-
-      // Load seasons for dropdown
-      const seasonsRes = await this.makeAuthenticatedRequest('/seasons')
-      const seasonsPayload = await seasonsRes.json().catch(() => null)
-      if (!seasonsRes.ok) {
-        throw new Error(seasonsPayload?.error || 'Không tải được danh sách mùa giải')
-      }
-      const seasons = Array.isArray(seasonsPayload)
-        ? seasonsPayload
-        : Array.isArray(seasonsPayload?.data)
-          ? seasonsPayload.data
-          : []
-
-      const modal = document.getElementById('loginModal')
-      if (!modal) return
-      const content = modal.querySelector('.modal-content') || modal.querySelector('[class*="modal"]')
-      if (!content) return
-      const prevContent = content.innerHTML
-      const modalTitle = modal.querySelector('.modal-title')
-      const prevTitle = modalTitle ? modalTitle.textContent : ''
-
-      if (modalTitle) modalTitle.textContent = '✏️ Sửa Giải Đấu'
-      content.innerHTML = `
-        <div class="modal-header">
-          <h3 class="modal-title">✏️ Sửa Giải Đấu</h3>
-          <button class="modal-close" data-dismiss="modal">&times;</button>
-        </div>
-        <div class="modal-body">
-          <form id="editCupForm">
-            <div class="cup-form-group">
-              <label>Tên giải đấu *</label>
-              <input type="text" id="editCupName" class="input-field" required value="${this.escapeHtml(cup.name)}">
-            </div>
-            <div class="cup-form-group">
-              <label>Liên kết mùa giải</label>
-              <select id="editCupSeasonId" class="input-field">
-                <option value="">-- Không liên kết --</option>
-                ${(seasons || []).map(s => `<option value="${s.id}" ${s.id === cup.season_id ? 'selected' : ''}>${this.escapeHtml(s.name)}</option>`).join('')}
-              </select>
-            </div>
-            <div class="cup-form-group">
-              <label>Ngày bắt đầu</label>
-              <input type="date" id="editCupStartDate" class="input-field" value="${cup.start_date || ''}">
-            </div>
-            <div class="cup-form-group">
-              <label>Ngày kết thúc</label>
-              <input type="date" id="editCupEndDate" class="input-field" value="${cup.end_date || ''}">
-            </div>
-            <div class="cup-form-group">
-              <label>Quy định</label>
-              <textarea id="editCupRegulation" class="input-field" rows="3">${this.escapeHtml(cup.regulation_text || '')}</textarea>
-            </div>
-            ${cup.status !== 'draft' ? `<small class="cup-form-hint">⚠️ Chỉ có thể sửa tên, ngày, quy định khi đã lên lịch.</small>` : ''}
-            <div class="cup-form-actions">
-              <button type="button" class="btn btn-ghost" data-dismiss="modal">Hủy</button>
-              <button type="submit" class="btn btn-primary">Lưu thay đổi</button>
-            </div>
-          </form>
-        </div>
-      `
-
-      modal.classList.add('active')
-      modal.style.display = 'flex'
-
-      const form = content.querySelector('#editCupForm')
-      if (form) {
-        form.addEventListener('submit', async (e) => {
-          e.preventDefault()
-          const result = await this.saveCupEdit(cupId)
-          content.innerHTML = prevContent
-          if (modalTitle) modalTitle.textContent = prevTitle
-          if (!result) return // saveCupEdit already showed error; keep modal open
-          this.hideModal('loginModal')
-        })
-      }
-    } catch (error) {
-      console.error('editCup error:', error)
-      this.showToast('Lỗi khi tải thông tin giải đấu', 'error')
-    }
-  }
-
-  async saveCupEdit(cupId) {
-    try {
-      const name = document.getElementById('editCupName').value.trim()
-      if (!name) return this.showToast('Vui lòng nhập tên giải đấu', 'error')
-
-      const body = { name }
-      const seasonId = document.getElementById('editCupSeasonId').value
-      if (seasonId) body.seasonId = parseInt(seasonId)
-      const startDate = document.getElementById('editCupStartDate').value
-      if (startDate) body.startDate = startDate
-      const endDate = document.getElementById('editCupEndDate').value
-      if (endDate) body.endDate = endDate
-      const regulationText = document.getElementById('editCupRegulation').value.trim()
-      if (regulationText) body.regulationText = regulationText
-
-      const data = await this._cupApiCall(`/cups/${cupId}`, {
-        method: 'PUT',
-        body: JSON.stringify(body)
-      })
-      if (data?.success) {
-        this.showToast('Đã lưu thay đổi!', 'success')
-        await this.showCupDetail(cupId)
-        return true
-      }
-      return false
-    } catch (error) {
-      this.showToast(error.message || 'Lỗi khi lưu thay đổi', 'error')
-      return false
-    }
-  }
-
-  // Remove participant
-  async removeCupParticipant(cupId, participantId) {
-    if (!confirm('Bạn có chắc muốn xóa người tham gia này?')) return
-    const data = await this._cupApiCall(`/cups/${cupId}/participants/${participantId}`, { method: 'DELETE' })
-    if (data?.success) {
-      this.showToast('Đã xóa người tham gia', 'success')
-      await this.showCupDetail(cupId)
-    }
-  }
-
-  // Schedule match date
-  async scheduleMatchDate(cupId, matchId) {
-    const dateEl = document.getElementById(`date_${matchId}`)
-    if (!dateEl || !dateEl.value) return this.showToast('Vui lòng chọn ngày', 'error')
-    const data = await this._cupApiCall(`/cups/${cupId}/matches/${matchId}/date`, {
-      method: 'PUT',
-      body: JSON.stringify({ playDate: dateEl.value })
-    })
-    if (data?.success) {
-      this.showToast('Đã lên lịch trận đấu!', 'success')
-      await this.showCupDetail(cupId)
-    }
-  }
-
-  // Save final results text
-  async saveCupFinalResults(cupId) {
-    const textEl = document.getElementById('cupFinalResults')
-    if (!textEl) return
-    const text = textEl.value.trim()
-    if (!text) return this.showToast('Vui lòng nhập kết quả giải đấu', 'error')
-    const data = await this._cupApiCall(`/cups/${cupId}`, {
-      method: 'PUT',
-      body: JSON.stringify({ finalResults: text })
-    })
-    if (data?.success) {
-      this.showToast('Đã lưu kết quả giải đấu!', 'success')
-      await this.showCupDetail(cupId)
-    }
-  }
-
-  // Upload cup conclusion image
-  async uploadCupConclusionImage(e, cupId) {
-    const input = e.target
-    if (!input.files || !input.files[0]) return
-    const file = input.files[0]
-    if (file.size > 10 * 1024 * 1024) {
-      this.showToast('File quá lớn (tối đa 10MB)', 'error')
-      input.value = ''
-      return
-    }
-    try {
-      const formData = new FormData()
-      formData.append('image', file)
-      const res = await this.makeAuthenticatedRequest(`/cups/${cupId}/conclusion-image`, {
-        method: 'POST',
-        body: formData
-      })
-      const data = await res.json().catch(() => null)
-      if (!res.ok || !data?.success) {
-        this.showToast(data?.error || 'Lỗi khi tải lên', 'error')
-      } else {
-        this.showToast('Đã tải lên ảnh tổng kết!', 'success')
-        await this.showCupDetail(cupId)
-      }
-    } catch (error) {
-      this.showToast(error.message || 'Lỗi kết nối', 'error')
-    }
-    input.value = ''
-  }
-
-  // Delete cup conclusion image
-  async deleteCupConclusionImage(cupId) {
-    if (!confirm('Bạn có chắc muốn xóa ảnh tổng kết?')) return
-    const data = await this._cupApiCall(`/cups/${cupId}/conclusion-image`, { method: 'DELETE' })
-    if (data?.success) {
-      this.showToast('Đã xóa ảnh tổng kết', 'success')
-      await this.showCupDetail(cupId)
-    }
+  } catch (error) {
+    if (prevActiveBtn) prevActiveBtn.classList.add('active')
+    if (prevActiveContent) prevActiveContent.classList.add('active')
+    if (tabBtn) tabBtn.classList.remove('active')
+    if (tabContent) tabContent.classList.remove('active')
+    this.showToast(`Lỗi khi tải tab ${tabName}`, 'error')
+    console.error(`Tab switch failed for ${tabName}:`, error)
   }
 }
 
-// Initialize the application
-const app = new TennisRankingSystem()
+// ── Match type toggle (needed by both matches module and event listeners) ────
+TennisRankingSystem.prototype.switchMatchType = function (type) {
+  this.currentMatchType = type
+  const matchTypeInput = document.getElementById('matchType')
+  if (matchTypeInput) matchTypeInput.value = type
+  document.querySelectorAll('.type-btn').forEach(btn => btn.classList.toggle('active', btn.dataset.type === type))
+  this.updateTeamLabelsForMatchType()
+  if (type === 'solo') document.querySelectorAll('.duo-only').forEach(el => el.style.display = 'none')
+  else document.querySelectorAll('.duo-only').forEach(el => el.style.display = '')
+  const winnerSelect = document.getElementById('winner')
+  if (winnerSelect) winnerSelect.value = ''
+  this.currentWinningTeam = null
+}
 
-// Expose app to global scope for event handlers
-window.app = app
+TennisRankingSystem.prototype.updateTeamLabelsForMatchType = function () {
+  const player3Label = document.querySelector('.player3-label')
+  const team2Badge = document.querySelector('.team-2-badge')
+  if (this.currentMatchType === 'solo') {
+    if (player3Label) player3Label.textContent = 'Người chơi 2'
+    if (team2Badge) team2Badge.textContent = 'Đối thủ'
+  } else {
+    if (player3Label) player3Label.textContent = 'Người chơi 3'
+    if (team2Badge) team2Badge.textContent = 'Đội 2'
+  }
+}
 
-// Handle mobile Safari bfcache — force reload so fresh JS runs
-window.addEventListener('pageshow', (event) => {
-  if (event.persisted) {
-    // Page restored from bfcache — JS didn't re-execute, DOM is stale
-    window.location.reload()
+// ── Login modal (standalone, not in any feature module) ─────────────────────
+TennisRankingSystem.prototype.showLoginModal = function () {
+  const modal = document.createElement('div')
+  modal.className = 'modal'
+  modal.innerHTML = `
+    <div class="modal-content">
+      <h2>🔐 Đăng nhập quản trị</h2>
+      <form id="loginForm">
+        <div class="form-group"><label for="loginUsername">Tên đăng nhập:</label><input type="text" id="loginUsername" required></div>
+        <div class="form-group"><label for="loginPassword">Mật khẩu:</label><input type="password" id="loginPassword" required></div>
+        <div class="form-actions"><button type="submit">Đăng nhập</button><button type="button" id="cancelLogin">Hủy</button></div>
+      </form>
+      <div id="loginError" class="error-message"></div>
+    </div>`
+  document.body.appendChild(modal)
+  document.getElementById('loginForm').addEventListener('submit', async (e) => {
+    e.preventDefault()
+    const result = await this.login(document.getElementById('loginUsername').value, document.getElementById('loginPassword').value)
+    if (result.success) { document.body.removeChild(modal); this.updateFileStatus('✅ Đăng nhập thành công!', 'success') }
+    else document.getElementById('loginError').textContent = result.message
+  })
+  document.getElementById('cancelLogin').addEventListener('click', () => document.body.removeChild(modal))
+  modal.addEventListener('click', (e) => { if (e.target === modal) document.body.removeChild(modal) })
+}
+
+// ── Save season alias (seasons module uses handleSeasonFormSubmit) ───────────
+TennisRankingSystem.prototype.saveSeason = async function () {
+  const seasonId = document.getElementById('seasonId').value
+  const isEdit = !!seasonId
+  await this.handleSeasonFormSubmit(isEdit, isEdit ? parseInt(seasonId) : null)
+}
+
+// ================================================================================
+// Boot
+// ================================================================================
+document.addEventListener('DOMContentLoaded', () => {
+  // Already handled in constructor via DOMContentLoaded wait
+  // This is a safety net for direct script inclusion
+  if (!window.__tennisApp) {
+    window.__tennisApp = new TennisRankingSystem()
   }
 })
+
+// Immediate init (constructor handles DOMContentLoaded wait internally)
+if (!document.readyState.includes('loading')) {
+  window.__tennisApp = new TennisRankingSystem()
+}

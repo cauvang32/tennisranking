@@ -127,7 +127,7 @@ export const createSeasonRouter = ({
         return
       }
 
-      await db.updateSeason(seasonId, name, startDate, endDate, autoEnd, description, loseMoneyPerLoss)
+      await db.updateSeason(seasonId, name, startDate, endDate, autoEnd, description, loseMoneyPerLoss, null)
       await rankingsCache.invalidateOnSeasonChange()
       res.json({ success: true, message: 'Season updated successfully' })
     })
@@ -307,7 +307,7 @@ export const createSeasonRouter = ({
         return
       }
       const { finalResults } = req.body
-      await db.updateSeason(seasonId, season.name, season.start_date, season.end_date, season.auto_end, season.description || '', season.lose_money_per_loss, finalResults)
+      await db.updateSeason(seasonId, season.name, season.start_date, season.end_date, season.auto_end, season.description || '', season.lose_money_per_loss ?? null, finalResults ?? null)
       await rankingsCache.invalidateOnSeasonChange()
       res.json({ success: true, message: 'Final results updated' })
     })

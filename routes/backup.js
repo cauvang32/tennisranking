@@ -1,7 +1,7 @@
 import { Router } from 'express'
 import express from 'express'
 import crypto from 'crypto'
-import bcrypt from 'bcryptjs'
+import bcrypt from 'bcrypt'
 import { body } from 'express-validator'
 import config from '../config/env.js'
 

@@ -5,7 +5,7 @@
  */
 import { Router } from 'express'
 import { body } from 'express-validator'
-import bcrypt from 'bcryptjs'
+import bcrypt from 'bcrypt'
 import crypto from 'crypto'
 import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
@@ -26,7 +26,8 @@ export const createInlineAuthRouter = ({
   authLimiter,
   refreshLimiter,
   loginLimiter,
-  handleValidationErrors
+  handleValidationErrors,
+  invalidateTokenVersionCache
 }) => {
   const router = Router()
 
@@ -153,6 +154,8 @@ export const createInlineAuthRouter = ({
         // Increment token_version for DB users to revoke all existing tokens
         if (req.user?.id && typeof db.incrementTokenVersion === 'function') {
           try { await db.incrementTokenVersion(req.user.id) } catch { /* best-effort */ }
+          // S5: Invalidate token version cache so next auth check sees the new version
+          if (invalidateTokenVersionCache) invalidateTokenVersionCache(req.user.id)
         }
       }
       // Nuclear option: force browser to destroy all cookies for this site

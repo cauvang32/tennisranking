@@ -14,7 +14,11 @@
     "prefer-const": "warn",
     "no-var": "error",
     "eqeqeq": ["warn", "always"],
-    "no-throw-literal": "error"
+    "no-throw-literal": "error",
+    "no-eval": "error",
+    "no-implied-eval": "error",
+    "no-new-func": "error",
+    "no-return-await": "warn"
   },
   "ignorePatterns": ["dist/", "node_modules/", "*.min.js"]
 }

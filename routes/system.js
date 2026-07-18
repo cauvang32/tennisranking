@@ -22,8 +22,11 @@ export const createSystemRouter = ({
 }) => {
   const router = Router()
   const SUBPATH = config.subpath
-  // L2: Compute once at module scope — config.maxSseClients is static at startup
-  const MAX_SSE_PER_IP = Math.max(10, Math.floor(config.maxSseClients / 50))
+  // O8: Per-IP SSE limit — allow up to 20% of total capacity per IP,
+  // minimum 5 (enough for mobile + desktop + tablet), maximum 50.
+  // With 200 total slots: 40 per IP → ~5 concurrent IPs at max, or
+  // 20+ IPs at lower usage. Prevents a single client from monopolizing.
+  const MAX_SSE_PER_IP = Math.max(5, Math.min(50, Math.floor(config.maxSseClients / 5)))
 
   // ── CSRF token endpoint ───────────────────────────────────────────────────
   router.get('/api/csrf-token', (req, res) => {

@@ -4,6 +4,7 @@ import crypto from 'crypto'
 
 import { UAParser } from 'ua-parser-js'
 import fs from 'fs'
+import fsPromises from 'fs/promises'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { dirname } from 'path'
@@ -399,9 +400,8 @@ export function logAccess(req, res, responseTime, user = null) {
   // Also log to console in development mode with simplified format
   if (process.env.NODE_ENV === 'development') {
     const userInfo = user ? `${user.username}(${user.role})` : 'anonymous'
-    const geoInfo = logEntry.geo ? `${logEntry.geo.country} (${logEntry.geo.countryName})` : 'local'
     const ipInfo = logEntry.clientIPFormatted || logEntry.clientIP
-    console.log(`🌐 ${logEntry.method} ${logEntry.path} | ${ipInfo} (${geoInfo}) | ${userInfo} | ${logEntry.statusCode} | ${responseTime}ms`)
+    console.log(`🌐 ${logEntry.method} ${logEntry.path} | ${ipInfo} | ${userInfo} | ${logEntry.statusCode} | ${responseTime}ms`)
     
     // Log detailed IP detection info occasionally for debugging (~10% of requests)
     if (crypto.randomInt(100) < 10) {
@@ -444,6 +444,8 @@ export function logError(error, req = null, user = null) {
 }
 
 // Get log statistics (for admin dashboard)
+// S6: Use async file reading to avoid blocking the event loop.
+// With 30 days of rotated logs, sync read could block for hundreds of ms.
 export async function getLogStats(hours = 24) {
   try {
     const logFile = path.join(logsDir, 'access.log')
@@ -455,14 +457,19 @@ export async function getLogStats(hours = 24) {
         topPaths: [],
         userRequests: 0,
         anonymousRequests: 0,
-        statusCodes: {},
-        browsers: {},
-        countries: {}
+        statusCodes: {}
       }
     }
 
-    // Parse the last N lines of the log file for real-time stats.
-    const lines = fs.readFileSync(logFile, 'utf8').split('\n').filter(Boolean)
+    // S6: Async read — non-blocking. Limit to last 100KB to cap memory usage.
+    const stat = await fsPromises.stat(logFile)
+    const start = Math.max(0, stat.size - 102400) // last 100KB
+    const fd = await fsPromises.open(logFile, 'r')
+    const buffer = Buffer.alloc(stat.size - start)
+    await fd.read(buffer, 0, buffer.length, start)
+    await fd.close()
+
+    const lines = buffer.toString('utf8').split('\n').filter(Boolean)
     const cutoff = Date.now() - hours * 60 * 60 * 1000
 
     // Parse log entries for the time window; skip malformed or out-of-window lines.
@@ -516,9 +523,7 @@ export async function getLogStats(hours = 24) {
       topPaths,
       userRequests,
       anonymousRequests,
-      statusCodes,
-      browsers: {},
-      countries: {}
+      statusCodes
     }
   } catch (error) {
     logError(error)

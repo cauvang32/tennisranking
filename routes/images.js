@@ -4,6 +4,7 @@ import { body, param, query } from 'express-validator'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
+import fsPromises from 'fs/promises'
 import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
 
@@ -44,11 +45,15 @@ const imageUpload = multer({
   storage: imageStorage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
   fileFilter: (_req, file, cb) => {
-    const allowed = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml']
+    // SECURITY (S1): SVG removed — SVG files can contain embedded <script> tags
+    // or event handlers (onload/onerror) that execute in the browser context of
+    // the serving domain. This is a stored XSS vector. OWASP 2026 Top 10 A05.
+    // Only allow raster image formats that cannot contain executable content.
+    const allowed = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
     if (allowed.includes(file.mimetype)) {
       cb(null, true)
     } else {
-      cb(new Error('Invalid image type. Only PNG, JPEG, WebP, GIF, SVG allowed.'))
+      cb(new Error('Invalid image type. Only PNG, JPEG, WebP, GIF allowed.'))
     }
   }
 })
@@ -144,13 +149,11 @@ export const createImageRouter = ({
 
       const { altText = '' } = req.body || {}
 
-      // Delete old file if replacing
+      // Delete old file if replacing (P6: async to avoid blocking event loop)
       const existing = await db.getSiteImageByKey(key)
       if (existing && existing.storage_path) {
         const oldPath = join(__dirname, '..', existing.storage_path)
-        if (fs.existsSync(oldPath)) {
-          fs.unlinkSync(oldPath)
-        }
+        try { await fsPromises.unlink(oldPath) } catch { /* file may already be gone */ }
       }
 
       const storagePath = req.file.path.replace(
@@ -218,10 +221,10 @@ export const createImageRouter = ({
         res.status(404).json({ error: `Image "${key}" not found` })
         return
       }
-      // Delete old file
+      // Delete old file (P6: async to avoid blocking event loop)
       if (image.storage_path) {
         const oldPath = join(__dirname, '..', image.storage_path)
-        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath)
+        try { await fsPromises.unlink(oldPath) } catch { /* file may already be gone */ }
       }
       // Set is_active to false AND clear storage_path so the placeholder is shown
       await db.query(`UPDATE site_images SET is_active = false, storage_path = NULL, updated_at = NOW() WHERE key = $1`, [key])
@@ -313,10 +316,10 @@ export const createImageRouter = ({
         return
       }
 
-      // Delete old file
+      // Delete old file (P6: async to avoid blocking event loop)
       if (season.conclusion_image_path) {
         const oldPath = join(__dirname, '..', season.conclusion_image_path)
-        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath)
+        try { await fsPromises.unlink(oldPath) } catch { /* file may already be gone */ }
       }
 
       await db.deleteSeasonConclusionImage(seasonId)

@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { body, param } from 'express-validator'
-import bcrypt from 'bcryptjs'
+import bcrypt from 'bcrypt'
 import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
 
@@ -11,7 +11,8 @@ export const createAuthRouter = ({
   handleValidationErrors,
   conditionalRateLimit,
   createLimiter,
-  sanitizeResponse
+  sanitizeResponse,
+  invalidateTokenVersionCache
 }) => {
   const router = Router()
   // Use centralized bcrypt rounds from config (OWASP recommended: 14 rounds)
@@ -200,7 +201,10 @@ export const createAuthRouter = ({
         receiveMatchNotifications,
         receiveSeasonNotifications
       })
-      
+
+      // S5: Invalidate token version cache so next auth check sees the new version
+      if (invalidateTokenVersionCache) invalidateTokenVersionCache(userId)
+
       res.json(sanitizeResponse({
         success: true,
         message: 'User updated successfully',
@@ -232,7 +236,10 @@ export const createAuthRouter = ({
       
       const passwordHash = await bcrypt.hash(password, SALT_ROUNDS)
       await db.updateUserPassword(userId, passwordHash)
-      
+
+      // S5: Invalidate token version cache (password change may trigger token revocation)
+      if (invalidateTokenVersionCache) invalidateTokenVersionCache(userId)
+
       res.json({
         success: true,
         message: 'Password updated successfully'
@@ -256,7 +263,10 @@ export const createAuthRouter = ({
       }
       
       await db.deleteUser(userId)
-      
+
+      // S5: Invalidate token version cache so next auth check sees the deleted user
+      if (invalidateTokenVersionCache) invalidateTokenVersionCache(userId)
+
       res.json({
         success: true,
         message: 'User deleted successfully'

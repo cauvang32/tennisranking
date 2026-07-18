@@ -10,10 +10,13 @@
  * Runs identically under: bare-metal node, PM2 cluster, or Docker.
  */
 
-// Raise global maxListeners to prevent ioredis socket warnings.
-// Each in-flight Redis command adds a 'timeout' listener to the underlying
-// TCP socket. Under concurrent load, 10+ commands exceed Node's default=10.
+// O4: Set maxListeners on the global default to 100 to prevent ioredis socket
+// warnings (each in-flight Redis command adds a 'timeout' listener). Scoped to
+// the global default rather than per-instance to cover all Redis connections.
+// In a production app with many EventEmitters, this could mask real leaks —
+// but for this small app surface, the trade-off is acceptable.
 import { EventEmitter } from 'events'
+EventEmitter.initAsyncHooks = undefined // suppress deprecation warning
 EventEmitter.defaultMaxListeners = 100
 
 import express from 'express'
@@ -22,7 +25,7 @@ import { dirname, join } from 'path'
 import cors from 'cors'
 import helmet from 'helmet'
 import jwt from 'jsonwebtoken'
-import bcrypt from 'bcryptjs'
+import bcrypt from 'bcrypt'
 import cookieParser from 'cookie-parser'
 import { validationResult } from 'express-validator'
 
@@ -39,7 +42,7 @@ import {
   createLimiter, deleteLimiter, exportLimiter, criticalLimiter, restoreLimiter,
   strictRestoreLimiter, loginLimiter, deviceRegisterLimiter, cspReportLimiter
 } from './middleware/rate-limiter.js'
-import { buildAuthMiddleware } from './middleware/auth.js'
+import { buildAuthMiddleware, invalidateTokenVersionCache } from './middleware/auth.js'
 import { createTimeoutMiddleware } from './utils/async-handler.js'
 import RedisCache from './lib/redis-cache.js'
 import TennisDatabase from './database-postgresql.js'
@@ -353,20 +356,42 @@ if (!isDevelopment) {
   }))
   console.log(`📁 Static files served from: ${SUBPATH}`)
 
-  // Serve uploaded images with long cache headers
+  // Serve uploaded images with long cache headers + auth gate (S3).
+  // SECURITY (S3): Upload directory was publicly accessible — any uploaded
+  // file reachable via direct URL. Combined with S1 (SVG XSS), this allowed
+  // anonymous attackers to execute scripts in the app's domain context.
+  // Now requires authentication (checkAuth) before serving.
+  app.use('/uploads', (req, res, next) => {
+    if (req.isAuthenticated) return next()
+    // Not authenticated — reject with 401 (not 403, per OWASP guidance)
+    res.status(401).json({ error: 'Authentication required to access uploads' })
+  })
   app.use('/uploads', express.static(join(__dirname, 'data/uploads'), {
     maxAge: '365d',
-    setHeaders: (res, path) => {
-      res.setHeader('X-Content-Type-Options', 'nosniff')
+    setHeaders: (res, filePath) => {
+      // SECURITY: Block SVG execution even if file exists (defense-in-depth).
+      // An SVG uploaded before this fix was applied could still be on disk.
+      if (filePath.toLowerCase().endsWith('.svg')) {
+        res.setHeader('Content-Type', 'text/plain')
+      } else {
+        res.setHeader('X-Content-Type-Options', 'nosniff')
+      }
     }
   }))
-  console.log('📁 Upload directory served at /uploads')
+  console.log('📁 Upload directory served at /uploads (auth-gated)')
 } else {
   console.log('🚧 Development mode: Static files handled by Vite')
-  // Serve uploads in dev too
+  // Serve uploads in dev too (auth-gated in production, open in dev)
   app.use('/uploads', express.static(join(__dirname, 'data/uploads'), {
     maxAge: '0',
-    setHeaders: (res, path) => { res.setHeader('X-Content-Type-Options', 'nosniff') }
+    setHeaders: (res, filePath) => {
+      // SECURITY (S3): Block SVG execution even in dev (defense-in-depth)
+      if (filePath.toLowerCase().endsWith('.svg')) {
+        res.setHeader('Content-Type', 'text/plain')
+      } else {
+        res.setHeader('X-Content-Type-Options', 'nosniff')
+      }
+    }
   }))
 }
 
@@ -497,6 +522,8 @@ const routeCtx = {
   strictRestoreLimiter, cspReportLimiter,
   deviceRegisterLimiter,
   handleValidationErrors, sanitizeResponse, formatSecureTimestamp,
+  // S5: Invalidate token version cache when user is modified/deleted
+  invalidateTokenVersionCache,
   // Auth helpers for inline routes
   hashedAdminPassword, hashedEditorPassword,
   generateToken, generateRefreshToken, readToken, verifyToken,
@@ -529,7 +556,8 @@ app.use(createInlineAuthRouter({
   db, checkAuth, hashedAdminPassword, hashedEditorPassword,
   generateToken, generateRefreshToken, readToken, verifyToken,
   withCookieDefaults, clearCookieAllPaths, deriveCSRFSecretFromUser, tokens,
-  authLimiter, refreshLimiter, loginLimiter, handleValidationErrors
+  authLimiter, refreshLimiter, loginLimiter, handleValidationErrors,
+  invalidateTokenVersionCache
 }))
 
 // Legacy play-dates routes (frontend calls /api/play-dates directly)

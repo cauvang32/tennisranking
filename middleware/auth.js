@@ -1,6 +1,41 @@
 import config from '../config/env.js'
 import { readToken, verifyToken } from '../lib/jwt-encryption.js'
 
+// S5: LRU cache for tokenVersion lookups.
+// The JWT payload already carries tokenVersion — the DB check is only needed
+// for server-side revocation (user deleted, tokens invalidated). Caching the
+// "not-revoked" result for 30s eliminates per-request DB hits while keeping
+// revocation latency bounded. Map iteration order = insertion order for LRU.
+const TOKEN_VERSION_CACHE_MAX = 200
+const TOKEN_VERSION_CACHE_TTL = 30_000 // 30 seconds — revocation is near-real-time
+const tokenVersionCache = new Map()
+
+function getCachedTokenVersion(user) {
+  if (!user?.id) return null
+  const key = `tv:${user.id}`
+  const entry = tokenVersionCache.get(key)
+  if (entry && Date.now() - entry.ts < TOKEN_VERSION_CACHE_TTL) {
+    return entry.value // cached value (null = user deleted, number = version)
+  }
+  // Evict LRU entry when cache is full
+  if (tokenVersionCache.size >= TOKEN_VERSION_CACHE_MAX) {
+    const oldest = tokenVersionCache.keys().next().value
+    tokenVersionCache.delete(oldest)
+  }
+  return undefined // not cached — will be fetched from DB below
+}
+
+function setCachedTokenVersion(user, value) {
+  if (!user?.id) return
+  tokenVersionCache.set(`tv:${user.id}`, { value, ts: Date.now() })
+}
+
+function invalidateTokenVersionCache(userId) {
+  if (userId) tokenVersionCache.delete(`tv:${userId}`)
+}
+
+export { invalidateTokenVersionCache }
+
 export const buildAuthMiddleware = ({
   jwt,
   security,
@@ -35,10 +70,16 @@ export const buildAuthMiddleware = ({
         return res.status(401).json({ error: 'Invalid token type' })
       }
 
-      // Server-side token revocation check for database users
-      // System users (env-based admin/editor) don't have a DB id, skip this check
+      // Server-side token revocation check for database users.
+      // S5: Use LRU cache to avoid per-request DB hits. Cache "not-revoked"
+      // for 30s — revocation latency is bounded, DB load is dramatically reduced.
+      // System users (env-based admin/editor) don't have a DB id, skip this check.
       if (user.id && db && typeof db.getTokenVersion === 'function') {
-        const currentVersion = await db.getTokenVersion(user.id)
+        let currentVersion = getCachedTokenVersion(user)
+        if (currentVersion === undefined) {
+          currentVersion = await db.getTokenVersion(user.id)
+          setCachedTokenVersion(user, currentVersion)
+        }
         // null = user deleted from DB
         if (currentVersion === null) {
           clearCookieAllPaths(res, 'authToken')
@@ -82,9 +123,14 @@ export const buildAuthMiddleware = ({
           return next()
         }
 
-        // Server-side token revocation check (same as authenticateToken)
+        // Server-side token revocation check (same as authenticateToken).
+        // S5: Use LRU cache to avoid per-request DB hits.
         if (user.id && db && typeof db.getTokenVersion === 'function') {
-          const currentVersion = await db.getTokenVersion(user.id)
+          let currentVersion = getCachedTokenVersion(user)
+          if (currentVersion === undefined) {
+            currentVersion = await db.getTokenVersion(user.id)
+            setCachedTokenVersion(user, currentVersion)
+          }
           // null = user deleted from DB
           if (currentVersion === null || (typeof user.tokenVersion === 'number' && user.tokenVersion !== currentVersion)) {
             if (!res.headersSent) {

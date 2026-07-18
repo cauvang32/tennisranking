@@ -11,7 +11,6 @@ export function createScreenshotModule(ctx) {
     players,
     seasons,
     playDates,
-    user,
     escapeHtml,
     showToast,
     makeAuthenticatedRequest,
@@ -22,6 +21,8 @@ export function createScreenshotModule(ctx) {
     renderMatchHistory,
     updateDateSelector,
   } = ctx
+
+  // NOTE: ctx.user is mutable — read from ctx, not closure
 
   /** Read a file as base64 string (without data URI prefix) */
   function readFileAsBase64(file) {
@@ -395,7 +396,7 @@ export function createScreenshotModule(ctx) {
   function updateScreenshotSectionVisibility() {
     const section = document.getElementById('screenshotSection')
     if (!section) return
-    const canUse = user?.role === 'admin' || user?.role === 'editor'
+    const canUse = ctx.user?.role === 'admin' || ctx.user?.role === 'editor'
     section.style.display = canUse ? '' : 'none'
     if (!canUse) clearScreenshot()
   }

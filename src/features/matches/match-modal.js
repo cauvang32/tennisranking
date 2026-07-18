@@ -9,7 +9,6 @@ export function createMatchModalModule(ctx) {
     apiBase,
     players,
     seasons,
-    isAuthenticated,
     makeAuthenticatedRequest,
     escapeHtml,
     showToast,
@@ -21,12 +20,14 @@ export function createMatchModalModule(ctx) {
     updateDateSelector,
   } = ctx
 
+  // NOTE: ctx.isAuthenticated is mutable — read from ctx, not closure
+
   /**
    * Show the match edit modal.
    * @param {Object} match - The match object fetched from the server.
    */
   function showMatchEditModal(match) {
-    if (!isAuthenticated) {
+    if (!ctx.isAuthenticated) {
       showToast('Cần đăng nhập để sửa trận đấu', 'error')
       return
     }

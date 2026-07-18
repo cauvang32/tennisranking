@@ -183,10 +183,11 @@ export function getApiBaseUrl() {
 
 /**
  * Update UI elements based on authentication status.
- * @param {boolean} isAuthenticated
- * @param {object|null} user
+ * @param {object} app - App instance with isAuthenticated and user properties
  */
-export function updateUIForAuthStatus(isAuthenticated, user) {
+export function updateUIForAuthStatus(app) {
+  const isAuthenticated = app.isAuthenticated ?? false
+  const user = app.user ?? null
   const userRole = user?.role || null
 
   if (isAuthenticated) {

@@ -6,12 +6,14 @@ import { normalizeText } from '../../lib/vietnamese-normalize.js'
 
 export function createMatchesModule(ctx) {
   const {
-    apiBase, isAuthenticated, seasons, players, matches, currentMatchType,
-    currentWinningTeam, isManualWinnerMode, user,
+    apiBase, seasons, players, matches, currentMatchType,
+    currentWinningTeam, isManualWinnerMode,
     escapeHtml, formatDate, formatMoney, showToast,
     invalidateCache, loadMatches, loadPlayDates, renderRankings, getCache, setCache,
     setTodaysDate, updateTeamLabelsForMatchType,
   } = ctx
+
+  // NOTE: ctx.isAuthenticated and ctx.user are mutable — read from ctx, not closure
 
   /** Render match history table (only if matches tab is active) */
   async function renderMatchHistory() {
@@ -54,7 +56,7 @@ export function createMatchesModule(ctx) {
       console.error('Error loading matches:', error)
     }
 
-    const canEdit = isAuthenticated && (user?.role === 'admin' || user?.role === 'editor')
+    const canEdit = ctx.isAuthenticated && (ctx.user?.role === 'admin' || ctx.user?.role === 'editor')
     const winnerBadge = `<svg class="winner-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z"/></svg>`
 
     tableBody.innerHTML = matchList.length === 0
@@ -113,7 +115,7 @@ export function createMatchesModule(ctx) {
 
   /** Record a single match via the form */
   async function recordMatch() {
-    if (!isAuthenticated) { showToast('Cần đăng nhập để ghi nhận kết quả', 'error'); return }
+    if (!ctx.isAuthenticated) { showToast('Cần đăng nhập để ghi nhận kết quả', 'error'); return }
 
     const playDate = document.getElementById('matchDate')?.value
     const matchType = currentMatchType || 'duo'
@@ -186,7 +188,7 @@ export function createMatchesModule(ctx) {
 
   /** Edit match — fetch data and show modal */
   async function editMatch(matchId) {
-    if (!isAuthenticated) { showToast('Cần đăng nhập để sửa trận đấu', 'error'); return }
+    if (!ctx.isAuthenticated) { showToast('Cần đăng nhập để sửa trận đấu', 'error'); return }
     try {
       const response = await fetch(`${apiBase}/matches/${matchId}`, { credentials: 'include' })
       if (!response.ok) { showToast('Không tìm thấy trận đấu', 'error'); return }
@@ -200,7 +202,7 @@ export function createMatchesModule(ctx) {
 
   /** Delete match with confirmation */
   async function deleteMatch(matchId) {
-    if (!isAuthenticated) { showToast('Cần đăng nhập để xóa trận đấu', 'error'); return }
+    if (!ctx.isAuthenticated) { showToast('Cần đăng nhập để xóa trận đấu', 'error'); return }
 
     const matchInfo = matches.find(m => m.id === matchId)
     const confirmMsg = `Bạn có chắc chắn muốn xóa trận đấu này?\n\n` +

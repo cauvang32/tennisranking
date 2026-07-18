@@ -190,19 +190,23 @@ export function createMatchModalModule(ctx) {
     })
 
     // Close on backdrop click
-    modal.querySelector('.modal-backdrop').addEventListener('click', () => {
-      closeModal()
-    })
+    modal.querySelector('.modal-backdrop').addEventListener('click', () => closeModal())
 
     // Close button handler
-    document.getElementById('closeEditModal').addEventListener('click', () => {
-      closeModal()
-    })
+    document.getElementById('closeEditModal').addEventListener('click', () => closeModal())
 
     // Cancel button handler
-    document.getElementById('cancelEditMatch').addEventListener('click', () => {
-      closeModal()
-    })
+    document.getElementById('cancelEditMatch').addEventListener('click', () => closeModal())
+
+    /** Remove this modal from the DOM with fade-out animation */
+    function closeModal() {
+      modal.classList.remove('show')
+      setTimeout(() => {
+        if (modal.parentNode) {
+          document.body.removeChild(modal)
+        }
+      }, 200)
+    }
 
     // Form submit handler
     document.getElementById('editMatchForm').addEventListener('submit', async (e) => {
@@ -292,16 +296,6 @@ export function createMatchModalModule(ctx) {
         errorDiv.textContent = 'Lỗi kết nối khi cập nhật trận đấu'
       }
     })
-  }
-
-  /** Remove the modal from the DOM with fade-out animation */
-  function closeModal() {
-    modal.classList.remove('show')
-    setTimeout(() => {
-      if (modal.parentNode) {
-        document.body.removeChild(modal)
-      }
-    }, 200)
   }
 
   return { showMatchEditModal }

@@ -5,7 +5,7 @@
  * This is the largest feature module. It covers:
  * 1. Cup list view with cards
  * 2. Cup detail view with participants, action buttons, bracket visualization
- * 3. Create cup modal (reuses loginModal DOM element)
+ * 3. Create cup modal (uses dedicated #cupsModal)
  * 4. Add participants modal with search, select all/deselect all, clickable cards
  * 5. Edit cup modal
  * 6. Bracket rendering with round labels (Chung kết, Bán kết, Tứ kết)
@@ -21,9 +21,14 @@ export function createCupsModule(ctx) {
     escapeHtml,
     formatDate,
     showToast,
+    showModal,
     hideModal,
     makeAuthenticatedRequest,
   } = ctx
+
+  // Dedicated modal for cups — never hijack #loginModal
+  const CUPS_MODAL = 'cupsModal'
+  const CUPS_MODAL_CONTENT = 'cupsModalContent'
 
   // ── DOM setup / event wiring ──────────────────────────────────────────
 
@@ -446,18 +451,9 @@ export function createCupsModule(ctx) {
           ? seasonsPayload.data
           : []
 
-      const modal = document.getElementById('loginModal')
-      if (!modal) return // fallback: use confirm
-
-      // Reuse modal pattern
-      const content = modal.querySelector('.modal-content') || modal.querySelector('[class*="modal"]')
+      const content = document.getElementById(CUPS_MODAL_CONTENT)
       if (!content) return
 
-      const prevContent = content.innerHTML
-      const modalTitle = modal.querySelector('.modal-title')
-      const prevTitle = modalTitle ? modalTitle.textContent : ''
-
-      if (modalTitle) modalTitle.textContent = '🏆 Tạo Giải Đấu Cúp'
       content.innerHTML = `
       <div class="modal-header">
         <h3 class="modal-title">🏆 Tạo Giải Đấu Cúp</h3>
@@ -504,9 +500,8 @@ export function createCupsModule(ctx) {
       </div>
     `
 
-      // Show modal
-      modal.classList.add('active')
-      modal.style.display = 'flex'
+      // Show modal using standard helper
+      showModal(CUPS_MODAL)
 
       // Handle submit
       const form = content.querySelector('#createCupForm')
@@ -514,11 +509,8 @@ export function createCupsModule(ctx) {
         form.addEventListener('submit', async (e) => {
           e.preventDefault()
           const result = await createCup(players)
-          // Restore modal
-          content.innerHTML = prevContent
-          if (modalTitle) modalTitle.textContent = prevTitle
           if (!result) return // createCup already showed error; keep modal open
-          hideModal('loginModal')
+          hideModal(CUPS_MODAL)
         })
       }
     } catch (error) {
@@ -601,16 +593,9 @@ export function createCupsModule(ctx) {
   }
 
   async function showAddParticipantsModal(cupId, players, maxTeams, existingPlayerIds = new Set(), existingParticipants = []) {
-    const modal = document.getElementById('loginModal')
-    if (!modal) return
-    const content = modal.querySelector('.modal-content') || modal.querySelector('[class*="modal"]')
+    const content = document.getElementById(CUPS_MODAL_CONTENT)
     if (!content) return
 
-    const prevContent = content.innerHTML
-    const modalTitle = modal.querySelector('.modal-title')
-    const prevTitle = modalTitle ? modalTitle.textContent : ''
-
-    if (modalTitle) modalTitle.textContent = '👥 Thêm Người Tham Gia'
     content.innerHTML = `
       <div class="modal-header">
         <h3 class="modal-title">👥 Thêm Người Tham Gia</h3>
@@ -649,8 +634,7 @@ export function createCupsModule(ctx) {
       </div>
     `
 
-    modal.classList.add('active')
-    modal.style.display = 'flex'
+    showModal(CUPS_MODAL)
 
     // Store selected player IDs in a Set for easy management
     // Pre-select existing participants
@@ -782,7 +766,7 @@ export function createCupsModule(ctx) {
       }
 
       // Close modal and show cup detail
-      hideModal('loginModal')
+      hideModal(CUPS_MODAL)
       await showCupDetail(cupId)
     } catch (error) {
       showToast('Lỗi khi cập nhật người tham gia', 'error')
@@ -823,15 +807,9 @@ export function createCupsModule(ctx) {
           ? seasonsPayload.data
           : []
 
-      const modal = document.getElementById('loginModal')
-      if (!modal) return
-      const content = modal.querySelector('.modal-content') || modal.querySelector('[class*="modal"]')
+      const content = document.getElementById(CUPS_MODAL_CONTENT)
       if (!content) return
-      const prevContent = content.innerHTML
-      const modalTitle = modal.querySelector('.modal-title')
-      const prevTitle = modalTitle ? modalTitle.textContent : ''
 
-      if (modalTitle) modalTitle.textContent = '✏️ Sửa Giải Đấu'
       content.innerHTML = `
         <div class="modal-header">
           <h3 class="modal-title">✏️ Sửa Giải Đấu</h3>
@@ -871,18 +849,15 @@ export function createCupsModule(ctx) {
         </div>
       `
 
-      modal.classList.add('active')
-      modal.style.display = 'flex'
+      showModal(CUPS_MODAL)
 
       const form = content.querySelector('#editCupForm')
       if (form) {
         form.addEventListener('submit', async (e) => {
           e.preventDefault()
           const result = await updateCup(cupId)
-          content.innerHTML = prevContent
-          if (modalTitle) modalTitle.textContent = prevTitle
           if (!result) return // updateCup already showed error; keep modal open
-          hideModal('loginModal')
+          hideModal(CUPS_MODAL)
         })
       }
     } catch (error) {

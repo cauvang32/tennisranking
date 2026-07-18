@@ -786,30 +786,29 @@ TennisRankingSystem.prototype.updateTeamLabelsForMatchType = function () {
   }
 }
 
-// ── Login modal (standalone, not in any feature module) ─────────────────────
+// ── Login modal (uses existing #loginModal from HTML) ───────────────────
 TennisRankingSystem.prototype.showLoginModal = function () {
-  const modal = document.createElement('div')
-  modal.className = 'modal show'
-  modal.innerHTML = `
-    <div class="modal-backdrop"></div>
-    <div class="modal-content">
-      <h2>🔐 Đăng nhập quản trị</h2>
-      <form id="loginForm">
-        <div class="form-group"><label for="loginUsername">Tên đăng nhập:</label><input type="text" id="loginUsername" required></div>
-        <div class="form-group"><label for="loginPassword">Mật khẩu:</label><input type="password" id="loginPassword" required></div>
-        <div class="form-actions"><button type="submit">Đăng nhập</button><button type="button" id="cancelLogin">Hủy</button></div>
-      </form>
-      <div id="loginError" class="error-message"></div>
-    </div>`
-  document.body.appendChild(modal)
-  document.getElementById('loginForm').addEventListener('submit', async (e) => {
-    e.preventDefault()
-    const result = await this.login(document.getElementById('loginUsername').value, document.getElementById('loginPassword').value)
-    if (result.success) { document.body.removeChild(modal); this.updateFileStatus('✅ Đăng nhập thành công!', 'success') }
-    else document.getElementById('loginError').textContent = result.message
-  })
-  document.getElementById('cancelLogin').addEventListener('click', () => document.body.removeChild(modal))
-  modal.querySelector('.modal-backdrop').addEventListener('click', () => document.body.removeChild(modal))
+  showModal('loginModal')
+  // Wire submit handler (modal is reused, attach once)
+  const form = document.getElementById('loginForm')
+  if (form) {
+    // Remove old listener if exists (clone node to reset listeners)
+    const newForm = form.cloneNode(true)
+    form.parentNode.replaceChild(newForm, form)
+    newForm.addEventListener('submit', async (e) => {
+      e.preventDefault()
+      const result = await this.login(
+        document.getElementById('loginUsername').value,
+        document.getElementById('loginPassword').value
+      )
+      if (result.success) {
+        hideModal('loginModal')
+        this.updateFileStatus('✅ Đăng nhập thành công!', 'success')
+      } else {
+        document.getElementById('loginError').textContent = result.message
+      }
+    })
+  }
 }
 
 // ── Save season alias (seasons module uses handleSeasonFormSubmit) ───────────

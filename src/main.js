@@ -789,8 +789,9 @@ TennisRankingSystem.prototype.updateTeamLabelsForMatchType = function () {
 // ── Login modal (standalone, not in any feature module) ─────────────────────
 TennisRankingSystem.prototype.showLoginModal = function () {
   const modal = document.createElement('div')
-  modal.className = 'modal'
+  modal.className = 'modal show'
   modal.innerHTML = `
+    <div class="modal-backdrop"></div>
     <div class="modal-content">
       <h2>🔐 Đăng nhập quản trị</h2>
       <form id="loginForm">
@@ -808,7 +809,7 @@ TennisRankingSystem.prototype.showLoginModal = function () {
     else document.getElementById('loginError').textContent = result.message
   })
   document.getElementById('cancelLogin').addEventListener('click', () => document.body.removeChild(modal))
-  modal.addEventListener('click', (e) => { if (e.target === modal) document.body.removeChild(modal) })
+  modal.querySelector('.modal-backdrop').addEventListener('click', () => document.body.removeChild(modal))
 }
 
 // ── Save season alias (seasons module uses handleSeasonFormSubmit) ───────────

@@ -160,7 +160,7 @@ class TennisRankingSystem {
       const activeTabId = document.querySelector('.tab-content.active')?.id
       switch (activeTabId) {
         case 'rankings-tab': await this.renderRankings(); break
-        case 'matches-tab': await this.renderMatchHistory(); break
+        case 'matches-tab': this.updateMatchHistoryDateSelector(); await this.renderMatchHistory(); break
         case 'players-tab': this.renderPlayers(); break
         case 'seasons-tab': this.renderSeasons(); break
         case 'cups-tab': this.loadCups(); break
@@ -202,7 +202,7 @@ class TennisRankingSystem {
       await this.loadInitialData()
       this.updateUIForAuthStatus()
       this.switchTab('rankings')
-      this.loadHeroBanner()
+      try { this.loadHeroBanner() } catch (e) { /* ignore if unauthenticated */ }
       this.updateFileStatus('✅ Hệ thống đã sẵn sàng', 'success')
     } catch (error) {
       console.error('Error initializing system:', error)
@@ -411,15 +411,6 @@ class TennisRankingSystem {
       // Match history date filter
       const matchHistoryDate = document.getElementById('matchHistoryDate')
       if (matchHistoryDate) matchHistoryDate.addEventListener('change', () => this.renderMatchHistory())
-
-      // Login form
-      const loginForm = document.getElementById('loginForm')
-      if (loginForm) loginForm.addEventListener('submit', async (e) => {
-        e.preventDefault()
-        const result = await this.login(document.getElementById('loginUsername').value, document.getElementById('loginPassword').value)
-        if (result.success) { this.hideModal('loginModal'); this.showToast('Đăng nhập thành công!', 'success') }
-        else this.showToast(result.message, 'error')
-      })
 
       // Season form
       const seasonForm = document.getElementById('seasonForm')
@@ -747,6 +738,7 @@ TennisRankingSystem.prototype.switchTab = async function (tabName) {
         await this.loadPlayers()
         this.updatePlayerSelects()
         this.setTodaysDate()
+        this.updateMatchHistoryDateSelector()
         await this.renderMatchHistory()
         break
       case 'players': this.renderPlayers(); break

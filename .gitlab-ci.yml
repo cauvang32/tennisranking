@@ -201,9 +201,9 @@ deploy:
     - pm2 stop tennis || true
 
     # ── Rebuild & restart Docker FCM worker ───────────────────────
-    - sudo docker compose down tennis-worker || true
-    - sudo docker compose build --no-cache tennis-worker
-    - sudo docker compose up -d tennis-worker
+    #- sudo docker compose down tennis-worker || true
+    #- sudo docker compose build --no-cache tennis-worker
+    #- sudo docker compose up -d tennis-worker
 
     # ── Restart PM2 app ───────────────────────────────────────────
     - npm install --production=false

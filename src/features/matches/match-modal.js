@@ -7,8 +7,6 @@
 export function createMatchModalModule(ctx) {
   const {
     apiBase,
-    players,
-    seasons,
     makeAuthenticatedRequest,
     escapeHtml,
     showToast,
@@ -20,7 +18,7 @@ export function createMatchModalModule(ctx) {
     updateDateSelector,
   } = ctx
 
-  // NOTE: ctx.isAuthenticated is mutable — read from ctx, not closure
+  // NOTE: ctx.isAuthenticated, ctx.players, ctx.seasons are mutable — read from ctx, not closure
 
   /**
    * Show the match edit modal.
@@ -77,7 +75,7 @@ export function createMatchModalModule(ctx) {
                 Mùa giải
               </label>
               <select id="editSeasonId" required>
-                ${seasons.map(season =>
+                ${ctx.seasons.map(season =>
                   `<option value="${season.id}" ${season.id === match.season_id ? 'selected' : ''}>${escapeHtml(season.name)}</option>`
                 ).join('')}
               </select>
@@ -92,7 +90,7 @@ export function createMatchModalModule(ctx) {
               <div class="form-group">
                 <label for="editPlayer1">${isSolo ? 'Người chơi' : 'Người chơi 1'}</label>
                 <select id="editPlayer1" required>
-                  ${players.map(player =>
+                  ${ctx.players.map(player =>
                     `<option value="${player.id}" ${player.id === match.player1_id ? 'selected' : ''}>${escapeHtml(player.name)}</option>`
                   ).join('')}
                 </select>
@@ -101,7 +99,7 @@ export function createMatchModalModule(ctx) {
               <div class="form-group">
                 <label for="editPlayer2">Người chơi 2</label>
                 <select id="editPlayer2" required>
-                  ${players.map(player =>
+                  ${ctx.players.map(player =>
                     `<option value="${player.id}" ${player.id === match.player2_id ? 'selected' : ''}>${escapeHtml(player.name)}</option>`
                   ).join('')}
                 </select>
@@ -124,7 +122,7 @@ export function createMatchModalModule(ctx) {
               <div class="form-group">
                 <label for="editPlayer3">${isSolo ? 'Người chơi' : 'Người chơi 3'}</label>
                 <select id="editPlayer3" required>
-                  ${players.map(player =>
+                  ${ctx.players.map(player =>
                     `<option value="${player.id}" ${player.id === match.player3_id ? 'selected' : ''}>${escapeHtml(player.name)}</option>`
                   ).join('')}
                 </select>
@@ -133,7 +131,7 @@ export function createMatchModalModule(ctx) {
               <div class="form-group">
                 <label for="editPlayer4">Người chơi 4</label>
                 <select id="editPlayer4" required>
-                  ${players.map(player =>
+                  ${ctx.players.map(player =>
                     `<option value="${player.id}" ${player.id === match.player4_id ? 'selected' : ''}>${escapeHtml(player.name)}</option>`
                   ).join('')}
                 </select>

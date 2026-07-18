@@ -8,9 +8,6 @@
 export function createScreenshotModule(ctx) {
   const {
     apiBase,
-    players,
-    seasons,
-    playDates,
     escapeHtml,
     showToast,
     makeAuthenticatedRequest,
@@ -22,7 +19,7 @@ export function createScreenshotModule(ctx) {
     updateDateSelector,
   } = ctx
 
-  // NOTE: ctx.user is mutable — read from ctx, not closure
+  // NOTE: ctx.user, ctx.players, ctx.seasons, ctx.playDates are mutable — read from ctx, not closure
 
   /** Read a file as base64 string (without data URI prefix) */
   function readFileAsBase64(file) {
@@ -138,9 +135,9 @@ export function createScreenshotModule(ctx) {
     const container = document.getElementById('parsedCardsContainer')
     if (!container) return
 
-    const activeSeasons = (seasons || []).filter(s => s.is_active)
+    const activeSeasons = (ctx.seasons || []).filter(s => s.is_active)
     const today = new Date().toISOString().split('T')[0]
-    const latestPlayDate = playDates?.[0]?.play_date?.split('T')[0] || today
+    const latestPlayDate = ctx.playDates?.[0]?.play_date?.split('T')[0] || today
     const latestSeasonId = activeSeasons.length > 0 ? activeSeasons[0].id : null
     const seasonOptions = activeSeasons.map(s => {
       const sel = s.id === latestSeasonId ? ' selected' : ''
@@ -148,7 +145,7 @@ export function createScreenshotModule(ctx) {
     }).join('')
 
     const buildOptions = (selectedId) => {
-      const options = players.map(p => {
+      const options = ctx.players.map(p => {
         const sel = p.id === selectedId ? ' selected' : ''
         return `<option value="${p.id}"${sel}>${escapeHtml(p.name)}</option>`
       }).join('')
@@ -160,8 +157,8 @@ export function createScreenshotModule(ctx) {
       const typeLabel = isSolo ? '1v1' : '4v4'
 
       if (isSolo) {
-        const player1Id = ctx.fuzzyMatchPlayer(match.player1Name, players)
-        const player3Id = ctx.fuzzyMatchPlayer(match.player3Name, players)
+        const player1Id = ctx.fuzzyMatchPlayer(match.player1Name, ctx.players)
+        const player3Id = ctx.fuzzyMatchPlayer(match.player3Name, ctx.players)
 
         return `
           <div class="match-card parsed-match-card" data-index="${index}" data-match-type="solo">
@@ -207,11 +204,11 @@ export function createScreenshotModule(ctx) {
       // ── Duo match ──
       const team1Pair = ctx.mapTeamToPlayerPair(
         [match.player1Name, match.player2Name].filter(Boolean).join(' '),
-        players
+        ctx.players
       )
       const team2Pair = ctx.mapTeamToPlayerPair(
         [match.player3Name, match.player4Name].filter(Boolean).join(' '),
-        players
+        ctx.players
       )
 
       const team1P1 = team1Pair?.player1Id || null
@@ -224,7 +221,7 @@ export function createScreenshotModule(ctx) {
         const names = [pair.player1Id, pair.player2Id]
           .filter(id => id)
           .map(id => {
-            const p = players.find(pl => pl.id === id)
+            const p = ctx.players.find(pl => pl.id === id)
             return p ? p.name : ''
           })
           .filter(Boolean)

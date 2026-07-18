@@ -6,14 +6,14 @@ import { normalizeText } from '../../lib/vietnamese-normalize.js'
 
 export function createMatchesModule(ctx) {
   const {
-    apiBase, seasons, players, matches, currentMatchType,
-    currentWinningTeam, isManualWinnerMode,
+    apiBase,
     escapeHtml, formatDate, formatMoney, showToast,
     invalidateCache, loadMatches, loadPlayDates, renderRankings, getCache, setCache,
     setTodaysDate, updateTeamLabelsForMatchType,
   } = ctx
 
-  // NOTE: ctx.isAuthenticated and ctx.user are mutable — read from ctx, not closure
+  // NOTE: ctx.isAuthenticated, ctx.user, ctx.currentMatchType, ctx.currentWinningTeam,
+  // ctx.isManualWinnerMode, ctx.players, ctx.matches, ctx.seasons are mutable — read from ctx, not closure
 
   /** Render match history table (only if matches tab is active) */
   async function renderMatchHistory() {
@@ -118,7 +118,7 @@ export function createMatchesModule(ctx) {
     if (!ctx.isAuthenticated) { showToast('Cần đăng nhập để ghi nhận kết quả', 'error'); return }
 
     const playDate = document.getElementById('matchDate')?.value
-    const matchType = currentMatchType || 'duo'
+    const matchType = ctx.currentMatchType || 'duo'
     const seasonId = parseInt(document.getElementById('matchSeasonSelect')?.value)
     if (!seasonId) { showToast('Vui lòng chọn mùa giải', 'error'); return }
 
@@ -157,7 +157,7 @@ export function createMatchesModule(ctx) {
     }
 
     if (team1Score < 0 || team2Score < 0) { showToast('Vui lòng nhập tỷ số hợp lệ', 'error'); return }
-    if (!winningTeam && currentWinningTeam) winningTeam = currentWinningTeam
+    if (!winningTeam && ctx.currentWinningTeam) winningTeam = ctx.currentWinningTeam
     if (winningTeam !== 1 && winningTeam !== 2) { showToast('Vui lòng chọn đội thắng', 'error'); return }
 
     try {
@@ -204,7 +204,7 @@ export function createMatchesModule(ctx) {
   async function deleteMatch(matchId) {
     if (!ctx.isAuthenticated) { showToast('Cần đăng nhập để xóa trận đấu', 'error'); return }
 
-    const matchInfo = matches.find(m => m.id === matchId)
+    const matchInfo = ctx.matches.find(m => m.id === matchId)
     const confirmMsg = `Bạn có chắc chắn muốn xóa trận đấu này?\n\n` +
       (matchInfo ?
         `📅 ${formatDate(matchInfo.play_date)}\n` +
@@ -237,11 +237,11 @@ export function createMatchesModule(ctx) {
 
   /** Update player dropdowns, optionally filtered by season */
   function updatePlayerSelects() {
-    let availablePlayers = players
+    let availablePlayers = ctx.players
 
     if (ctx.selectedMatchSeason && ctx.seasonPlayers?.length > 0) {
       const allowedIds = ctx.seasonPlayers.map(p => p.player_id || p.id)
-      availablePlayers = players.filter(p => allowedIds.includes(p.id))
+      availablePlayers = ctx.players.filter(p => allowedIds.includes(p.id))
     }
 
     const options = availablePlayers.map(p => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')
@@ -263,7 +263,7 @@ export function createMatchesModule(ctx) {
     const select = document.getElementById('matchSeasonSelect')
     if (!select) return
 
-    const activeSeasons = seasons.filter(s => s.is_active)
+    const activeSeasons = ctx.seasons.filter(s => s.is_active)
     const options = activeSeasons.map(s => {
       const endStr = s.end_date ? ` (Kết thúc: ${formatDate(s.end_date)})` : ''
       const moneyStr = s.lose_money_per_loss ? ` - ${formatMoney(s.lose_money_per_loss)}/thua` : ''
@@ -296,7 +296,7 @@ export function createMatchesModule(ctx) {
       const response = await fetch(`${apiBase}/seasons/${seasonId}/players`)
       let seasonPlayers = []
       if (response.ok) seasonPlayers = await response.json()
-      if (seasonPlayers.length === 0) seasonPlayers = players
+      if (seasonPlayers.length === 0) seasonPlayers = ctx.players
 
       ctx.currentSeasonPlayers = seasonPlayers
       ctx.selectedMatchSeason = seasonId
@@ -308,11 +308,11 @@ export function createMatchesModule(ctx) {
         if (select) { select.disabled = false; select.innerHTML = `<option value="">Chọn người chơi...</option>${options}` }
       })
 
-      const selectedSeason = seasons.find(s => s.id === seasonId)
+      const selectedSeason = ctx.seasons.find(s => s.id === seasonId)
       if (selectedSeason) {
         const infoEl = document.getElementById('selectedSeasonInfo')
         if (infoEl) {
-          const count = seasonPlayers.length !== players.length
+          const count = seasonPlayers.length !== ctx.players.length
             ? `${seasonPlayers.length} người chơi được phép`
             : 'Tất cả người chơi'
           const money = selectedSeason.lose_money_per_loss ?? 20000
@@ -364,7 +364,7 @@ export function createMatchesModule(ctx) {
 
   /** Auto-winner detection based on scores */
   function updateAutoWinner() {
-    if (isManualWinnerMode) return
+    if (ctx.isManualWinnerMode) return
 
     const team1Score = parseInt(document.getElementById('team1Score')?.value) || 0
     const team2Score = parseInt(document.getElementById('team2Score')?.value) || 0

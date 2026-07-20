@@ -481,8 +481,57 @@ export const createCupRouter = ({
         return res.status(400).json({ error: 'Cup must be in_progress to update scores' })
       }
 
+      const matchInfo = await db.getCupMatchById(matchId, cupId)
+      if (!matchInfo) return res.status(404).json({ error: 'Match not found' })
+      if (matchInfo.status === 'locked') {
+        return res.status(400).json({ error: 'Vòng này đã được khóa — không thể chỉnh sửa' })
+      }
+
+      // Check if all previous rounds are completed
+      if (matchInfo.round_number > 1) {
+        const prevRoundComplete = await db.areAllMatchesInRoundCompleted(cupId, matchInfo.round_number - 1)
+        if (!prevRoundComplete) {
+          return res.status(400).json({ error: 'Chưa thể ghi điểm — vòng trước chưa hoàn thành' })
+        }
+      }
+
       const { team1Score, team2Score } = req.body
       const result = await db.updateCupMatchScore(cupId, matchId, team1Score, team2Score)
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
+      await rankingsCache.invalidateByPrefix('cups*')
+      await rankingsCache.incrementVersion()
+
+      res.json({ success: true, ...result })
+    })
+  )
+
+  // Reset match score/winner (back to scheduled)
+  router.put(
+    '/:id/matches/:mid/reset',
+    authenticateToken,
+    requireEditor,
+    conditionalRateLimit(createLimiter),
+    [
+      param('id').isInt().withMessage('Invalid cup ID'),
+      param('mid').isInt().withMessage('Invalid match ID'),
+    ],
+    handleValidationErrors,
+    asyncHandler(async (req, res) => {
+      const cupId = parseInt(req.params.id)
+      const matchId = parseInt(req.params.mid)
+      const cup = await db.getCupById(cupId)
+      if (!cup) return res.status(404).json({ error: 'Cup not found' })
+      if (cup.status !== 'in_progress') {
+        return res.status(400).json({ error: 'Cup must be in_progress to reset matches' })
+      }
+
+      const matchInfo = await db.getCupMatchById(matchId, cupId)
+      if (!matchInfo) return res.status(404).json({ error: 'Match not found' })
+      if (matchInfo.status === 'locked') {
+        return res.status(400).json({ error: 'Vòng này đã được khóa — không thể chỉnh sửa' })
+      }
+
+      const result = await db.resetCupMatch(cupId, matchId)
       await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
       await rankingsCache.invalidateByPrefix('cups*')
       await rankingsCache.incrementVersion()
@@ -510,6 +559,20 @@ export const createCupRouter = ({
       if (!cup) return res.status(404).json({ error: 'Cup not found' })
       if (!['scheduled', 'in_progress'].includes(cup.status)) {
         return res.status(400).json({ error: 'Cup must be scheduled or in_progress to set match dates' })
+      }
+
+      if (cup.status === 'in_progress') {
+        const matchInfo = await db.getCupMatchById(matchId, cupId)
+        if (!matchInfo) return res.status(404).json({ error: 'Match not found' })
+        if (matchInfo.status === 'locked') {
+          return res.status(400).json({ error: 'Vòng này đã được khóa — không thể chỉnh sửa' })
+        }
+        if (matchInfo.round_number > 1) {
+          const prevRoundComplete = await db.areAllMatchesInRoundCompleted(cupId, matchInfo.round_number - 1)
+          if (!prevRoundComplete) {
+            return res.status(400).json({ error: 'Chưa thể chỉnh sửa — vòng trước chưa hoàn thành' })
+          }
+        }
       }
 
       await db.updateCupMatchDate(cupId, matchId, req.body.playDate.split('T')[0])
@@ -614,7 +677,44 @@ export const createCupRouter = ({
     })
   )
 
-  // Set match winner manually (no scores required) — handles cascade
+  // Advance round: shuffle winners from current round to next round, lock current
+  router.post(
+    '/:id/advance-round',
+    authenticateToken,
+    requireAdmin,
+    conditionalRateLimit(createLimiter),
+    [
+      param('id').isInt().withMessage('Invalid cup ID'),
+      body('fromRound').isInt({ min: 1 }).withMessage('Valid round number required'),
+    ],
+    handleValidationErrors,
+    asyncHandler(async (req, res) => {
+      const cupId = parseInt(req.params.id)
+      const cup = await db.getCupById(cupId)
+      if (!cup) return res.status(404).json({ error: 'Cup not found' })
+      if (cup.status !== 'in_progress') {
+        return res.status(400).json({ error: 'Cup must be in_progress to advance' })
+      }
+
+      const { fromRound } = req.body
+      const result = await db.advanceRound(cupId, fromRound)
+      await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
+      await rankingsCache.invalidateByPrefix('cups*')
+      await rankingsCache.incrementVersion()
+
+      // If this was the final round, update cup status
+      if (result.isFinal) {
+        await db.updateCup(cupId, { status: 'completed' })
+        await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
+        await rankingsCache.invalidateByPrefix('cups*')
+        await rankingsCache.incrementVersion()
+      }
+
+      res.json(result)
+    })
+  )
+
+  // Set match winner manually (no scores required) — records winner only
   router.put(
     '/:id/matches/:mid/winner',
     authenticateToken,
@@ -633,6 +733,20 @@ export const createCupRouter = ({
       if (!cup) return res.status(404).json({ error: 'Cup not found' })
       if (!['scheduled', 'in_progress'].includes(cup.status)) {
         return res.status(400).json({ error: 'Can only set winners when cup is scheduled or in_progress' })
+      }
+
+      const matchInfo = await db.getCupMatchById(matchId, cupId)
+      if (!matchInfo) return res.status(404).json({ error: 'Match not found' })
+      if (matchInfo.status === 'locked') {
+        return res.status(400).json({ error: 'Vòng này đã được khóa — không thể chỉnh sửa' })
+      }
+
+      // Check if all previous rounds are completed
+      if (matchInfo.round_number > 1) {
+        const prevRoundComplete = await db.areAllMatchesInRoundCompleted(cupId, matchInfo.round_number - 1)
+        if (!prevRoundComplete) {
+          return res.status(400).json({ error: 'Chưa thể ghi điểm — vòng trước chưa hoàn thành' })
+        }
       }
 
       const { winnerParticipantId } = req.body

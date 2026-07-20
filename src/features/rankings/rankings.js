@@ -81,7 +81,7 @@ export function createRankingsModule(ctx) {
     if (rank === 1) return '🥇'
     if (rank === 2) return '🥈'
     if (rank === 3) return '🥉'
-    return `#${rank}`
+    return ''
   }
 
   function renderForm(form) {
@@ -104,7 +104,7 @@ export function createRankingsModule(ctx) {
     }).join('')
   }
 
-  function updateSeasonSelector() {
+  function updateRankingsSeasonSelector() {
     const select = document.getElementById('seasonSelect')
     if (!select) return
     const seasons = ctx.seasons
@@ -160,5 +160,5 @@ export function createRankingsModule(ctx) {
     }
   }
 
-  return { render, getRankEmoji, renderForm, updateDateSelector, updateSeasonSelector, switchViewMode, setupViewModeUI, setupEventListeners }
+  return { render, getRankEmoji, renderForm, updateDateSelector, updateRankingsSeasonSelector, switchViewMode, setupViewModeUI, setupEventListeners }
 }

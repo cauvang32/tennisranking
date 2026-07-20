@@ -245,8 +245,8 @@ export const createMatchRouter = ({
 
         // For solo matches, player2 and player4 are null
         const matchId = await db.addMatch(seasonId, playDate, player1Id, null, player3Id, null, team1Score, team2Score, winningTeam, resolvedMatchType)
-        await rankingsCache.invalidateOnMatchChange(playDate)
         fireMatchPush(matchId, req.body, resolvedMatchType)
+        try { await rankingsCache.invalidateOnMatchChange(playDate) } catch (err) { console.error('Cache invalidation failed after match create:', err.message) }
         res.json({ success: true, id: matchId })
       } else {
         // Duo match validation (existing logic)
@@ -264,8 +264,8 @@ export const createMatchRouter = ({
         }
 
         const matchId = await db.addMatch(seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, resolvedMatchType)
-        await rankingsCache.invalidateOnMatchChange(playDate)
         fireMatchPush(matchId, req.body, resolvedMatchType)
+        try { await rankingsCache.invalidateOnMatchChange(playDate) } catch (err) { console.error('Cache invalidation failed after match create:', err.message) }
         res.json({ success: true, id: matchId })
       }
     })
@@ -324,15 +324,15 @@ export const createMatchRouter = ({
       }
       
       // Invalidate new date + old date if play_date changed
-      await rankingsCache.invalidateOnMatchChange(playDate)
+      try { await rankingsCache.invalidateOnMatchChange(playDate) } catch (err) { console.error('Cache invalidation failed after match update:', err.message) }
       const oldDate = existingMatch.play_date?.split?.('T')?.[0] || existingMatch.play_date
       if (oldDate && oldDate !== playDate) {
-        await rankingsCache.invalidateOnMatchChange(oldDate)
+        try { await rankingsCache.invalidateOnMatchChange(oldDate) } catch (err) { console.error('Cache invalidation failed for old date:', err.message) }
       }
       // Also invalidate player rankings if players changed
       if (player1Id !== existingMatch.player1_id || player2Id !== existingMatch.player2_id ||
           player3Id !== existingMatch.player3_id || player4Id !== existingMatch.player4_id) {
-        await rankingsCache.invalidateOnPlayerChange()
+        try { await rankingsCache.invalidateOnPlayerChange() } catch (err) { console.error('Cache invalidation failed for player change:', err.message) }
       }
       res.json({ success: true, message: 'Match updated successfully' })
     })
@@ -354,7 +354,7 @@ export const createMatchRouter = ({
       }
       const matchDate = existingMatch.play_date
       await db.deleteMatch(matchId)
-      await rankingsCache.invalidateOnMatchChange(matchDate)
+      try { await rankingsCache.invalidateOnMatchChange(matchDate) } catch (err) { console.error('Cache invalidation failed after match delete:', err.message) }
       res.json({ success: true, message: 'Match deleted successfully' })
     })
   )

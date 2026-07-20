@@ -17,10 +17,11 @@ let refreshPromise = null      // Shared refresh promise for concurrent requests
 /**
  * Get the current CSRF token, fetching from server if not cached.
  * @param {string} apiBase - API base URL
+ * @param {boolean} forceRefresh - If true, always fetch a fresh token
  * @returns {Promise<string|null>} CSRF token or null on failure
  */
-export async function getCSRFToken(apiBase) {
-  if (cachedCsrfToken) {
+export async function getCSRFToken(apiBase, forceRefresh = false) {
+  if (!forceRefresh && cachedCsrfToken) {
     return cachedCsrfToken
   }
 
@@ -176,10 +177,16 @@ export async function makeAuthenticatedRequest(apiBase, url, options = {}) {
   if ((response.status === 401 || response.status === 403) && !isFormData) {
     const result = await refreshOnce(apiBase)
     if (result) {
-      // Refresh succeeded — rebuild request with new CSRF token
+      // Fetch a fresh CSRF token derived from the new session
+      // The refresh may not return a csrfToken, so always fetch from /csrf-token
+      const newCsrf = await getCSRFToken(apiBase, true)
+      if (!newCsrf) {
+        throw new Error('Phiên làm việc đã hết hạn. Vui lòng đăng nhập lại.')
+      }
+
       const retryHeaders = {
         ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
-        'X-CSRF-Token': result.csrfToken,
+        'X-CSRF-Token': newCsrf,
         ...options.headers
       }
 
@@ -192,7 +199,12 @@ export async function makeAuthenticatedRequest(apiBase, url, options = {}) {
         retryOptions.body = bodyClone
       }
 
-      return fetch(parsedUrl.toString(), retryOptions)
+      const retryResponse = await fetch(parsedUrl.toString(), retryOptions)
+
+      // The cached token from refreshOnce() is reusable (hash:true), so it remains
+      // valid for subsequent requests. No need to fetch a fresh token here.
+
+      return retryResponse
     }
     // Refresh failed — session is truly expired (refresh token also gone).
     // Throw so the caller's catch block shows the session-expired message.

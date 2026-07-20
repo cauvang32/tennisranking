@@ -110,7 +110,7 @@ export function createBatchModeModule(ctx) {
 
     container.innerHTML = ctx.batchMatches.map((match, index) => {
       const isSolo = match.matchType === 'solo'
-      const typeLabel = isSolo ? '1v1' : '4v4'
+      const typeLabel = isSolo ? '1v1' : '2v2'
       const player2Options = isSolo ? '' : `<select class="select-field" data-field="player2Id">${_buildPlayerOptions(match.player2Id)}</select>`
       const player4Options = isSolo ? '' : `<select class="select-field" data-field="player4Id">${_buildPlayerOptions(match.player4Id)}</select>`
 
@@ -184,6 +184,21 @@ export function createBatchModeModule(ctx) {
 
       team1ScoreInput?.addEventListener('input', updateBatchRowWinner)
       team2ScoreInput?.addEventListener('input', updateBatchRowWinner)
+
+      // Sync all field changes back to ctx.batchMatches in real time
+      card.querySelectorAll('.select-field, .score-field').forEach(field => {
+        field.addEventListener('input', () => {
+          const fieldName = field.dataset.field
+          if (!fieldName || !ctx.batchMatches[matchIndex]) return
+          if (['player1Id', 'player2Id', 'player3Id', 'player4Id'].includes(fieldName)) {
+            ctx.batchMatches[matchIndex][fieldName] = field.value ? parseInt(field.value, 10) : null
+          } else if (['team1Score', 'team2Score'].includes(fieldName)) {
+            ctx.batchMatches[matchIndex][fieldName] = parseInt(field.value) || 0
+          } else if (fieldName === 'winningTeam') {
+            ctx.batchMatches[matchIndex].winningTeam = field.value ? parseInt(field.value, 10) : null
+          }
+        })
+      })
     })
   }
 

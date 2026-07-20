@@ -190,13 +190,16 @@ export function createMatchModalModule(ctx) {
     })
 
     // Close on backdrop click
-    modal.querySelector('.modal-backdrop').addEventListener('click', () => closeModal())
+    const backdrop = modal.querySelector('.modal-backdrop')
+    if (backdrop) backdrop.addEventListener('click', () => closeModal())
 
     // Close button handler
-    document.getElementById('closeEditModal').addEventListener('click', () => closeModal())
+    const closeBtn = modal.querySelector('#closeEditModal')
+    if (closeBtn) closeBtn.addEventListener('click', () => closeModal())
 
     // Cancel button handler
-    document.getElementById('cancelEditMatch').addEventListener('click', () => closeModal())
+    const cancelBtn = modal.querySelector('#cancelEditMatch')
+    if (cancelBtn) cancelBtn.addEventListener('click', () => closeModal())
 
     /** Remove this modal from the DOM with fade-out animation */
     function closeModal() {
@@ -209,21 +212,23 @@ export function createMatchModalModule(ctx) {
     }
 
     // Form submit handler
-    document.getElementById('editMatchForm').addEventListener('submit', async (e) => {
-      e.preventDefault()
+    const editForm = modal.querySelector('#editMatchForm')
+    if (editForm) {
+      editForm.addEventListener('submit', async (e) => {
+        e.preventDefault()
 
-      const seasonId = parseInt(document.getElementById('editSeasonId').value)
-      const playDate = document.getElementById('editMatchDate').value
-      const player1Id = parseInt(document.getElementById('editPlayer1').value)
-      const player2Select = document.getElementById('editPlayer2')
-      const player2Id = player2Select ? parseInt(player2Select.value) : null
-      const player3Id = parseInt(document.getElementById('editPlayer3').value)
-      const player4Select = document.getElementById('editPlayer4')
-      const player4Id = player4Select ? parseInt(player4Select.value) : null
-      const team1Score = parseInt(document.getElementById('editTeam1Score').value)
-      const team2Score = parseInt(document.getElementById('editTeam2Score').value)
-      const winningTeam = parseInt(document.getElementById('editWinningTeam').value)
-      const errorDiv = document.getElementById('editMatchError')
+        const seasonId = parseInt(modal.querySelector('#editSeasonId')?.value)
+        const playDate = modal.querySelector('#editMatchDate')?.value
+        const player1Id = parseInt(modal.querySelector('#editPlayer1')?.value)
+        const player2Select = modal.querySelector('#editPlayer2')
+        const player2Id = player2Select ? parseInt(player2Select.value) : null
+        const player3Id = parseInt(modal.querySelector('#editPlayer3')?.value)
+        const player4Select = modal.querySelector('#editPlayer4')
+        const player4Id = player4Select ? parseInt(player4Select.value) : null
+        const team1Score = parseInt(modal.querySelector('#editTeam1Score')?.value)
+        const team2Score = parseInt(modal.querySelector('#editTeam2Score')?.value)
+        const winningTeam = parseInt(modal.querySelector('#editWinningTeam')?.value)
+        const errorDiv = modal.querySelector('#editMatchError')
 
       // Validate required fields
       if (!playDate || !seasonId || !player1Id || !player3Id ||
@@ -296,6 +301,7 @@ export function createMatchModalModule(ctx) {
         errorDiv.textContent = 'Lỗi kết nối khi cập nhật trận đấu'
       }
     })
+    } // end if (editForm)
   }
 
   return { showMatchEditModal }

@@ -30,6 +30,9 @@ export function createCupsModule(ctx) {
   const CUPS_MODAL = 'cupsModal'
   const CUPS_MODAL_CONTENT = 'cupsModalContent'
 
+  const editingMatches = new Set()
+  let currentCupId = null
+
   // ── DOM setup / event wiring ──────────────────────────────────────────
 
   function setupCupListeners() {
@@ -127,6 +130,10 @@ export function createCupsModule(ctx) {
   // ── Cup detail view ───────────────────────────────────────────────────
 
   async function showCupDetail(cupId) {
+    if (currentCupId !== cupId) {
+      editingMatches.clear()
+      currentCupId = cupId
+    }
     // Reset DOM state IMMEDIATELY — before any API calls
     // Ensures consistent UI even if API fails or bfcache restores
     const cupsGrid = document.getElementById('cupsGrid')
@@ -251,18 +258,16 @@ export function createCupsModule(ctx) {
     }
   }
 
-  // ── Bracket rendering ─────────────────────────────────────────────────
+  // Bracket rendering — manual progression: no auto-advance, shuffle on "Tiếp tục"
 
   function renderBracket(matches, cupId, cupStatus) {
     if (!matches || matches.length === 0) return '<p class="form-hint">Chưa có bảng đấu</p>'
-    // Group by round
     const rounds = {}
     matches.forEach(m => {
       if (!rounds[m.round_number]) rounds[m.round_number] = []
       rounds[m.round_number].push(m)
     })
     const maxRounds = Math.max(...Object.keys(rounds).map(Number))
-    // Compute round labels relative to the final round
     const roundNames = {}
     for (let r = 1; r <= maxRounds; r++) {
       const fromEnd = maxRounds - r
@@ -271,50 +276,116 @@ export function createCupsModule(ctx) {
       else if (fromEnd === 2) roundNames[r] = 'Tứ kết'
       else roundNames[r] = `Vòng ${r}`
     }
+    const isRoundComplete = (roundNum) => {
+      const roundMatches = rounds[roundNum]
+      if (!roundMatches || roundMatches.length === 0) return true
+      return roundMatches.every(m => m.status === 'completed' || m.status === 'locked')
+    }
+    const isRoundLocked = (roundNum) => {
+      const roundMatches = rounds[roundNum]
+      if (!roundMatches || roundMatches.length === 0) return false
+      return roundMatches.every(m => m.status === 'locked')
+    }
+    let activeRound = 0
+    for (let r = 1; r <= maxRounds; r++) {
+      if (!isRoundLocked(r) && !isRoundComplete(r)) {
+        activeRound = r
+        break
+      }
+    }
+
     let html = '<div class="bracket-container">'
     for (let r = 1; r <= maxRounds; r++) {
       const roundMatches = rounds[r] || []
       const rName = roundNames[r] || `Vòng ${r}`
-      html += `<div class="bracket-round"><h5 class="bracket-round-title">${rName}</h5>`
+      const locked = isRoundLocked(r)
+      const complete = isRoundComplete(r)
+      const isFutureRound = r > activeRound
+
+      html += `<div class="bracket-round ${locked ? 'bracket-round-locked' : ''}">`
+      html += `<h5 class="bracket-round-title">${rName}`
+      if (locked) html += ' <span style="font-size:0.75em;opacity:0.7;">🔒 Đã khóa</span>'
+      if (isFutureRound) html += ' <small style="opacity:0.6;font-weight:normal;">(chờ vòng trước)</small>'
+      html += `</h5>`
+
       roundMatches.forEach(m => {
-        const t1Name = m.t1_team_name || (m.t1_p1_name || 'Chưa xác định')
-        const t2Name = m.t2_team_name || (m.t2_p1_name || 'Chưa xác định')
-        const t1Score = m.team1_score != null ? m.team1_score : '-'
-        const t2Score = m.team2_score != null ? m.team2_score : '-'
+        const t1Name = m.t1_team_name || (m.t1_p1_name || (isFutureRound ? 'Chờ vòng trước' : 'Chưa xác định'))
+        const t2Name = m.t2_team_name || (m.t2_p1_name || (isFutureRound ? 'Chờ vòng trước' : 'Chưa xác định'))
+        const t1Score = m.team1_score !== null ? m.team1_score : '-'
+        const t2Score = m.team2_score !== null ? m.team2_score : '-'
         const isWinner1 = m.winner_participant_id === m.team1_participant_id
         const isWinner2 = m.winner_participant_id === m.team2_participant_id
-        const matchClass = m.status === 'completed' ? 'completed' : m.status === 'in_progress' ? 'in_progress' : ''
-        const canPickWinner = ['scheduled', 'in_progress'].includes(cupStatus)
+        const matchClass = (m.status === 'completed' || m.status === 'locked') ? 'completed' : ''
+        const prevRoundDone = r === 1 || isRoundComplete(r - 1)
+        const canEdit = cupStatus === 'in_progress' && !locked && prevRoundDone
+        const canPickWinner = canEdit && m.status === 'completed' && m.team1_participant_id !== null && m.team2_participant_id !== null
         const t1Pid = m.team1_participant_id
         const t2Pid = m.team2_participant_id
-        html += `<div class="bracket-match ${matchClass}">
-          <div class="bracket-match-number">Trận ${m.match_number}</div>
-          <div class="bracket-team ${isWinner1 ? 'winner' : ''} ${canPickWinner ? 'clickable' : ''}">
-            ${canPickWinner && t1Pid ? `<button class="btn-winner-pick" data-action="set-match-winner" data-cup-id="${cupId}" data-match-id="${m.id}" data-winner-pid="${t1Pid}" title="Chọn người thắng">🏆</button>` : ''}
-            <span>${escapeHtml(t1Name)}</span>
-            <span class="bracket-score">${t1Score}</span>
-          </div>
-          <div class="bracket-team ${isWinner2 ? 'winner' : ''} ${canPickWinner ? 'clickable' : ''}">
-            ${canPickWinner && t2Pid ? `<button class="btn-winner-pick" data-action="set-match-winner" data-cup-id="${cupId}" data-match-id="${m.id}" data-winner-pid="${t2Pid}" title="Chọn người thắng">🏆</button>` : ''}
-            <span>${escapeHtml(t2Name)}</span>
-            <span class="bracket-score">${t2Score}</span>
-          </div>
-          ${cupStatus === 'scheduled' || cupStatus === 'in_progress' ? `
-            <div class="bracket-date-row">
-              <input type="date" class="input-field input-sm bracket-input-flex" id="date_${m.id}" value="${m.play_date || ''}">
-              <button class="btn btn-sm btn-secondary" data-action="schedule-match-date" data-cup-id="${cupId}" data-match-id="${m.id}">📅</button>
-            </div>
-          ` : ''}
-          ${cupStatus === 'in_progress' && m.status === 'scheduled' ? `
-            <div class="bracket-score-row">
-              <input type="number" min="0" value="0" class="input-field input-sm bracket-input-sm" id="score1_${m.id}">
-              <input type="number" min="0" value="0" class="input-field input-sm bracket-input-sm" id="score2_${m.id}">
-              <button class="btn btn-sm btn-primary btn-flex-fill" data-action="update-match-score" data-cup-id="${cupId}" data-match-id="${m.id}">Ghi điểm</button>
-            </div>
-          ` : ''}
-        </div>`
+
+        html += `<div class="bracket-match ${matchClass}">`
+        html += `<div class="bracket-match-number">Trận ${m.match_number}</div>`
+        html += `<div class="bracket-team ${isWinner1 ? 'winner' : ''} ${canPickWinner ? 'clickable' : ''}">`
+        if (canPickWinner && t1Pid) {
+          html += `<button class="btn-winner-pick" data-action="set-match-winner" data-cup-id="${cupId}" data-match-id="${m.id}" data-winner-pid="${t1Pid}" title="Chọn người thắng">🏆</button>`
+        }
+        html += `<span>${escapeHtml(t1Name)}</span>`
+        html += `<span class="bracket-score">${t1Score}</span>`
+        html += `</div>`
+        html += `<div class="bracket-team ${isWinner2 ? 'winner' : ''} ${canPickWinner ? 'clickable' : ''}">`
+        if (canPickWinner && t2Pid) {
+          html += `<button class="btn-winner-pick" data-action="set-match-winner" data-cup-id="${cupId}" data-match-id="${m.id}" data-winner-pid="${t2Pid}" title="Chọn người thắng">🏆</button>`
+        }
+        html += `<span>${escapeHtml(t2Name)}</span>`
+        html += `<span class="bracket-score">${t2Score}</span>`
+        html += `</div>`
+
+        const isEditing = editingMatches.has(m.id)
+
+        if ((cupStatus === 'scheduled' || (cupStatus === 'in_progress' && prevRoundDone)) && !locked && !isEditing) {
+          html += `<div class="bracket-date-row">`
+          html += `<input type="date" class="input-field input-sm bracket-input-flex" id="date_${m.id}" value="${m.play_date || ''}">`
+          html += `<button class="btn btn-sm btn-secondary" data-action="schedule-match-date" data-cup-id="${cupId}" data-match-id="${m.id}">📅</button>`
+          html += `</div>`
+        }
+
+        if (cupStatus === 'in_progress' && m.status === 'scheduled' && !locked && prevRoundDone && m.team1_participant_id !== null && m.team2_participant_id !== null) {
+          html += `<div class="bracket-score-row">`
+          html += `<input type="number" min="0" value="0" class="input-field input-sm bracket-input-sm" id="score1_${m.id}">`
+          html += `<input type="number" min="0" value="0" class="input-field input-sm bracket-input-sm" id="score2_${m.id}">`
+          html += `<button class="btn btn-sm btn-primary btn-flex-fill" data-action="update-match-score" data-cup-id="${cupId}" data-match-id="${m.id}">Ghi điểm</button>`
+          html += `</div>`
+        }
+
+        if (cupStatus === 'in_progress' && isEditing && !locked && prevRoundDone) {
+          html += `<div class="bracket-score-row">`
+          html += `<input type="number" min="0" value="${m.team1_score !== null ? m.team1_score : 0}" class="input-field input-sm bracket-input-sm" id="score1_${m.id}">`
+          html += `<input type="number" min="0" value="${m.team2_score !== null ? m.team2_score : 0}" class="input-field input-sm bracket-input-sm" id="score2_${m.id}">`
+          html += `<button class="btn btn-sm btn-primary btn-flex-fill" data-action="save-match-score" data-cup-id="${cupId}" data-match-id="${m.id}">Lưu</button>`
+          html += `<button class="btn btn-sm btn-secondary btn-flex-fill" data-action="cancel-edit-match" data-cup-id="${cupId}" data-match-id="${m.id}">Hủy</button>`
+          html += `</div>`
+        }
+
+        if (cupStatus === 'in_progress' && m.status === 'completed' && !locked && prevRoundDone && !isEditing) {
+          html += `<div class="bracket-score-row">`
+          html += `<button class="btn btn-sm btn-secondary btn-flex-fill" data-action="edit-match-score" data-cup-id="${cupId}" data-match-id="${m.id}">✏️ Sửa</button>`
+          html += `<button class="btn btn-sm btn-danger btn-flex-fill" data-action="reset-match-score" data-cup-id="${cupId}" data-match-id="${m.id}">🗑️ Reset</button>`
+          html += `</div>`
+        }
+
+        if (locked) {
+          html += `<div class="bracket-score-row" style="opacity:0.5;"><span class="form-hint">Đã khóa — không thể chỉnh sửa</span></div>`
+        }
+
+        html += `</div>`
       })
-      html += '</div>'
+
+      if (complete && !locked && cupStatus === 'in_progress') {
+        const isFinalRound = r === maxRounds
+        const btnText = isFinalRound ? '🏆 Hoàn thành giải đấu' : '⏭️ Tiếp tục vòng tiếp theo'
+        html += `<div class="bracket-round-actions"><button class="btn btn-success btn-sm" data-action="advance-round" data-cup-id="${cupId}" data-from-round="${r}">${btnText}</button></div>`
+      }
+
+      html += `</div>`
     }
     html += '</div>'
     return html
@@ -399,6 +470,33 @@ export function createCupsModule(ctx) {
       case 'set-match-winner': {
         const winnerPid = parseInt(btn.dataset.winnerPid, 10)
         if (!isNaN(winnerPid)) setCupMatchWinner(cupId, matchId, winnerPid)
+        break
+      }
+      case 'advance-round': {
+        const fromRound = parseInt(btn.dataset.fromRound, 10)
+        if (!isNaN(fromRound)) advanceRound(cupId, fromRound)
+        break
+      }
+      case 'edit-match-score': {
+        if (matchId) {
+          editingMatches.add(matchId)
+          showCupDetail(cupId)
+        }
+        break
+      }
+      case 'cancel-edit-match': {
+        if (matchId) {
+          editingMatches.delete(matchId)
+          showCupDetail(cupId)
+        }
+        break
+      }
+      case 'save-match-score': {
+        if (matchId) updateMatchScore(cupId, matchId)
+        break
+      }
+      case 'reset-match-score': {
+        if (matchId) resetCupMatch(cupId, matchId)
         break
       }
     }
@@ -981,8 +1079,26 @@ export function createCupsModule(ctx) {
       body: JSON.stringify({ team1Score: s1, team2Score: s2 })
     })
     if (data?.success) {
+      editingMatches.delete(matchId)
       ctx.invalidateCache(['cups'])
-      showToast(`Ghi điểm ${s1}-${s2} thành công!`, 'success')
+      if (data.roundComplete) {
+        showToast(`Ghi điểm ${s1}-${s2} thành công! ⏭️ Vòng đã hoàn thành — nhấn "Chuyển sang vòng tiếp theo"`, 'success')
+      } else {
+        showToast(`Ghi điểm ${s1}-${s2} thành công!`, 'success')
+      }
+      await showCupDetail(cupId)
+    }
+  }
+
+  async function resetCupMatch(cupId, matchId) {
+    if (!confirm('Bạn có chắc muốn xoá kết quả trận đấu này?')) return
+    const data = await _cupApiCall(`/cups/${cupId}/matches/${matchId}/reset`, {
+      method: 'PUT'
+    })
+    if (data?.success) {
+      editingMatches.delete(matchId)
+      ctx.invalidateCache(['cups'])
+      showToast('Đã xoá kết quả trận đấu!', 'success')
       await showCupDetail(cupId)
     }
   }
@@ -994,7 +1110,28 @@ export function createCupsModule(ctx) {
     })
     if (data?.success) {
       ctx.invalidateCache(['cups'])
-      showToast('Đã chọn người thắng!', 'success')
+      if (data.roundComplete) {
+        showToast('Đã chọn người thắng! ⏭️ Vòng đã hoàn thành — nhấn "Chuyển sang vòng tiếp theo"', 'success')
+      } else {
+        showToast('Đã chọn người thắng!', 'success')
+      }
+      await showCupDetail(cupId)
+    }
+  }
+
+  async function advanceRound(cupId, fromRound) {
+    if (!confirm('Xáo trộn người thắng và chuyển sang vòng tiếp theo?')) return
+    const data = await _cupApiCall(`/cups/${cupId}/advance-round`, {
+      method: 'POST',
+      body: JSON.stringify({ fromRound })
+    })
+    if (data?.success) {
+      ctx.invalidateCache(['cups'])
+      if (data.isFinal) {
+        showToast('🏆 Giải đấu đã hoàn thành!', 'success')
+      } else {
+        showToast('⏭️ Đã chuyển sang vòng tiếp theo (xáo trộn người thắng)', 'success')
+      }
       await showCupDetail(cupId)
     }
   }
@@ -1087,5 +1224,6 @@ export function createCupsModule(ctx) {
     scheduleMatchDate,
     updateMatchScore,
     setCupMatchWinner,
+    advanceRound,
   }
 }

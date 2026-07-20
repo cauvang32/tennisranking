@@ -163,7 +163,7 @@ export function createSeasonsModule(ctx) {
   // Modal: create / edit
   // ---------------------------------------------------------------------------
 
-  function showSeasonModal(seasonId = null) {
+  async function showSeasonModal(seasonId = null) {
     const isEdit = seasonId !== null
     const season = isEdit ? ctx.seasons.find(s => s.id === seasonId) : null
 
@@ -203,32 +203,17 @@ export function createSeasonsModule(ctx) {
       submitBtn.textContent = isEdit ? 'Cập nhật' : 'Tạo mùa giải'
     }
 
-    // If editing, load season players for pre-selection
-    if (isEdit) {
-      loadSeasonPlayersForEdit(seasonId)
-    }
-
-    // Setup select/deselect all buttons
-    const selectAllBtn = document.getElementById('selectAllPlayers')
-    const deselectAllBtn = document.getElementById('deselectAllPlayers')
-
-    if (selectAllBtn) {
-      selectAllBtn.onclick = () => {
-        document.querySelectorAll('input[name="seasonPlayers"]').forEach(cb => cb.checked = true)
-      }
-    }
-
-    if (deselectAllBtn) {
-      deselectAllBtn.onclick = () => {
-        document.querySelectorAll('input[name="seasonPlayers"]').forEach(cb => cb.checked = false)
-      }
-    }
-
     // Setup form submission (clone to remove old listener)
     const form = document.getElementById('seasonForm')
     if (form) {
       const newForm = form.cloneNode(true)
       form.parentNode.replaceChild(newForm, form)
+
+      // If editing, load season players for pre-selection AFTER form clone
+      // so that the cloned checkboxes get their checked state preserved
+      if (isEdit) {
+        await loadSeasonPlayersForEdit(seasonId)
+      }
 
       // Re-bind checkbox listeners after form clone
       const newSelectAll = document.getElementById('selectAllPlayers')

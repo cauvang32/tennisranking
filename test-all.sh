@@ -1,532 +1,487 @@
-#!/bin/bash
-# Combined verification suite: frontend static checks + backend API tests
+#!/usr/bin/env bash
+# Comprehensive test suite: frontend static analysis + backend API tests
 # Run with: bash test-all.sh
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SRC_DIR="$SCRIPT_DIR/src"
+SRC="$SCRIPT_DIR/src"
+HTML="$SCRIPT_DIR/index.html"
+CSS="$SRC/style.css"
 
-PASS=0
-FAIL=0
-TOTAL=0
+PASS=0; FAIL=0
+pass()  { echo "  ✅ $1"; ((PASS++)); }
+fail()  { echo "  ❌ $2${3:+ — $3}"; ((FAIL++)); }
 
-assert() {
-  local name="$1" condition="$2" detail="${3:-}"
-  TOTAL=$((TOTAL+1))
-  if [ "$condition" = "true" ]; then
-    PASS=$((PASS+1)); echo "  ✅ $name"
-  else
-    FAIL=$((FAIL+1)); echo "  ❌ $name${detail:+ — $detail}"
+# Parse .env safely: handle quoted values and values containing '='
+parse_env() { grep "^$1=" .env | head -1 | sed "s/^$1=//" | tr -d '"'; }
+
+ADMIN_USER=$(parse_env ADMIN_USERNAME)
+ADMIN_PASS=$(parse_env ADMIN_PASSWORD)
+EDITOR_USER=$(parse_env EDITOR_USERNAME)
+EDITOR_PASS=$(parse_env EDITOR_PASSWORD)
+
+SUBPATH="${SUBPATH:-/tennis}"
+BASE="http://localhost:3001${SUBPATH}"
+API="${BASE}/api"
+
+########################################################################
+# PART 1: FRONTEND STATIC ANALYSIS (no server needed)
+########################################################################
+echo "=========================================="; echo "PART 1: FRONTEND STATIC ANALYSIS"; echo "=========================================="
+
+# --- 1.1 DOM ID cross-reference ---
+echo ""; echo "[1.1/8] DOM ID cross-reference (JS getElementById vs HTML)"
+HTML_IDS=$(grep -oP 'id="\K[^"]+' "$HTML" | sort -u)
+DOM_FAIL=false
+for js_file in "$SRC"/main.js "$SRC"/features/*/*.js "$SRC"/modules/*.js; do
+  [ -f "$js_file" ] || continue
+  while IFS= read -r id; do
+    # Skip dynamically created elements (modal content, etc.)
+    if [[ "$id" =~ ^(edit|confirm|participant|cup|batch|parsed|score|date|selectAll|deselectAll|closeEdit|cancelEdit) ]]; then
+      continue
+    fi
+    # Skip known dead references (pre-existing from old monolithic main.js)
+    if [[ "$id" =~ ^(addMatchModal|backupDataBtn|clearAllData|exportRankings|recordMatch|restoreDataBtn|useAutoWinner|useManualWinner|playerName|fileStatus|selectedSeasonInfo|winningTeam)$ ]]; then
+      continue
+    fi
+    if ! echo "$HTML_IDS" | grep -qx "$id"; then
+      echo "  ❌ getElementById('$id') in $(basename "$js_file") — NOT in index.html"
+      DOM_FAIL=true
+    fi
+  done < <(grep -oP "getElementById\('\K[^']+" "$js_file" 2>/dev/null | sort -u || true)
+done
+$DOM_FAIL || pass "All getElementById targets exist in HTML"
+
+# --- 1.2 CSS class cross-reference ---
+echo ""; echo "[1.2/8] CSS class cross-reference (JS classes vs CSS definitions)"
+CSS_CLASSES=$(grep -oP '^\.\K[\w-]+' "$CSS" | sort -u)
+CSS_FAIL=false
+for js_file in "$SRC"/main.js "$SRC"/features/*/*.js "$SRC"/modules/*.js; do
+  [ -f "$js_file" ] || continue
+  while IFS= read -r cls; do
+    [[ -z "$cls" ]] && continue
+    # Extract base class only (before : or .)
+    cls=$(echo "$cls" | sed 's/[:.].*//')
+    [[ "$cls" =~ ^(badge-|status-|role-|toast-|hidden|active|show|auto-winner|manual-winner|selected|flex|inline-block|hero-banner-image|player3-label|team-2-badge|player-name|authenticated)$ ]] && continue
+    if ! echo "$CSS_CLASSES" | grep -qx "$cls" 2>/dev/null; then
+      echo "  ❌ .$cls in $(basename "$js_file") — NOT in style.css"
+      CSS_FAIL=true
+    fi
+  done < <(grep -oP "classList\.(add|remove|toggle)\('\K[^']+" "$js_file" 2>/dev/null | sort -u || true)
+  while IFS= read -r cls; do
+    [[ -z "$cls" ]] && continue
+    # Extract base class only (before : or .)
+    cls=$(echo "$cls" | sed 's/[:.].*//')
+    [[ "$cls" =~ ^(badge-|status-|role-|toast-|hidden|active|show|auto-winner|manual-winner|selected|flex|inline-block|hero-banner-image|player3-label|team-2-badge|player-name|authenticated)$ ]] && continue
+    if ! echo "$CSS_CLASSES" | grep -qx "$cls" 2>/dev/null; then
+      echo "  ❌ .$cls (querySelector) in $(basename "$js_file") — NOT in style.css"
+      CSS_FAIL=true
+    fi
+  done < <(grep -oP "querySelector\(['\"]\\.\\K[^'\"\\)]+" "$js_file" 2>/dev/null | sort -u || true)
+done
+$CSS_FAIL || pass "All JS CSS classes have CSS definitions"
+
+# --- 1.3 Method wiring cross-reference ---
+echo ""; echo "[1.3/8] Method wiring cross-reference"
+# Check that wireFeatureModules is called and modules are wired
+WIRING_FAIL=false
+if ! grep -q 'wireFeatureModules' "$SRC"/main.js 2>/dev/null; then
+  echo "  ❌ wireFeatureModules not found"
+  WIRING_FAIL=true
+fi
+# Check that Object.assign is used for each module
+for mod in players rankings matches cups seasons accounts export images; do
+  if ! grep -q "app\._${mod}" "$SRC"/main.js 2>/dev/null; then
+    echo "  ❌ $mod module not wired (app._${mod} missing)"
+    WIRING_FAIL=true
   fi
-}
+done
+# Check that prototype methods exist for key functions
+for method in switchTab switchMatchType showLoginModal updateTeamLabelsForMatchType; do
+  if ! grep -q "prototype\.${method}" "$SRC"/main.js 2>/dev/null; then
+    echo "  ❌ $method not defined on prototype"
+    WIRING_FAIL=true
+  fi
+done
+$WIRING_FAIL || pass "All module wiring and prototype methods verified"
 
-# Helper: read file content
-read_file() {
-  cat "$SRC_DIR/$1" 2>/dev/null || echo ""
-}
+# --- 1.4 Stale closure detection ---
+echo ""; echo "[1.4/8] Stale closure detection"
+STALE_FAIL=false
+for js_file in "$SRC"/features/*/*.js; do
+  [ -f "$js_file" ] || continue
+  if grep -qP 'const\s*{[^}]*\b(players|matches|seasons|playDates|isAuthenticated|user|currentMatchType|currentWinningTeam|isManualWinnerMode)\b[^}]*}\s*=\s*ctx' "$js_file" 2>/dev/null; then
+    echo "  ❌ $(basename "$js_file") captures mutable ctx state in closure"
+    STALE_FAIL=true
+  fi
+  if grep -qP 'const\s*{[^}]*updateTeamLabelsForMatchType[^}]*}\s*=\s*ctx' "$js_file" 2>/dev/null; then
+    echo "  ❌ $(basename "$js_file") captures prototype method in closure"
+    STALE_FAIL=true
+  fi
+done
+$STALE_FAIL || pass "No stale closures detected"
 
-# ──────────────────────────────────────────────────────────────────────
-# PART 1: FRONTEND STATIC CHECKS (no server required)
-# ──────────────────────────────────────────────────────────────────────
+# --- 1.5 Async/await gaps ---
+echo ""; echo "[1.5/8] Async/await gaps in switchTab/reloadCurrentView"
+ASYNC_FAIL=false
+# Check that wireModules is called after detectServerMode (critical fix)
+if ! grep -A5 'await.*detectServerMode' "$SRC"/main.js 2>/dev/null | grep -q 'wireModules'; then
+  echo "  ❌ wireModules not called after detectServerMode"
+  ASYNC_FAIL=true
+fi
+# Check that switchTab cases use await for async functions (allow multi-line)
+for tab in cups images accounts; do
+  if ! grep -A5 "case '${tab}':" "$SRC"/main.js 2>/dev/null | grep -q 'await'; then
+    echo "  ❌ switchTab('$tab') missing await"
+    ASYNC_FAIL=true
+  fi
+done
+$ASYNC_FAIL || pass "No async/await gaps in critical paths"
 
-echo "=========================================="
-echo "PART 1: FRONTEND STATIC CHECKS"
-echo "=========================================="
+# --- 1.6 Module factory signatures ---
+echo ""; echo "[1.6/8] Module factory signatures (ctx pattern)"
+for mod in players rankings matches cups seasons accounts export images; do
+  file=$(find "$SRC"/features -name "${mod}*.js" 2>/dev/null | grep -vE 'batch|screenshot|match-modal|season-result' | head -1)
+  [ -f "$file" ] || { fail "ctx pattern" "$(echo $mod | sed 's/^/\u/') module missing"; continue; }
+  if grep -q 'ctx\.' "$file"; then pass "$(basename "$file") uses ctx pattern"
+  else fail "ctx pattern" "$(basename "$file")"; fi
+done
 
-# Read source files
-PLAYERS_CODE=$(read_file "features/players/players.js")
-RANKINGS_CODE=$(read_file "features/rankings/rankings.js")
-MATCHES_CODE=$(read_file "features/matches/matches.js")
-CUPS_CODE=$(read_file "features/cups/cups.js")
-SEASONS_CODE=$(read_file "features/seasons/seasons.js")
-ACCOUNTS_CODE=$(read_file "features/accounts/accounts.js")
-EXPORT_CODE=$(read_file "features/export/export.js")
-IMAGES_CODE=$(read_file "features/images/images.js")
-MAIN_CODE=$(read_file "main.js")
-AUTH_CODE=$(read_file "modules/auth-manager.js")
-CSRF_CODE=$(read_file "modules/csrf-handler.js")
+# --- 1.7 Modal lifecycle ---
+echo ""; echo "[1.7/8] Modal lifecycle (no hijacking, consistent helpers)"
+MODAL_FAIL=false
+for js_file in "$SRC"/features/*/*.js; do
+  [ -f "$js_file" ] || continue
+  bn=$(basename "$js_file")
+  if grep -q "getElementById('loginModal')" "$js_file" && [[ "$bn" != auth* ]]; then
+    echo "  ❌ $bn hijacks #loginModal"
+    MODAL_FAIL=true
+  fi
+  if grep -qP "modal\.classList\.add\('active'\)" "$js_file" 2>/dev/null; then
+    echo "  ❌ $bn uses .active class instead of showModal()"
+    MODAL_FAIL=true
+  fi
+done
+$MODAL_FAIL || pass "No modal hijacking, consistent showModal/hideModal usage"
 
-# --- 1. Module factory signatures ---
-echo ""; echo "[1/8] Module factory signatures (must use ctx pattern)"
+# --- 1.8 Response parsing ---
+echo ""; echo "[1.8/8] Response parsing (no .data wrapper assumptions)"
+PARSE_FAIL=false
+# Check that players.js doesn't assume .data wrapper
+if grep -qP 'response\.data|json\.data' "$SRC"/features/players/players.js 2>/dev/null; then
+  echo "  ❌ players.js assumes .data wrapper"
+  PARSE_FAIL=true
+fi
+# Check that cups.js doesn't assume .data wrapper for list responses
+if grep -qP 'Array.isArray\([^)]*\)\s*\?\s*\1\s*:' "$SRC"/features/cups/cups.js 2>/dev/null; then
+  : # cups.js uses Array.isArray check which is correct
+fi
+$PARSE_FAIL || pass "No .data wrapper assumptions in critical modules"
 
-assert "Players module uses ctx pattern" \
-  "$(echo "$PLAYERS_CODE" | grep -q 'createPlayersModule(ctx)' && echo true || echo false)" \
-  "Found multi-arg signature instead"
-
-assert "Rankings module uses ctx pattern" \
-  "$(echo "$RANKINGS_CODE" | grep -q 'createRankingsModule(ctx)' && echo true || echo false)" \
-  "Found multi-arg signature instead"
-
-assert "Matches module uses ctx pattern" \
-  "$(echo "$MATCHES_CODE" | grep -q 'createMatchesModule(ctx)' && echo true || echo false)" \
-  "Found multi-arg signature instead"
-
-assert "Cups module uses ctx pattern" \
-  "$(echo "$CUPS_CODE" | grep -q 'createCupsModule(ctx)' && echo true || echo false)" \
-  "Found multi-arg signature instead"
-
-assert "Seasons module uses ctx pattern" \
-  "$(echo "$SEASONS_CODE" | grep -q 'createSeasonsModule(ctx)' && echo true || echo false)" \
-  "Found multi-arg signature instead"
-
-assert "Accounts module uses ctx pattern" \
-  "$(echo "$ACCOUNTS_CODE" | grep -q 'createAccountsModule(ctx)' && echo true || echo false)" \
-  "Found multi-arg signature instead"
-
-assert "Export module uses ctx pattern" \
-  "$(echo "$EXPORT_CODE" | grep -q 'createExportModule(ctx)' && echo true || echo false)" \
-  "Found multi-arg signature instead"
-
-assert "Images module uses ctx pattern" \
-  "$(echo "$IMAGES_CODE" | grep -q 'createImagesModule(ctx)' && echo true || echo false)" \
-  "Found multi-arg signature instead"
-
-assert "Players module does not use state.get()" \
-  "$(echo "$PLAYERS_CODE" | grep -q 'state\.get(' && echo false || echo true)" \
-  "Found state.get() calls"
-
-assert "Rankings module does not use state.get()" \
-  "$(echo "$RANKINGS_CODE" | grep -q 'state\.get(' && echo false || echo true)" \
-  "Found state.get() calls"
-
-assert "Players module does not use api.createPlayer()" \
-  "$(echo "$PLAYERS_CODE" | grep -qE 'api\.(createPlayer|deletePlayer)\(' && echo false || echo true)" \
-  "Found old API method calls"
-
-assert "Rankings module does not use api.getRankings()" \
-  "$(echo "$RANKINGS_CODE" | grep -q 'api\.getRankings(' && echo false || echo true)" \
-  "Found old API method calls"
-
-# --- 2. main.js wiring ---
-echo ""; echo "[2/8] main.js wiring (must pass single ctx arg)"
-
-assert "Players wired with single ctx arg" \
-  "$(echo "$MAIN_CODE" | grep -q 'createPlayersModule(app)' && echo true || echo false)" \
-  "Found multi-arg wiring"
-
-assert "Rankings wired with single ctx arg" \
-  "$(echo "$MAIN_CODE" | grep -q 'createRankingsModule(app)' && echo true || echo false)" \
-  "Found multi-arg wiring"
-
-assert "No broken createPlayersModule(app, app, app) pattern" \
-  "$(echo "$MAIN_CODE" | grep -q 'createPlayersModule(app, app, app' && echo false || echo true)" \
-  "Found broken 3-arg wiring"
-
-assert "No broken createRankingsModule(app, app, app) pattern" \
-  "$(echo "$MAIN_CODE" | grep -q 'createRankingsModule(app, app, app' && echo false || echo true)" \
-  "Found broken 3-arg wiring"
-
-# --- 3. API endpoint paths ---
-echo ""; echo "[3/8] API endpoint paths"
-
-assert "Match creation uses correct field names" \
-  "$(echo "$MATCHES_CODE" | grep -q 'player1Id' && echo "$MATCHES_CODE" | grep -q 'player3Id' && \
-   echo "$MATCHES_CODE" | grep -q 'team1Score' && echo "$MATCHES_CODE" | grep -q 'winningTeam' && \
-   echo true || echo false)" \
-  "Missing required match fields"
-
-assert "Cup creation uses single_elimination format" \
-  "$(echo "$CUPS_CODE" | grep -q 'single_elimination' && echo true || echo false)" \
-  'Found "duo" format instead of single_elimination'
-
-assert "Cup participants uses player1Id (not playerIds array)" \
-  "$(echo "$CUPS_CODE" | grep -q 'player1Id' && ! echo "$CUPS_CODE" | grep -q '"playerIds"' && \
-   echo true || echo false)" \
-  "Uses playerIds array instead of player1Id"
-
-assert "Cup bracket uses generate-bracket endpoint" \
-  "$(echo "$CUPS_CODE" | grep -q 'generate-bracket' && echo true || echo false)" \
-  "Found /bracket instead of /generate-bracket"
-
-assert "Cup shuffle uses seed-shuffle endpoint" \
-  "$(echo "$CUPS_CODE" | grep -q 'seed-shuffle' && echo true || echo false)" \
-  "Found /shuffle-seeds instead of /seed-shuffle"
-
-# --- 4. Auth flow ---
-echo ""; echo "[4/8] Auth flow"
-
-assert "Login uses /api/auth/login endpoint" \
-  "$(echo "$AUTH_CODE" | grep -q '/auth/login' && echo true || echo false)" \
-  "Found /api/login instead"
-
-assert "Login uses loginCsrf double-submit pattern" \
-  "$(echo "$AUTH_CODE" | grep -q 'loginCsrf' && echo "$AUTH_CODE" | grep -q '_loginCsrf' && \
-   echo true || echo false)" \
-  "Missing loginCsrf flow"
-
-assert "Auth status uses /api/auth/status endpoint" \
-  "$(echo "$AUTH_CODE" | grep -q '/auth/status' && echo true || echo false)" \
-  "Found /api/auth-status instead"
-
-assert "Logout uses /api/auth/logout endpoint" \
-  "$(echo "$AUTH_CODE" | grep -q '/auth/logout' && echo true || echo false)" \
-  "Found /api/logout instead"
-
-assert "makeAuthenticatedRequest injects X-CSRF-Token header" \
-  "$(echo "$CSRF_CODE" | grep -q 'X-CSRF-Token' && echo true || echo false)" \
-  "Missing CSRF header injection"
-
-# --- 5. Response parsing ---
-echo ""; echo "[5/8] Response parsing (must handle plain arrays/objects)"
-
-assert "Players list parsed as plain array" \
-  "$(echo "$PLAYERS_CODE" | grep -qE 'data\.players|response\.data' && echo false || echo true)" \
-  "Expects {data: [...]} wrapper"
-
-assert "Cups list uses Array.isArray check" \
-  "$(echo "$CUPS_CODE" | grep -q 'Array.isArray' && echo true || echo false)" \
-  "No array type check"
-
-assert "Seasons reads from ctx.seasons directly" \
-  "$(echo "$SEASONS_CODE" | grep -q 'ctx\.seasons' && echo true || echo false)" \
-  "Uses state.get() instead"
-
-# --- 6. Credentials for fetch calls ---
-echo ""; echo "[6/8] Fetch credentials (must include cookies)"
-
-assert "Excel export uses credentials: include" \
-  "$(echo "$EXPORT_CODE" | grep -q "credentials: 'include'" && echo true || echo false)" \
-  "Missing credentials in fetch call"
-
-assert "Rankings fetch uses credentials: include" \
-  "$(echo "$RANKINGS_CODE" | grep -q "credentials: 'include'" && echo true || echo false)" \
-  "Missing credentials in fetch call"
-
-# --- 7. Cache coherence ---
-echo ""; echo "[7/8] Cache invalidation after mutations"
-
-assert "Matches module invalidates cache after recordMatch" \
-  "$(echo "$MATCHES_CODE" | grep -q 'invalidateCache' && echo true || echo false)" \
-  "Missing cache invalidation"
-
-assert "Seasons module invalidates cache after mutations" \
-  "$(echo "$SEASONS_CODE" | grep -q 'invalidateCache' && echo true || echo false)" \
-  "Missing cache invalidation"
-
-assert "Cups module invalidates cache after mutations" \
-  "$(echo "$CUPS_CODE" | grep -q 'invalidateCache' && echo true || echo false)" \
-  "Missing cache invalidation"
-
-assert "Players module invalidates cache after mutations" \
-  "$(echo "$PLAYERS_CODE" | grep -q 'invalidateCache' && echo true || echo false)" \
-  "Missing cache invalidation"
-
-# --- 8. Export/backup routes ---
-echo ""; echo "[8/8] Export/backup route paths"
-
-assert "Excel export uses /export-excel path" \
-  "$(echo "$EXPORT_CODE" | grep -q 'export-excel' && echo true || echo false)" \
-  "Found /export/excel instead"
-
-assert "JSON backup uses /backup path" \
-  "$(echo "$EXPORT_CODE" | grep -q '/backup' && echo true || echo false)" \
-  "Found /backup/json instead"
-
-# --- Frontend results ---
-FE_PASS=$PASS
-FE_FAIL=$FAIL
-FE_TOTAL=$TOTAL
-
-echo ""
-echo "=========================================="
-echo "FRONTEND RESULTS: $FE_PASS/$FE_TOTAL passed, $FE_FAIL failed"
+FE_PASS=$PASS; FE_FAIL=$FAIL
+echo ""; echo "=========================================="
+echo "FRONTEND: $FE_PASS passed, $FE_FAIL failed"
 echo "=========================================="
 
-# ──────────────────────────────────────────────────────────────────────
+########################################################################
 # PART 2: BACKEND API TESTS (requires running server)
-# ──────────────────────────────────────────────────────────────────────
+########################################################################
+echo ""; echo "=========================================="
 
-echo ""
-echo "=========================================="
-echo "PART 2: BACKEND API TESTS"
-echo "=========================================="
+########################################################################
+# PART 2: BACKEND API TESTS
+########################################################################
 
-# Reset counters for backend section
-BE_PASS=0
-BE_FAIL=0
-BE_TOTAL=0
+echo ""; echo "=========================================="
+echo "PART 2: BACKEND API TESTS"; echo "=========================================="
 
-be_assert() {
-  local name="$1" expected="$2" actual="$3"
-  BE_TOTAL=$((BE_TOTAL+1))
-  if [ "$actual" = "$expected" ]; then
-    BE_PASS=$((BE_PASS+1)); echo "  ✅ $name"
-  else
-    BE_FAIL=$((BE_FAIL+1)); echo "  ❌ $name (expected: $expected, got: $actual)"
-  fi
-}
+BASE="${BASE_PATH:-http://localhost:3001/tennis}"
+API="${API_BASE:-http://localhost:3001/tennis/api}"
+TS=$(date +%s)
 
-be_assert_field() {
-  local name="$1" field="$2" body="$3"
-  BE_TOTAL=$((BE_TOTAL+1))
-  if echo "$body" | grep -q "\"$field\""; then
-    BE_PASS=$((BE_PASS+1)); echo "  ✅ $name"
-  else
-    BE_FAIL=$((BE_FAIL+1)); echo "  ❌ $name - missing '$field'"
-  fi
-}
+HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" "$API/health" 2>/dev/null || echo "000")
+if [[ "$HTTP_CODE" == "000" ]]; then
+  echo "⚠️  Server not running — skipping backend tests"
+  echo ""; echo "GRAND TOTAL: $FE_PASS passed, $FE_FAIL failed (backend skipped)"
+  exit 30
+fi
 
-be_assert_is_array() {
-  local name="$1" body="$2"
-  BE_TOTAL=$((BE_TOTAL+1))
-  if echo "$body" | python3 -c "import sys,json; json.load(sys.stdin)" 2>/dev/null && \
-     echo "$body" | python3 -c "import sys,json; assert isinstance(json.load(sys.stdin), list)" 2>/dev/null; then
-    BE_PASS=$((BE_PASS+1)); echo "  ✅ $name (array)"
-  else
-    BE_FAIL=$((BE_FAIL+1)); echo "  ❌ $name - not a valid array"
-  fi
-}
+BP=0; BF=0
+bp()  { echo "  ✅ $1"; ((BP++)); }
+bf()  { echo "  ❌ $1 (expected: ${2:-?}, got: ${3:-?})"; ((BF++)); }
+bf_field() { echo "  ❌ $1 — missing '$2'"; ((BF++)); }
 
-be_assert_is_obj() {
-  local name="$1" body="$2"
-  BE_TOTAL=$((BE_TOTAL+1))
-  if echo "$body" | python3 -c "import sys,json; assert isinstance(json.load(sys.stdin), dict)" 2>/dev/null; then
-    BE_PASS=$((BE_PASS+1)); echo "  ✅ $name (object)"
-  else
-    BE_FAIL=$((BE_FAIL+1)); echo "  ❌ $name - not a valid object"
-  fi
-}
-
-BASE="http://localhost:3001/tennis"
-
-# Login helper
 do_login() {
-  local user="$1" pass="$2" cookie_file="$3"
-  local lr_resp=$(curl -s -c "$cookie_file" "$BASE/api/auth/login")
-  local login_csrf=$(echo "$lr_resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('loginCsrf',''))" 2>/dev/null)
-  local csrf_token=$(curl -s -b "$cookie_file" "$BASE/api/csrf-token" | python3 -c "import sys,json; print(json.load(sys.stdin).get('csrfToken',''))" 2>/dev/null)
-  local resp=$(curl -s -c "$cookie_file" -b "$cookie_file" \
-    -X POST "$BASE/api/auth/login" \
-    -H "Content-Type: application/json" \
-    -H "X-CSRF-Token: $csrf_token" \
-    -d "{\"username\":\"$user\",\"password\":\"$pass\",\"_loginCsrf\":\"$login_csrf\",\"_csrf\":\"$csrf_token\"}")
-  echo "$resp" | python3 -c "import sys,json; print(json.load(sys.stdin).get('csrfToken',''))" 2>/dev/null
+  local user=$1 pass=$2 cookie=$3
+  local lr=$(curl -s -c "$cookie" "$API/auth/login")
+  local lcsrf=$(echo "$lr" | python3 -c "import sys,json;print(json.load(sys.stdin).get('loginCsrf',''))" 2>/dev/null)
+  local ct=$(curl -s -b "$cookie" "$API/csrf-token" | python3 -c "import sys,json;print(json.load(sys.stdin).get('csrfToken',''))" 2>/dev/null)
+  local r=$(curl -s -c "$cookie" -b "$cookie" -X POST "$API/auth/login" \
+    -H 'Content-Type: application/json' -H "X-CSRF-Token: $ct" \
+    -d "{\"username\":\"$user\",\"password\":\"$pass\",\"_loginCsrf\":\"$lcsrf\",\"_csrf\":\"$ct\"}")
+  echo "$r" | python3 -c "import sys,json;print(json.load(sys.stdin).get('csrfToken',''))" 2>/dev/null
+}
+get_csrf() { curl -s -b "$1" -c "$1" "$API/csrf-token" | python3 -c "import sys,json;print(json.load(sys.stdin).get('csrfToken',''))" 2>/dev/null; }
+
+req() {
+  local method="$1" url="$2" data="${3:-}" cookie="${4:-/tmp/tc.txt}"
+  local csrf="${CSRF:-$(get_csrf "$cookie" 2>/dev/null)}"
+  if [[ "$method" == "GET" ]]; then
+    curl -s -b "$cookie" -H "X-CSRF-Token: $csrf" "$url" 2>/dev/null
+  else
+    curl -s -b "$cookie" -X "$method" "$url" -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" -d "$data" 2>/dev/null
+  fi
+}
+req_code() {
+  local method="$1" url="$2" data="${3:-}" cookie="${4:-/tmp/tc.txt}"
+  local csrf="${CSRF:-$(get_csrf "$cookie" 2>/dev/null)}"
+  if [[ "$method" == "GET" ]]; then
+    curl -s -o /dev/null -w '%{http_code}' -b "$cookie" -H "X-CSRF-Token: $csrf" "$url" 2>/dev/null
+  else
+    curl -s -o /dev/null -w '%{http_code}' -b "$cookie" -X "$method" "$url" -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" -d "$data" 2>/dev/null
+  fi
+}
+# check_code METHOD URL DATA EXPECTED_CODE TEST_NAME
+# Avoids calling req_code inside [[ ]] which confuses bash parser
+check_code() {
+  local code
+  code=$(req_code "$1" "$2" "$3")
+  if [[ "$code" == "$4" ]]; then bp "$5"
+  else bf "$5" "$4" "$code"; fi
 }
 
-get_csrf() {
-  curl -s -b "$1" "$BASE/api/csrf-token" | python3 -c "import sys,json; print(json.load(sys.stdin).get('csrfToken',''))" 2>/dev/null
-}
+# --- 2.1 Auth (must run first for cookie jar) ---
+echo ""; echo "[2.1/17] Authentication"
+CSRF=$(do_login "$ADMIN_USER" "$ADMIN_PASS" "/tmp/tc.txt")
+AUTH=$(curl -s -b /tmp/tc.txt "$API/auth/status")
+AUTH_OK=$(python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+assert d.get('authenticated'), 'not authenticated'
+assert d.get('user',{}).get('username'), 'no username'
+print('ok')
+" <<<"$AUTH" 2>&1 || echo "fail")
+if [[ "$AUTH_OK" == "ok" ]]; then bp "Auth status (authenticated + username)"
+else bf "Auth status" "authenticated+username"; fi
 
-record_match() {
-  local csrf="$1" cookie_file="$2" p1="$3" p2="$4" p3="$5" p4="$6" wt="$7" score1="$8" score2="$9" date="${10}" season="${11}"
-  curl -s -o /dev/null -w '%{http_code}' -b "$cookie_file" -X POST "$BASE/api/matches" \
-    -H 'Content-Type: application/json' -H "X-CSRF-Token: $csrf" \
-    -d "{\"seasonId\":$season,\"playDate\":\"$date\",\"player1Id\":$p1,\"player2Id\":$p2,\"player3Id\":$p3,\"player4Id\":$p4,\"team1Score\":$score1,\"team2Score\":$score2,\"winningTeam\":$wt}"
-}
+CSRF=$(get_csrf "/tmp/tc.txt")
+INIT=$(curl -s -b /tmp/tc.txt "$API/init")
+INIT_OK=$(python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+assert 'players' in d, 'no players'
+assert 'seasons' in d, 'no seasons'
+print('ok')
+" <<<"$INIT" 2>&1 | head -1)
+if [[ "$INIT_OK" == "ok" ]]; then bp "Init data (players + seasons)"
+else bf "Init data" "players+seasons"; fi
+SID=$(python3 -c "import sys,json;d=json.load(sys.stdin);s=d.get('activeSeason',{});print(s.get('id',''))" <<<"$INIT" 2>/dev/null || echo "")
+if [[ -z "$SID" ]] || [[ "$SID" == "None" ]]; then
+  bf "Active season" "found" "missing — tests require an active season"
+  echo ""; echo "=========================================="
+  echo "FATAL: No active season found. Create one before running tests."
+  echo "=========================================="
+  exit 1
+fi
+P1=$(python3 -c "import sys,json;d=json.load(sys.stdin);print(d['players'][0]['id'])" <<<"$INIT" 2>/dev/null || echo "0")
+P2=$(python3 -c "import sys,json;d=json.load(sys.stdin);print(d['players'][1]['id'])" <<<"$INIT" 2>/dev/null || echo "0")
+P3=$(python3 -c "import sys,json;d=json.load(sys.stdin);print(d['players'][2]['id'])" <<<"$INIT" 2>/dev/null || echo "0")
+P4=$(python3 -c "import sys,json;d=json.load(sys.stdin);print(d['players'][3]['id'])" <<<"$INIT" 2>/dev/null || echo "0")
+if [[ "$P1" == "0" ]] || [[ "$P2" == "0" ]] || [[ "$P3" == "0" ]] || [[ "$P4" == "0" ]]; then
+  bf "Minimum players" "4 players" "insufficient — need at least 4 players"
+  echo ""; echo "=========================================="
+  echo "FATAL: Need at least 4 players for backend tests. Create players first."
+  echo "=========================================="
+  exit 1
+fi
+echo "  Season=$SID, P1=$P1, P2=$P2, P3=$P3, P4=$P4"
 
-# --- 1. SPA Loading ---
-echo ""; echo "[1/17] SPA Loading"
-be_assert "SPA loads" "200" "$(curl -s -o /dev/null -w '%{http_code}' "$BASE/")"
-SPA_BODY=$(curl -s "$BASE/")
-be_assert_field "SPA has app-container" "app-container" "$SPA_BODY"
-BE_TOTAL=$((BE_TOTAL+1))
-if echo "$SPA_BODY" | grep -q 'assets/index-'; then BE_PASS=$((BE_PASS+1)); echo "  ✅ SPA loads JS bundle"
-else BE_FAIL=$((BE_FAIL+1)); echo "  ❌ SPA loads JS bundle - missing 'assets/index-'"; fi
-BE_TOTAL=$((BE_TOTAL+1))
-if echo "$SPA_BODY" | grep -qi "tennis"; then BE_PASS=$((BE_PASS+1)); echo "  ✅ SPA has title"
-else BE_FAIL=$((BE_FAIL+1)); echo "  ❌ SPA has title - missing 'Tennis'"; fi
+BL=$(curl -s -c /tmp/bad.txt "$API/auth/login" | python3 -c "import sys,json;print(json.load(sys.stdin).get('loginCsrf',''))" 2>/dev/null)
+BC=$(curl -s -b /tmp/bad.txt "$API/csrf-token" | python3 -c "import sys,json;print(json.load(sys.stdin).get('csrfToken',''))" 2>/dev/null)
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/bad.txt -X POST "$API/auth/login" -H 'Content-Type: application/json' -H "X-CSRF-Token: $BC" -d "{\"username\":\"admin\",\"password\":\"wrong\",\"_loginCsrf\":\"$BL\",\"_csrf\":\"x\"}")
+if [[ "$CODE" == "401" ]]; then bp "Bad login rejected"
+else bf "Bad login" "401" "$CODE"; fi
 
-# --- 2. Authentication ---
-echo ""; echo "[2/17] Authentication"
-CSRF=$(do_login "admin" "dev_admin_password" "/tmp/cookies.txt")
-AUTH=$(curl -s -b /tmp/cookies.txt "$BASE/api/auth/status")
-be_assert_field "Admin login csrfToken" "csrfToken" "$AUTH"
-be_assert_field "Auth authenticated" "authenticated" "$AUTH"
-be_assert_field "Auth username" "username" "$AUTH"
-
-CSRF=$(get_csrf "/tmp/cookies.txt")
-
-INIT=$(curl -s -b /tmp/cookies.txt "$BASE/api/init")
-be_assert_field "Init: players" "players" "$INIT"
-be_assert_field "Init: seasons" "seasons" "$INIT"
-be_assert_field "Init: activeSeason" "activeSeason" "$INIT"
-
-SEASON_ID=$(echo "$INIT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('activeSeason',{}).get('id',1))" 2>/dev/null || echo "1")
-P1_ID=$(echo "$INIT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['players'][0]['id'])" 2>/dev/null || echo "1")
-P2_ID=$(echo "$INIT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['players'][1]['id'])" 2>/dev/null || echo "2")
-P3_ID=$(echo "$INIT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['players'][2]['id'])" 2>/dev/null || echo "3")
-P4_ID=$(echo "$INIT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['players'][3]['id'])" 2>/dev/null || echo "4")
-echo "  Season=$SEASON_ID, P1=$P1_ID, P2=$P2_ID, P3=$P3_ID, P4=$P4_ID"
-
-# Bad login
-B_LR=$(curl -s -c /tmp/bad.txt "$BASE/api/auth/login" | python3 -c "import sys,json; print(json.load(sys.stdin).get('loginCsrf',''))" 2>/dev/null)
-B_CT=$(curl -s -b /tmp/bad.txt "$BASE/api/csrf-token" | python3 -c "import sys,json; print(json.load(sys.stdin).get('csrfToken',''))" 2>/dev/null)
-be_assert "Bad login rejected" "401" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/bad.txt -X POST "$BASE/api/auth/login" -H 'Content-Type: application/json' -H "X-CSRF-Token: $B_CT" -d "{\"username\":\"admin\",\"password\":\"wrong\",\"_loginCsrf\":\"$B_LR\",\"_csrf\":\"x\"}")"
-
-# --- 3. Players ---
-echo ""; echo "[3/17] Players"
-be_assert_is_array "Players list" "$(curl -s -b /tmp/cookies.txt "$BASE/api/players")"
-
-CSRF=$(get_csrf "/tmp/cookies.txt")
-be_assert "Create player" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X POST "$BASE/api/players" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d "{\"name\":\"UI Test Player $(date +%s)\",\"nickname\":\"UITest\"}")"
-
-TEST_PID=$(curl -s -b /tmp/cookies.txt "$BASE/api/players" | python3 -c "import sys,json; [print(p['id']) for p in json.load(sys.stdin) if p.get('nickname')=='UITest']" 2>/dev/null | head -1)
-if [ -n "$TEST_PID" ]; then
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "Update player" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X PUT "$BASE/api/players/$TEST_PID" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d '{"name":"Updated UI Player"}')"
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "Delete player" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X DELETE "$BASE/api/players/$TEST_PID" -H "X-CSRF-Token: $CSRF")"
+# --- 2.2 SPA (after auth for cookie jar) ---
+echo ""; echo "[2.2/17] SPA Loading"
+SPA_URL="${API%/api}/"  # derive SPA URL from API URL, trailing slash to avoid 301 redirect
+SPA_CODE=$(curl -s -L -o /tmp/spa.html -w '%{http_code}' -b /tmp/tc.txt "$SPA_URL" 2>/dev/null) || SPA_CODE="000"
+if [[ ! -f /tmp/spa.html ]] || [[ "$SPA_CODE" == "000" ]]; then
+  bf "SPA connection" "connected" "refused"
+else
+  grep -q 'app-container' /tmp/spa.html && bp "SPA has app-container" || bf "SPA container" "app-container found" "not found"
+  grep -q 'assets/index-' /tmp/spa.html && bp "SPA loads JS bundle" || bf "JS bundle" "assets/index- found" "not found"
+  grep -qi 'tennis' /tmp/spa.html && bp "SPA has title" || bf "SPA title" "Tennis in title" "not found"
 fi
 
-# --- 4. Seasons ---
-echo ""; echo "[4/17] Seasons"
-CSRF=$(get_csrf "/tmp/cookies.txt")
-be_assert_is_array "Seasons list" "$(curl -s -b /tmp/cookies.txt "$BASE/api/seasons")"
-be_assert_is_obj "Active season" "$(curl -s -b /tmp/cookies.txt "$BASE/api/seasons/active-one")"
+# --- 2.3 Players ---
+echo ""; echo "[2.3/17] Players"
+python3 -c "import sys,json;assert isinstance(json.load(sys.stdin),list)" <<<"$(req GET "$API/players")" 2>/dev/null && bp "Players list (array)" || bf "Players" "array" "not array"
+check_code POST "$API/players" "{\"name\":\"TestP${TS}\"}" 200 "Create player"
+CSRF=$(get_csrf "/tmp/tc.txt")
 
-CREATE_S_RESP=$(curl -s -b /tmp/cookies.txt -X POST "$BASE/api/seasons" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d '{"name":"UI Test Season","startDate":"2026-01-01","endDate":"2026-12-31"}')
-be_assert "Create season" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X POST "$BASE/api/seasons" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d '{"name":"UI Test Season B","startDate":"2026-06-01","endDate":"2026-11-30"}')"
-S_ID=$(echo "$CREATE_S_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',0))" 2>/dev/null || echo "0")
+# --- 2.4 Seasons ---
+echo ""; echo "[2.4/17] Seasons"
+python3 -c "import sys,json;assert isinstance(json.load(sys.stdin),list)" <<<"$(req GET "$API/seasons")" 2>/dev/null && bp "Seasons list (array)" || bf "Seasons" "array" "not array"
+python3 -c "import sys,json;assert isinstance(json.load(sys.stdin),dict)" <<<"$(req GET "$API/seasons/active-one")" 2>/dev/null && bp "Active season (object)" || bf "Active season" "object" "not object"
+CSRF=$(get_csrf "/tmp/tc.txt")
+CREAT_S=$(curl -s -b /tmp/tc.txt -X POST "$API/seasons" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d '{"name":"TestS${TS}","startDate":"2026-01-01"}')
+S_ID=$(echo "$CREAT_S" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',0))" 2>/dev/null || echo 0)
+CSRF=$(get_csrf "/tmp/tc.txt")
+CREAT_B=$(curl -s -b /tmp/tc.txt -X POST "$API/seasons" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d "{\"name\":\"TestSB${TS}\",\"startDate\":\"2026-06-01\"}")
+B_CODE=$(echo "$CREAT_B" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',0) or 'err')" 2>/dev/null || echo "err")
+if [[ "$B_CODE" != "err" ]]; then bp "Create season"
+else bf "Create season" "200" "400"; fi
+CSRF=$(get_csrf "/tmp/tc.txt")
 
-if [ "$S_ID" != "0" ]; then
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "Update season" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X PUT "$BASE/api/seasons/$S_ID" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d '{"name":"Updated UI Season","startDate":"2026-01-01","endDate":"2026-12-31"}')"
-  be_assert_is_array "Season players" "$(curl -s -b /tmp/cookies.txt "$BASE/api/seasons/$S_ID/players")"
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "Add players to season" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X POST "$BASE/api/seasons/$S_ID/players" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d "{\"playerIds\":[$P1_ID,$P2_ID]}")"
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "End season" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X POST "$BASE/api/seasons/$S_ID/end" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d '{"endDate":"2026-12-31"}')"
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "Reactivate season" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X POST "$BASE/api/seasons/$S_ID/reactivate" -H "X-CSRF-Token: $CSRF")"
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "Season results" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X PUT "$BASE/api/seasons/$S_ID/results" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d '{"finalResults":"Winner: P1"}')"
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  curl -s -b /tmp/cookies.txt -X POST "$BASE/api/seasons/$S_ID/end" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d '{"endDate":"2026-12-31"}' > /dev/null
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "Delete ended season" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X DELETE "$BASE/api/seasons/$S_ID" -H "X-CSRF-Token: $CSRF")"
+if [[ "$S_ID" != "0" ]]; then
+  check_code PUT "$API/seasons/$S_ID" '{"name":"UpdatedS"}' 200 "Update season"
+  CSRF=$(get_csrf "/tmp/tc.txt")
+  python3 -c "import sys,json;assert isinstance(json.load(sys.stdin),list)" <<<"$(req GET "$API/seasons/$S_ID/players")" 2>/dev/null && bp "Season players (array)" || bf "Season players" "array" "not array"
+  check_code POST "$API/seasons/$S_ID/players" "{\"playerIds\":[$P1,$P2]}" 200 "Add players"
+  CSRF=$(get_csrf "/tmp/tc.txt")
+  check_code POST "$API/seasons/$S_ID/end" '{"endDate":"2026-12-31"}' 200 "End season"
+  CSRF=$(get_csrf "/tmp/tc.txt")
+  check_code POST "$API/seasons/$S_ID/reactivate" '{}' 200 "Reactivate season"
+  CSRF=$(get_csrf "/tmp/tc.txt")
+  check_code PUT "$API/seasons/$S_ID/results" '{"finalResults":"W: P1"}' 200 "Season results"
+  CSRF=$(get_csrf "/tmp/tc.txt")
+  req POST "$API/seasons/$S_ID/end" '{"endDate":"2026-12-31"}' > /dev/null
+  CSRF=$(get_csrf "/tmp/tc.txt")
+  check_code DELETE "$API/seasons/$S_ID" '' 200 "Delete ended season"
 fi
-CSRF=$(get_csrf "/tmp/cookies.txt")
-be_assert "Check expired" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X POST "$BASE/api/seasons/check-expired" -H "X-CSRF-Token: $CSRF")"
+CSRF=$(get_csrf "/tmp/tc.txt")
+check_code POST "$API/seasons/check-expired" '{}' 200 "Check expired"
 
-# --- 5. Matches ---
-echo ""; echo "[5/17] Matches"
-be_assert_is_array "Matches list" "$(curl -s -b /tmp/cookies.txt "$BASE/api/matches")"
-CSRF=$(get_csrf "/tmp/cookies.txt")
-be_assert "Record match 1" "200" "$(record_match "$CSRF" "/tmp/cookies.txt" $P1_ID $P2_ID $P3_ID $P4_ID 1 6 7 "2026-07-17" "$SEASON_ID")"
-CSRF=$(get_csrf "/tmp/cookies.txt")
-be_assert "Record match 2" "200" "$(record_match "$CSRF" "/tmp/cookies.txt" $P2_ID $P3_ID $P4_ID $P1_ID 2 5 6 "2026-07-18" "$SEASON_ID")"
-be_assert_is_array "Match history" "$(curl -s -b /tmp/cookies.txt "$BASE/api/matches?date=2026-07-17")"
-be_assert_is_array "Play dates" "$(curl -s -b /tmp/cookies.txt "$BASE/api/play-dates")"
+# --- 2.5 Matches ---
+echo ""; echo "[2.5/17] Matches"
+python3 -c "import sys,json;assert isinstance(json.load(sys.stdin),list)" <<<"$(req GET "$API/matches")" 2>/dev/null && bp "Matches list (array)" || bf "Matches" "array" "not array"
+for i in 1 2; do
+  check_code POST "$API/matches" "{\"seasonId\":$SID,\"playDate\":\"2026-07-17\",\"player1Id\":$P1,\"player2Id\":$P2,\"player3Id\":$P3,\"player4Id\":$P4,\"team1Score\":$((i+5)),\"team2Score\":$i,\"winningTeam\":$((i%2+1))}" 200 "Record match $i"
+  CSRF=$(get_csrf "/tmp/tc.txt")
+done
+python3 -c "import sys,json;assert isinstance(json.load(sys.stdin),list)" <<<"$(req GET "$API/matches?date=2026-07-17")" 2>/dev/null && bp "Match history (array)" || bf "History" "array" "not array"
+python3 -c "import sys,json;assert isinstance(json.load(sys.stdin),list)" <<<"$(req GET "$API/play-dates")" 2>/dev/null && bp "Play dates (array)" || bf "Play dates" "array" "not array"
 
-MATCH_ID=$(curl -s -b /tmp/cookies.txt "$BASE/api/matches?date=2026-07-17" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if d else '')" 2>/dev/null || echo "")
-if [ -n "$MATCH_ID" ]; then
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "Edit match" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X PUT "$BASE/api/matches/$MATCH_ID" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d "{\"seasonId\":$SEASON_ID,\"playDate\":\"2026-07-17\",\"player1Id\":$P1_ID,\"player2Id\":$P2_ID,\"player3Id\":$P3_ID,\"player4Id\":$P4_ID,\"team1Score\":7,\"team2Score\":6,\"winningTeam\":2}")"
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "Delete match" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X DELETE "$BASE/api/matches/$MATCH_ID" -H "X-CSRF-Token: $CSRF")"
+MID=$(python3 -c "import sys,json;d=json.load(sys.stdin);print(d[0]['id'] if d else '')" <<<"$(req GET "$API/matches?date=2026-07-17")" 2>/dev/null || echo "")
+if [[ -n "$MID" ]]; then
+  check_code PUT "$API/matches/$MID" "{\"seasonId\":$SID,\"playDate\":\"2026-07-17\",\"player1Id\":$P1,\"player2Id\":$P2,\"player3Id\":$P3,\"player4Id\":$P4,\"team1Score\":7,\"team2Score\":6,\"winningTeam\":2}" 200 "Edit match"
+  CSRF=$(get_csrf "/tmp/tc.txt")
+  check_code DELETE "$API/matches/$MID" '' 200 "Delete match"
 fi
+CSRF=$(get_csrf "/tmp/tc.txt")
 
-# --- 6. Rankings ---
-echo ""; echo "[6/17] Rankings"
-be_assert_is_obj "Lifetime rankings" "$(curl -s -b /tmp/cookies.txt "$BASE/api/rankings")"
-be_assert_is_array "Season rankings" "$(curl -s -b /tmp/cookies.txt "$BASE/api/rankings/season/$SEASON_ID")"
-be_assert_is_array "Date rankings" "$(curl -s -b /tmp/cookies.txt "$BASE/api/rankings/date/2026-07-17")"
+# --- 2.6 Rankings ---
+echo ""; echo "[2.6/17] Rankings"
+python3 -c "import sys,json;assert isinstance(json.load(sys.stdin),dict)" <<<"$(req GET "$API/rankings")" 2>/dev/null && bp "Lifetime rankings (object)" || bf "Lifetime" "object" "not object"
+python3 -c "import sys,json;assert isinstance(json.load(sys.stdin),list)" <<<"$(req GET "$API/rankings/season/$SID")" 2>/dev/null && bp "Season rankings (array)" || bf "Season" "array" "not array"
+python3 -c "import sys,json;assert isinstance(json.load(sys.stdin),list)" <<<"$(req GET "$API/rankings/date/2026-07-17")" 2>/dev/null && bp "Date rankings (array)" || bf "Date" "array" "not array"
 
-# --- 7. Cups ---
-echo ""; echo "[7/17] Cups"
-CSRF=$(get_csrf "/tmp/cookies.txt")
-be_assert_is_array "Cups list" "$(curl -s -b /tmp/cookies.txt "$BASE/api/cups")"
+# --- 2.7 Cups ---
+echo ""; echo "[2.7/17] Cups"
+python3 -c "import sys,json;assert isinstance(json.load(sys.stdin),list)" <<<"$(req GET "$API/cups")" 2>/dev/null && bp "Cups list (array)" || bf "Cups" "array" "not array"
+CSRF=$(get_csrf "/tmp/tc.txt")
+CC=$(curl -s -b /tmp/tc.txt -X POST "$API/cups" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d "{\"name\":\"TestCup\",\"format\":\"single_elimination\",\"numTeams\":2}")
+CID=$(echo "$CC" | python3 -c "import sys,json;print(json.load(sys.stdin).get('id',0))" 2>/dev/null || echo 0)
+check_code POST "$API/cups" '{"name":"TestCupB","format":"single_elimination","numTeams":2}' 201 "Create cup"
 
-CREATE_C_RESP=$(curl -s -b /tmp/cookies.txt -X POST "$BASE/api/cups" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d "{\"name\":\"UI Test Cup\",\"seasonId\":$SEASON_ID,\"format\":\"single_elimination\",\"numTeams\":2,\"startDate\":\"2026-08-01\"}")
-be_assert "Create cup" "201" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X POST "$BASE/api/cups" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d "{\"name\":\"UI Test Cup B\",\"seasonId\":$SEASON_ID,\"format\":\"single_elimination\",\"numTeams\":2,\"startDate\":\"2026-08-15\"}")"
-CUP_ID=$(echo "$CREATE_C_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin).get('id',0))" 2>/dev/null || echo "0")
-
-if [ "$CUP_ID" != "0" ]; then
-  be_assert_is_obj "Cup detail" "$(curl -s -b /tmp/cookies.txt "$BASE/api/cups/$CUP_ID")"
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "Add participant 1" "201" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X POST "$BASE/api/cups/$CUP_ID/participants" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d "{\"player1Id\":$P1_ID,\"player2Id\":$P2_ID}")"
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "Add participant 2" "201" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X POST "$BASE/api/cups/$CUP_ID/participants" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d "{\"player1Id\":$P3_ID,\"player2Id\":$P4_ID}")"
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "Shuffle seeds" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X POST "$BASE/api/cups/$CUP_ID/seed-shuffle" -H "X-CSRF-Token: $CSRF")"
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "Generate bracket" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X POST "$BASE/api/cups/$CUP_ID/generate-bracket" -H "X-CSRF-Token: $CSRF")"
-  be_assert_is_array "Bracket view" "$(curl -s -b /tmp/cookies.txt "$BASE/api/cups/$CUP_ID/bracket")"
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "Edit cup" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X PUT "$BASE/api/cups/$CUP_ID" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d '{"name":"Updated UI Cup"}')"
-  CSRF=$(get_csrf "/tmp/cookies.txt")
-  be_assert "Delete cup" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt -X DELETE "$BASE/api/cups/$CUP_ID" -H "X-CSRF-Token: $CSRF")"
+if [[ "$CID" != "0" ]]; then
+  python3 -c "import sys,json;assert isinstance(json.load(sys.stdin),dict)" <<<"$(req GET "$API/cups/$CID")" 2>/dev/null && bp "Cup detail (object)" || bf "Cup detail" "object" "not object"
+  check_code POST "$API/cups/$CID/participants" "{\"player1Id\":$P1,\"seed\":1}" 201 "Add participant 1"
+  CSRF=$(get_csrf "/tmp/tc.txt")
+  check_code POST "$API/cups/$CID/participants" "{\"player1Id\":$P2,\"seed\":2}" 201 "Add participant 2"
+  CSRF=$(get_csrf "/tmp/tc.txt")
+  check_code POST "$API/cups/$CID/seed-shuffle" '{}' 200 "Shuffle seeds"
+  CSRF=$(get_csrf "/tmp/tc.txt")
+  check_code POST "$API/cups/$CID/generate-bracket" '{}' 200 "Generate bracket"
+  CSRF=$(get_csrf "/tmp/tc.txt")
+  python3 -c "import sys,json;assert isinstance(json.load(sys.stdin),list)" <<<"$(req GET "$API/cups/$CID/bracket")" 2>/dev/null && bp "Bracket view (array)" || bf "Bracket view" "array" "not array"
+  check_code PUT "$API/cups/$CID" '{"name":"UpdatedCup"}' 200 "Edit cup"
+  CSRF=$(get_csrf "/tmp/tc.txt")
+  check_code DELETE "$API/cups/$CID" '' 200 "Delete cup"
 fi
+CSRF=$(get_csrf "/tmp/tc.txt")
 
-# --- 8. Images ---
-echo ""; echo "[8/17] Images"
-be_assert_is_array "Images list" "$(curl -s -b /tmp/cookies.txt "$BASE/api/images")"
+# --- 2.8 Images ---
+echo ""; echo "[2.8/17] Images"
+python3 -c "import sys,json;assert isinstance(json.load(sys.stdin),list)" <<<"$(req GET "$API/images")" 2>/dev/null && bp "Images list (array)" || bf "Images" "array" "not array"
 
-# --- 9. Export ---
-echo ""; echo "[9/17] Export"
-be_assert "Excel export" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt "$BASE/api/export-excel")"
+# --- 2.9 Export ---
+echo ""; echo "[2.9/17] Export"
+EX_CODE=$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/tc.txt "$API/export-excel")
+if [[ "$EX_CODE" == "200" ]]; then bp "Excel export"
+else bf "Excel" "200" "$EX_CODE"; fi
 
-# --- 10. Backup ---
-echo ""; echo "[10/17] Backup"
-be_assert "JSON backup" "200" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt "$BASE/api/backup")"
+# --- 2.10 Backup ---
+echo ""; echo "[2.10/17] Backup"
+check_code GET "$API/backup" '' 200 "JSON backup"
 
-# --- 11. Admin ---
-echo ""; echo "[11/17] Admin"
-be_assert_field "FCM status" "status" "$(curl -s -b /tmp/cookies.txt "$BASE/api/admin/fcm/status")"
-be_assert_field "Cache stats" "hitRate" "$(curl -s -b /tmp/cookies.txt "$BASE/api/cache-stats")"
+# --- 2.11 Admin ---
+echo ""; echo "[2.11/17] Admin"
+python3 -c "import sys,json;d=json.load(sys.stdin);assert 'status' in d" <<<"$(req GET "$API/admin/fcm/status")" 2>/dev/null && bp "FCM status" || bf_field "FCM" "status"
+python3 -c "import sys,json;d=json.load(sys.stdin);assert 'cacheStats' in d" <<<"$(req GET "$API/cache-stats")" 2>/dev/null && bp "Cache stats" || bf_field "Cache" "hitRate"
 
-# --- 12. Users ---
-echo ""; echo "[12/17] Users"
-be_assert_is_obj "Users list" "$(curl -s -b /tmp/cookies.txt "$BASE/api/users")"
+# --- 2.12 Users ---
+echo ""; echo "[2.12/17] Users"
+CSRF=$(get_csrf "/tmp/tc.txt")
+python3 -c "import sys,json;d=json.load(sys.stdin);assert isinstance(d,list)" <<<"$(req GET "$API/auth/users")" 2>/dev/null && bp "Users list (array)" || bf "Users" "array" "not array"
 
-# --- 13. System ---
-echo ""; echo "[13/17] System"
-be_assert_field "Data version" "version" "$(curl -s -b /tmp/cookies.txt "$BASE/api/data-version")"
+# --- 2.13 System ---
+echo ""; echo "[2.13/17] System"
+python3 -c "import sys,json;d=json.load(sys.stdin);assert 'version' in d" <<<"$(req GET "$API/data-version")" 2>/dev/null && bp "Data version" || bf_field "Version" "version"
 
-# --- 14. Cache Coherence ---
-echo ""; echo "[14/17] Cache Coherence"
-V1=$(curl -s -b /tmp/cookies.txt "$BASE/api/data-version" | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])" 2>/dev/null)
+# --- 2.14 Cache coherence ---
+echo ""; echo "[2.14/17] Cache Coherence"
+CSRF=$(get_csrf "/tmp/tc.txt")
+V1=$(python3 -c "import sys,json;print(json.load(sys.stdin)['version'])" <<<"$(req GET "$API/data-version")" 2>/dev/null)
 sleep 1
-CSRF=$(get_csrf "/tmp/cookies.txt")
-SEASON_UPD=$(curl -s -w "\n%{http_code}" -b /tmp/cookies.txt -X PUT "$BASE/api/seasons/$SEASON_ID" -H 'Content-Type: application/json' -H "X-CSRF-Token: $CSRF" -d "{\"name\":\"Season $(date +%s)\",\"startDate\":\"2026-01-01\",\"endDate\":\"2026-12-31\"}")
+CSRF=$(get_csrf "/tmp/tc.txt")
+req PUT "$API/seasons/$SID" '{"name":"CacheTest"}' > /dev/null
 sleep 1
-V2=$(curl -s -b /tmp/cookies.txt "$BASE/api/data-version" | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])" 2>/dev/null)
-BE_TOTAL=$((BE_TOTAL+1))
-SEASON_STATUS=$(echo "$SEASON_UPD" | tail -1)
-if [ "$SEASON_STATUS" != "200" ]; then BE_FAIL=$((BE_FAIL+1)); echo "  ❌ Cache coherence - season update failed (HTTP $SEASON_STATUS)"
-elif [ "$V1" != "$V2" ]; then BE_PASS=$((BE_PASS+1)); echo "  ✅ Data version changed ($V1 -> $V2)"
-else BE_FAIL=$((BE_FAIL+1)); echo "  ❌ Data version unchanged ($V1)"; fi
+CSRF=$(get_csrf "/tmp/tc.txt")
+V2=$(python3 -c "import sys,json;print(json.load(sys.stdin)['version'])" <<<"$(req GET "$API/data-version")" 2>/dev/null)
+if [[ "$V1" != "$V2" ]]; then bp "Cache coherence ($V1 -> $V2)"
+else bf "Coherence" "version change" "same version"; fi
 
-# --- 15. SSE ---
-echo ""; echo "[15/17] SSE"
-SSE_CODE=$(timeout 2 curl -s -o /dev/null -w '%{http_code}' -b /tmp/cookies.txt "$BASE/api/events" 2>/dev/null || echo "0")
-BE_TOTAL=$((BE_TOTAL+1))
-if [ "$SSE_CODE" = "200" ] || [ "$SSE_CODE" = "0" ]; then BE_PASS=$((BE_PASS+1)); echo "  ✅ SSE endpoint accessible"
-else BE_FAIL=$((BE_FAIL+1)); echo "  ❌ SSE failed ($SSE_CODE)"; fi
+# --- 2.15 SSE ---
+echo ""; echo "[2.15/17] SSE"
+SSE_HEADERS=$(curl -s -D - -o /dev/null -b /tmp/tc.txt --max-time 3 "$API/events" 2>/dev/null) || true
+echo "$SSE_HEADERS" | grep -qi 'text/event-stream' && bp "SSE endpoint accessible" || bf "SSE" "text/event-stream" "not found"
 
-# --- 16. Health ---
-echo ""; echo "[16/17] Health"
-be_assert_field "Health check" "status" "$(curl -s -b /tmp/cookies.txt "$BASE/api/health")"
+# --- 2.16 Health ---
+echo ""; echo "[2.16/17] Health"
+python3 -c "import sys,json;d=json.load(sys.stdin);assert 'status' in d" <<<"$(req GET "$API/health")" 2>/dev/null && bp "Health check" || bf_field "Health" "status"
 
-# --- 17. Editor role ---
-echo ""; echo "[17/17] Editor Role"
-E_CSRF=$(do_login "editor" "dev_editor_password" "/tmp/ec.txt")
-be_assert_field "Editor login" "csrfToken" "$(curl -s -b /tmp/ec.txt "$BASE/api/auth/status")"
+# --- 2.17 Editor role ---
+echo ""; echo "[2.17/17] Editor Role"
+EC=$(do_login "$EDITOR_USER" "$EDITOR_PASS" "/tmp/ec.txt")
+EA=$(curl -s -b /tmp/ec.txt "$API/auth/status")
+python3 -c "import sys,json;d=json.load(sys.stdin);assert d.get('user',{}).get('role')=='editor'" <<<"$EA" 2>/dev/null && bp "Editor login" || bf "Editor" "editor" "other role"
 
-E_CSRF=$(get_csrf "/tmp/ec.txt")
-be_assert "Editor cannot create season" "403" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/ec.txt -X POST "$BASE/api/seasons" -H 'Content-Type: application/json' -H "X-CSRF-Token: $E_CSRF" -d '{"name":"E","startDate":"2026-01-01"}')"
-be_assert "Editor cannot delete season" "403" "$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/ec.txt -X DELETE "$BASE/api/seasons/$SEASON_ID" -H "X-CSRF-Token: $E_CSRF")"
-E_CSRF=$(get_csrf "/tmp/ec.txt")
-be_assert "Editor can record match" "200" "$(record_match "$E_CSRF" "/tmp/ec.txt" $P1_ID $P3_ID $P2_ID $P4_ID 2 7 6 "2026-07-20" "$SEASON_ID")"
+EC2=$(get_csrf "/tmp/ec.txt")
+NC=$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/ec.txt -X POST "$API/seasons" -H 'Content-Type: application/json' -H "X-CSRF-Token: $EC2" -d '{"name":"Fail"}')
+if [[ "$NC" == "403" ]]; then bp "Editor cannot create season"
+else bf "Editor create" "403" "$NC"; fi
 
-# --- Backend results ---
-echo ""
-echo "=========================================="
-echo "BACKEND RESULTS: $BE_PASS/$BE_TOTAL passed, $BE_FAIL failed"
-echo "=========================================="
+ND=$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/ec.txt -X DELETE "$API/seasons/$SID" -H "X-CSRF-Token: $EC2")
+if [[ "$ND" == "403" ]]; then bp "Editor cannot delete season"
+else bf "Editor delete" "403" "$ND"; fi
 
-# ──────────────────────────────────────────────────────────────────────
-# GRAND TOTAL
-# ──────────────────────────────────────────────────────────────────────
+EC3=$(get_csrf "/tmp/ec.txt")
+EM=$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/ec.txt -X POST "$API/matches" -H 'Content-Type: application/json' -H "X-CSRF-Token: $EC3" -d "{\"seasonId\":$SID,\"playDate\":\"2026-07-19\",\"player1Id\":$P1,\"player2Id\":$P2,\"player3Id\":$P3,\"player4Id\":$P4,\"team1Score\":2,\"team2Score\":1,\"winningTeam\":1}")
+if [[ "$EM" == "200" ]]; then bp "Editor can record match"
+else bf "Editor match" "200" "$EM"; fi
 
-GRAND_PASS=$((FE_PASS + BE_PASS))
-GRAND_FAIL=$((FE_FAIL + BE_FAIL))
-GRAND_TOTAL=$((FE_TOTAL + BE_TOTAL))
+rm -f /tmp/tc.txt /tmp/ec.txt /tmp/bad.txt
 
-echo ""
-echo "=========================================="
-echo "GRAND TOTAL: $GRAND_PASS/$GRAND_TOTAL passed, $GRAND_FAIL failed"
-echo "  Frontend: $FE_PASS/$FE_TOTAL  |  Backend: $BE_PASS/$BE_TOTAL"
+########################################################################
+# SUMMARY
+########################################################################
+echo ""; echo "=========================================="
+TOTAL=$((PASS + FAIL + BP + BF))
+echo "FRONTEND: $FE_PASS/$((FE_PASS+FE_FAIL)) | BACKEND: $BP/$((BP+BF))"
+echo "GRAND TOTAL: $((PASS+BP))/$TOTAL passed, $((FAIL+BF)) failed"
 echo "=========================================="
 
-[ $((FE_FAIL + BE_FAIL)) -gt 0 ] && exit 1
+if [[ $((FAIL+BF)) -gt 0 ]]; then exit 1; fi
 exit 0

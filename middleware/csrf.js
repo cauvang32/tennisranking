@@ -16,6 +16,20 @@ const tokens = new csrf()
 
 export { tokens }
 
+// Helper to create a REUSABLE CSRF token (hash: true).
+// The ncs `csrf` package creates one-time tokens by default — each verify()
+// consumes the token. With { hash: true }, the token is hashed with a random
+// salt and can be verified multiple times. This is required for the frontend's
+// cache-and-reuse pattern.
+export function createReusableToken(secret) {
+  return tokens.create(secret, { hash: true })
+}
+
+// Verify a reusable token. Works for both hashed (reusable) and plain tokens.
+export function verifyReusableToken(secret, token) {
+  return tokens.verify(secret, token, { hash: true })
+}
+
 /**
  * Derive a CSRF secret from a user object.
  * Same user ID always produces the same secret (deterministic).
@@ -94,7 +108,7 @@ export const globalCSRFProtection = (req, res, next) => {
 
   const secret = deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })
 
-  if (!csrfToken || !tokens.verify(secret, csrfToken)) {
+  if (!csrfToken || !verifyReusableToken(secret, csrfToken)) {
     return res.status(403).json({
       error: 'Invalid CSRF token',
       csrfRequired: true

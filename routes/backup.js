@@ -33,8 +33,8 @@ export const createBackupRouter = ({
     authenticateToken, requireAdmin, conditionalRateLimit(criticalLimiter),
     asyncHandler(async (req, res) => {
       console.log(`📦 BACKUP requested by user: ${req.user.username}`)
-      const [players, seasons, matches, users, seasonPlayersMap] = await Promise.all([
-        db.getPlayers(), db.getSeasons(), db.getMatches(), db.getUsers(), db.getAllSeasonPlayers()
+      const [players, seasons, matches, users, seasonPlayersMap, cups] = await Promise.all([
+        db.getPlayers(), db.getSeasons(), db.getMatches(), db.getUsers(), db.getAllSeasonPlayers(), db.getCupsForBackup()
       ])
       const seasonsWithPlayers = seasons.map(s => ({
         ...s, players: seasonPlayersMap.get(s.id) || []
@@ -42,10 +42,10 @@ export const createBackupRouter = ({
       // Strip password_hash from backup response to prevent offline brute-force attacks
       const safeUsers = users.map(({ password_hash: _ph, ...user }) => user)
       res.json(sanitizeResponse({
-        version: '2.2', timestamp: new Date().toISOString(), exportedBy: req.user.username,
-        players, seasons: seasonsWithPlayers, matches, users: safeUsers
+        version: '2.3', timestamp: new Date().toISOString(), exportedBy: req.user.username,
+        players, seasons: seasonsWithPlayers, matches, users: safeUsers, cups
       }))
-      console.log('✅ Backup created successfully (including users)')
+      console.log(`✅ Backup created successfully (${cups.length} cups, including users)`)
     })
   )
 
@@ -72,16 +72,22 @@ export const createBackupRouter = ({
       }
 
       const hasUsers = backupData.users && backupData.users.length > 0
-      console.log(`📊 Restoring: ${backupData.players.length} players, ${backupData.seasons.length} seasons, ${backupData.matches.length} matches${hasUsers ? `, ${backupData.users.length} users` : ''}`)
+      const hasCups = backupData.cups && backupData.cups.length > 0
+      console.log(`📊 Restoring: ${backupData.players.length} players, ${backupData.seasons.length} seasons, ${backupData.matches.length} matches${hasUsers ? `, ${backupData.users.length} users` : ''}${hasCups ? `, ${backupData.cups.length} cups` : ''}`)
 
       // Wrap entire restore in a transaction for all-or-nothing semantics
       const client = await db.pool.connect()
       let matchesRestored = 0, matchesSkipped = 0
       let usersRestored = 0, usersSkipped = 0
+      let cupsRestored = 0, cupsSkipped = 0
       try {
         await client.query('BEGIN')
 
-        // Clear existing data (within transaction)
+        // Clear existing data (within transaction) — cup tables first due to FK dependencies
+        await client.query('DELETE FROM cup_advancements')
+        await client.query('DELETE FROM cup_matches')
+        await client.query('DELETE FROM cup_participants')
+        await client.query('DELETE FROM cups')
         await client.query('DELETE FROM matches')
         await client.query('DELETE FROM season_players')
         await client.query('DELETE FROM seasons')
@@ -92,6 +98,10 @@ export const createBackupRouter = ({
         await client.query('ALTER SEQUENCE players_id_seq RESTART WITH 1')
         await client.query('ALTER SEQUENCE seasons_id_seq RESTART WITH 1')
         await client.query('ALTER SEQUENCE matches_id_seq RESTART WITH 1')
+        await client.query('ALTER SEQUENCE cups_id_seq RESTART WITH 1')
+        await client.query('ALTER SEQUENCE cup_participants_id_seq RESTART WITH 1')
+        await client.query('ALTER SEQUENCE cup_matches_id_seq RESTART WITH 1')
+        await client.query('ALTER SEQUENCE cup_advancements_id_seq RESTART WITH 1')
 
         // Restore players
         const playerIdMap = new Map()
@@ -156,6 +166,88 @@ export const createBackupRouter = ({
         }
         console.log(`✅ Restored ${matchesRestored} matches (${matchesSkipped} skipped)`)
 
+        // Restore cups with ID remapping
+        if (hasCups) {
+          const cupIdMap = new Map()
+          for (const cup of backupData.cups) {
+            const newSeasonId = cup.season_id ? seasonIdMap.get(Number(cup.season_id)) : null
+            try {
+              const cupFormat = (cup.format === 'single_elimination' || cup.format === 'double_elimination' || cup.format === 'round_robin') ? cup.format : 'single_elimination'
+              const cupStatus = ['draft', 'scheduled', 'in_progress', 'completed', 'cancelled'].includes(cup.status) ? cup.status : 'draft'
+              const result = await client.query(
+                `INSERT INTO cups (name, season_id, format, num_teams, regulation_text, status, start_date, end_date, created_by, final_results, conclusion_image_path, conclusion_image_filename, conclusion_image_content_type, created_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id`,
+                [cup.name, newSeasonId, cupFormat, cup.num_teams, cup.regulation_text, cupStatus,
+                 cup.start_date, cup.end_date, cup.created_by, cup.final_results || '',
+                 cup.conclusion_image_path || '', cup.conclusion_image_filename || '',
+                 cup.conclusion_image_content_type || '', cup.created_at]
+              )
+              const newCupId = result.rows[0].id
+              cupIdMap.set(Number(cup.id), newCupId)
+
+              // Restore cup participants with player ID remapping
+              const participantIdMap = new Map()
+              if (cup.participants && cup.participants.length > 0) {
+                for (const participant of cup.participants) {
+                  const newP1 = playerIdMap.get(Number(participant.player1_id))
+                  const newP2 = participant.player2_id ? playerIdMap.get(Number(participant.player2_id)) : null
+                  if (newP1) {
+                    const pResult = await client.query(
+                      `INSERT INTO cup_participants (cup_id, player1_id, player2_id, team_name, seed)
+                       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+                      [newCupId, newP1, newP2, participant.team_name, participant.seed]
+                    )
+                    participantIdMap.set(Number(participant.id), pResult.rows[0].id)
+                  }
+                }
+              }
+
+              // Restore cup matches with participant ID remapping
+              if (cup.matches && cup.matches.length > 0) {
+                const newMatchIdMap = new Map()
+                for (const match of cup.matches) {
+                  const newTeam1 = participantIdMap.get(Number(match.team1_participant_id))
+                  const newTeam2 = participantIdMap.get(Number(match.team2_participant_id))
+                  const newWinner = participantIdMap.get(Number(match.winner_participant_id))
+                  try {
+                    const mResult = await client.query(
+                      `INSERT INTO cup_matches (cup_id, round_number, match_number, bracket_position,
+                                                team1_participant_id, team2_participant_id,
+                                                team1_score, team2_score, winner_participant_id,
+                                                play_date, status, created_at)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) RETURNING id`,
+                      [newCupId, match.round_number, match.match_number, match.bracket_position,
+                       newTeam1, newTeam2, match.team1_score, match.team2_score, newWinner,
+                       match.play_date, match.status, match.created_at]
+                    )
+                    newMatchIdMap.set(Number(match.id), mResult.rows[0].id)
+                  } catch (e) { console.error('❌ Error restoring cup match:', e.message) }
+                }
+
+                // Restore cup advancements with match ID remapping
+                if (cup.advancements && cup.advancements.length > 0) {
+                  for (const adv of cup.advancements) {
+                    const newFrom = newMatchIdMap.get(Number(adv.from_match_id))
+                    const newTo = newMatchIdMap.get(Number(adv.to_match_id))
+                    if (newFrom && newTo) {
+                      try {
+                        await client.query(
+                          `INSERT INTO cup_advancements (from_match_id, to_match_id, winner_slot)
+                           VALUES ($1, $2, $3)`,
+                          [newFrom, newTo, adv.winner_slot]
+                        )
+                      } catch (e) { console.error('❌ Error restoring cup advancement:', e.message) }
+                    }
+                  }
+                }
+              }
+
+              cupsRestored++
+            } catch (e) { console.error('❌ Error restoring cup:', e.message); cupsSkipped++ }
+          }
+          console.log(`✅ Restored ${cupsRestored} cups (${cupsSkipped} skipped)`)
+        }
+
         // Restore users (within transaction)
         // C2: NEVER trust password_hash from backup — always regenerate with a random password.
         // A tampered backup could contain a bcrypt hash for a known password (e.g. "admin123"),
@@ -199,7 +291,7 @@ export const createBackupRouter = ({
       await rankingsCache.clear()
       res.json({
         success: true, message: 'Data restored successfully',
-        restored: { players: backupData.players.length, seasons: backupData.seasons.length, matches: matchesRestored, users: usersRestored }
+        restored: { players: backupData.players.length, seasons: backupData.seasons.length, matches: matchesRestored, cups: cupsRestored, users: usersRestored }
       })
     })
   )
@@ -208,14 +300,14 @@ export const createBackupRouter = ({
   router.get('/backup-data',
     authenticateToken, requireAdmin, conditionalRateLimit(exportLimiter),
     asyncHandler(async (req, res) => {
-      const [players, seasons, matches] = await Promise.all([db.getPlayers(), db.getSeasons(), db.getMatches()])
+      const [players, seasons, matches, cups] = await Promise.all([db.getPlayers(), db.getSeasons(), db.getMatches(), db.getCupsForBackup()])
       const fileName = `tennis-backup-${new Date().toISOString().split('T')[0]}-${Date.now()}.json`
       res.setHeader('Content-Type', 'application/json')
       res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`)
       res.json({
-        version: '1.0', timestamp: formatSecureTimestamp(), exportedBy: req.user.username,
-        data: { players, seasons, matches },
-        metadata: { playersCount: players.length, seasonsCount: seasons.length, matchesCount: matches.length }
+        version: '1.1', timestamp: formatSecureTimestamp(), exportedBy: req.user.username,
+        data: { players, seasons, matches, cups },
+        metadata: { playersCount: players.length, seasonsCount: seasons.length, matchesCount: matches.length, cupsCount: cups.length }
       })
     })
   )
@@ -233,8 +325,8 @@ export const createBackupRouter = ({
       if (!backupData.data?.players || !backupData.data?.seasons || !backupData.data?.matches) {
         return res.status(400).json({ error: 'Invalid backup file structure' })
       }
-      const { players, seasons, matches } = backupData.data
-      const results = { playersImported: 0, seasonsImported: 0, matchesImported: 0, errors: [] }
+      const { players, seasons, matches, cups: cupsData } = backupData.data
+      const results = { playersImported: 0, seasonsImported: 0, matchesImported: 0, cupsImported: 0, errors: [] }
 
       // Wrap in a transaction for all-or-nothing semantics
       const client = await db.pool.connect()
@@ -242,6 +334,10 @@ export const createBackupRouter = ({
         await client.query('BEGIN')
 
         if (clearExisting) {
+          await client.query('DELETE FROM cup_advancements')
+          await client.query('DELETE FROM cup_matches')
+          await client.query('DELETE FROM cup_participants')
+          await client.query('DELETE FROM cups')
           await client.query('DELETE FROM matches')
           await client.query('DELETE FROM season_players')
           await client.query('DELETE FROM seasons')
@@ -298,6 +394,85 @@ export const createBackupRouter = ({
               results.matchesImported++
             } else { results.errors.push(`Match ${match.id}: Missing players or season`) }
           } catch (e) { results.errors.push(`Match ${match.id}: ${e.message}`) }
+        }
+
+        // Restore cups (simple restore uses name-based lookups)
+        if (cupsData && cupsData.length > 0) {
+          // Build a name-to-ID map for existing players (already have playerMap above)
+          // Build a name-to-ID map for seasons (already have seasonMapping above)
+          for (const cup of cupsData) {
+            try {
+              // Find season by name if cup has a season reference
+              const cupSeasonId = cup.season_id ? seasonMapping.get(cup.season_name || '') : null
+              const cupFormat = (cup.format === 'single_elimination' || cup.format === 'double_elimination' || cup.format === 'round_robin') ? cup.format : 'single_elimination'
+              const cupStatus = ['draft', 'scheduled', 'in_progress', 'completed', 'cancelled'].includes(cup.status) ? cup.status : 'draft'
+              const result = await client.query(
+                `INSERT INTO cups (name, season_id, format, num_teams, regulation_text, status, start_date, end_date, created_by)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+                [cup.name, cupSeasonId, cupFormat, cup.num_teams, cup.regulation_text, cupStatus,
+                 cup.start_date, cup.end_date, cup.created_by]
+              )
+              const newCupId = result.rows[0].id
+
+              // Restore participants using player name lookups
+              const participantIdMap = new Map()
+              if (cup.participants && cup.participants.length > 0) {
+                for (const participant of cup.participants) {
+                  const p1 = playerMap.get(participant.player1_name)
+                  const p2 = participant.player2_name ? playerMap.get(participant.player2_name) : null
+                  if (p1) {
+                    const pResult = await client.query(
+                      `INSERT INTO cup_participants (cup_id, player1_id, player2_id, team_name, seed)
+                       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+                      [newCupId, p1.id, p2?.id || null, participant.team_name, participant.seed]
+                    )
+                    participantIdMap.set(Number(participant.id), pResult.rows[0].id)
+                  }
+                }
+              }
+
+              // Restore matches using participant ID remapping
+              const newMatchIdMap = new Map()
+              if (cup.matches && cup.matches.length > 0) {
+                for (const match of cup.matches) {
+                  const newTeam1 = participantIdMap.get(Number(match.team1_participant_id))
+                  const newTeam2 = participantIdMap.get(Number(match.team2_participant_id))
+                  const newWinner = participantIdMap.get(Number(match.winner_participant_id))
+                  try {
+                    const mResult = await client.query(
+                      `INSERT INTO cup_matches (cup_id, round_number, match_number, bracket_position,
+                                                team1_participant_id, team2_participant_id,
+                                                team1_score, team2_score, winner_participant_id, play_date, status)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id`,
+                      [newCupId, match.round_number, match.match_number, match.bracket_position,
+                       newTeam1, newTeam2, match.team1_score, match.team2_score, newWinner,
+                       match.play_date, match.status]
+                    )
+                    newMatchIdMap.set(Number(match.id), mResult.rows[0].id)
+                  } catch (e) { results.errors.push(`Cup match in ${cup.name}: ${e.message}`) }
+                }
+
+                // Restore advancements
+                if (cup.advancements && cup.advancements.length > 0) {
+                  for (const adv of cup.advancements) {
+                    const newFrom = newMatchIdMap.get(Number(adv.from_match_id))
+                    const newTo = newMatchIdMap.get(Number(adv.to_match_id))
+                    if (newFrom && newTo) {
+                      try {
+                        await client.query(
+                          `INSERT INTO cup_advancements (from_match_id, to_match_id, winner_slot)
+                           VALUES ($1, $2, $3)`,
+                          [newFrom, newTo, adv.winner_slot]
+                        )
+                      } catch (e) { results.errors.push(`Cup advancement in ${cup.name}: ${e.message}`) }
+                    }
+                  }
+                }
+              }
+
+              results.cupsImported++
+            } catch (e) { results.errors.push(`Cup ${cup.name}: ${e.message}`) }
+          }
         }
 
         await client.query('COMMIT')

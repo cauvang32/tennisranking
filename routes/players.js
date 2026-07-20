@@ -48,8 +48,8 @@ export const createPlayerRouter = ({
         await rankingsCache.invalidateOnPlayerChange()
         res.json({ success: true, id: playerId, name })
       } catch (error) {
-        if (error.message.includes('UNIQUE constraint failed')) {
-          res.status(400).json({ error: 'Player name already exists' })
+        if (error.message.includes('UNIQUE constraint failed') || error.code === '23505') {
+          res.status(409).json({ error: 'Tên người chơi đã tồn tại' })
           return
         }
         throw error
@@ -67,7 +67,12 @@ export const createPlayerRouter = ({
     asyncHandler(async (req, res) => {
       const playerId = parseInt(req.params.id)
       await db.removePlayer(playerId)
-      await rankingsCache.invalidateOnPlayerChange()
+      try { await rankingsCache.invalidateOnPlayerChange() } catch (err) {
+        console.error('Cache invalidation failed after player delete:', err.message)
+      }
+      try { await rankingsCache.invalidateOnMatchChange() } catch (err) {
+        console.error('Cache invalidation failed after player delete:', err.message)
+      }
       res.json({ success: true, message: 'Player removed successfully' })
     })
   )

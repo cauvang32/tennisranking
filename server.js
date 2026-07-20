@@ -33,7 +33,7 @@ import { validationResult } from 'express-validator'
 import config from './config/env.js'
 import { withCookieDefaults, clearCookieAllPaths } from './config/cookie.js'
 import { generateToken, generateRefreshToken, readToken, verifyToken } from './lib/jwt-encryption.js'
-import { globalCSRFProtection, deriveCSRFSecretFromUser, tokens } from './middleware/csrf.js'
+import { globalCSRFProtection, deriveCSRFSecretFromUser, createReusableToken, verifyReusableToken } from './middleware/csrf.js'
 import { createCompressionMiddleware } from './middleware/compression.js'
 import {
   applyGlobalRateLimiting, logRateLimitConfig, disconnectRateLimitRedis,
@@ -220,7 +220,6 @@ const securityForAuth = {
 const { authenticateToken, checkAuth, requireAdmin, requireEditor } = buildAuthMiddleware({
   jwt,
   security: securityForAuth,
-  tokens,
   db
 })
 
@@ -527,7 +526,7 @@ const routeCtx = {
   // Auth helpers for inline routes
   hashedAdminPassword, hashedEditorPassword,
   generateToken, generateRefreshToken, readToken, verifyToken,
-  withCookieDefaults, clearCookieAllPaths, deriveCSRFSecretFromUser, tokens
+  withCookieDefaults, clearCookieAllPaths, deriveCSRFSecretFromUser
 }
 
 // ── Mount routes ────────────────────────────────────────────────────────────
@@ -555,7 +554,8 @@ app.use('/', systemRouter)
 app.use(createInlineAuthRouter({
   db, checkAuth, hashedAdminPassword, hashedEditorPassword,
   generateToken, generateRefreshToken, readToken, verifyToken,
-  withCookieDefaults, clearCookieAllPaths, deriveCSRFSecretFromUser, tokens,
+  withCookieDefaults, clearCookieAllPaths, deriveCSRFSecretFromUser,
+  createReusableToken, verifyReusableToken,
   authLimiter, refreshLimiter, loginLimiter, handleValidationErrors,
   invalidateTokenVersionCache
 }))

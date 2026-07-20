@@ -39,7 +39,6 @@ export { invalidateTokenVersionCache }
 export const buildAuthMiddleware = ({
   jwt,
   security,
-  tokens,
   db,
   roles = ['admin', 'editor']
 }) => {

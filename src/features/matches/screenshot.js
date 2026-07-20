@@ -112,16 +112,11 @@ export function createScreenshotModule(ctx) {
     if (clearBtn) clearBtn.style.display = 'none'
     ctx.parsedMatchesBuffer = []
 
-    const tbody = document.getElementById('parsedMatchesBody')
-    if (tbody) tbody.innerHTML = ''
-
     // Also clear batch state
     ctx.batchMatches = []
     ctx.batchMatchId = 0
     const batchSection = document.getElementById('batchSection')
     if (batchSection) batchSection.style.display = 'none'
-    const batchTbody = document.getElementById('batchMatchesBody')
-    if (batchTbody) batchTbody.innerHTML = ''
   }
 
   /** Cancel and hide the parsed results section */
@@ -154,7 +149,7 @@ export function createScreenshotModule(ctx) {
 
     container.innerHTML = ctx.parsedMatchesBuffer.map((match, index) => {
       const isSolo = match.matchType === 'solo'
-      const typeLabel = isSolo ? '1v1' : '4v4'
+      const typeLabel = isSolo ? '1v1' : '2v2'
 
       if (isSolo) {
         const player1Id = ctx.fuzzyMatchPlayer(match.player1Name, ctx.players)
@@ -286,6 +281,29 @@ export function createScreenshotModule(ctx) {
       const idx = parseInt(btn.dataset.parsedRemove, 10)
       btn.addEventListener('click', () => removeParsedMatchRow(idx))
     })
+
+    // Sync all field changes back to ctx.parsedMatchesBuffer in real time
+    container.querySelectorAll('.match-card').forEach(card => {
+      const matchIndex = parseInt(card.dataset.index, 10)
+      card.querySelectorAll('.select-field, .input-field').forEach(field => {
+        field.addEventListener('input', () => {
+          const fieldName = field.dataset.field
+          if (!fieldName || !ctx.parsedMatchesBuffer[matchIndex]) return
+          const match = ctx.parsedMatchesBuffer[matchIndex]
+          if (['player1Id', 'player2Id', 'player3Id', 'player4Id'].includes(fieldName)) {
+            match[fieldName] = field.value ? parseInt(field.value, 10) : null
+          } else if (['team1Score', 'team2Score'].includes(fieldName)) {
+            match[fieldName] = parseInt(field.value) || 0
+          } else if (fieldName === 'winningTeam') {
+            match.winningTeam = field.value ? parseInt(field.value, 10) : null
+          } else if (fieldName === 'seasonId') {
+            match.seasonId = field.value ? parseInt(field.value, 10) : null
+          } else if (fieldName === 'playDate') {
+            match.playDate = field.value || null
+          }
+        })
+      })
+    })
   }
 
   /** Remove a parsed match row by index */
@@ -308,6 +326,8 @@ export function createScreenshotModule(ctx) {
     for (const card of cards) {
       const index = card.dataset.index
       const match = ctx.parsedMatchesBuffer[index]
+      // Read matchType from DOM (dataset) to avoid stale indices after removal
+      const isSolo = card.dataset.matchType === 'solo'
 
       const player1Id = parseInt(card.querySelector('[data-field="player1Id"]')?.value)
       const player2Id = parseInt(card.querySelector('[data-field="player2Id"]')?.value)
@@ -318,8 +338,6 @@ export function createScreenshotModule(ctx) {
       const winningTeam = parseInt(card.querySelector('[data-field="winningTeam"]')?.value)
       const seasonId = parseInt(card.querySelector('[data-field="seasonId"]')?.value)
       const playDate = card.querySelector('[data-field="playDate"]')?.value
-
-      const isSolo = match.matchType === 'solo'
 
       if (!seasonId || !playDate) {
         showToast('Vui lòng chọn mùa giải và ngày cho tất cả trận', 'error')

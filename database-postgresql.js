@@ -453,7 +453,7 @@ class TennisDatabasePostgreSQL {
           goal_difference      INTEGER GENERATED ALWAYS AS (COALESCE(team1_score, 0) - COALESCE(team2_score, 0)) STORED,
           created_at           TIMESTAMPTZ DEFAULT NOW(),
           updated_at           TIMESTAMPTZ DEFAULT NOW(),
-          CONSTRAINT check_cup_match_status CHECK (status IN ('scheduled', 'in_progress', 'completed', 'forfeited', 'cancelled'))
+          CONSTRAINT check_cup_match_status CHECK (status IN ('scheduled', 'in_progress', 'completed', 'forfeited', 'cancelled', 'locked'))
         )
       `)
       await client.query(`
@@ -541,6 +541,15 @@ class TennisDatabasePostgreSQL {
       await client.query(`DROP INDEX IF EXISTS idx_season_players_season_id`)
       await client.query(`DROP INDEX IF EXISTS idx_season_players_player_id`)
 
+      // Update check constraint on cup_matches status to include 'locked'
+      await client.query(`
+        ALTER TABLE cup_matches DROP CONSTRAINT IF EXISTS check_cup_match_status
+      `)
+      await client.query(`
+        ALTER TABLE cup_matches ADD CONSTRAINT check_cup_match_status
+        CHECK (status IN ('scheduled', 'in_progress', 'completed', 'forfeited', 'cancelled', 'locked'))
+      `)
+
       await client.query('COMMIT')
     } catch (error) {
       await client.query('ROLLBACK')
@@ -583,16 +592,22 @@ class TennisDatabasePostgreSQL {
     const client = await this.pool.connect()
     try {
       await client.query('BEGIN')
-      
+
+      // Remove from cup participants (both as primary and secondary player)
+      await client.query(`
+        DELETE FROM cup_participants
+        WHERE player1_id = $1 OR player2_id = $1
+      `, [playerId])
+
       // First remove all matches involving this player
       await client.query(`
-        DELETE FROM matches 
+        DELETE FROM matches
         WHERE player1_id = $1 OR player2_id = $1 OR player3_id = $1 OR player4_id = $1
       `, [playerId])
-      
+
       // Then remove the player
       await client.query('DELETE FROM players WHERE id = $1', [playerId])
-      
+
       await client.query('COMMIT')
     } catch (error) {
       await client.query('ROLLBACK')
@@ -1736,15 +1751,20 @@ class TennisDatabasePostgreSQL {
     const client = await this.pool.connect()
     try {
       await client.query('BEGIN')
-      
+
       // Use TRUNCATE for faster, cleaner deletion (resets sequences automatically)
-      await client.query('TRUNCATE matches, season_players, seasons, players CASCADE')
-      
+      // Cup tables must be included — cups has SET NULL on season_id so it won't cascade from seasons
+      await client.query('TRUNCATE cup_advancements, cup_matches, cup_participants, cups, matches, season_players, seasons, players CASCADE')
+
       // Reset sequences
       await client.query('ALTER SEQUENCE players_id_seq RESTART WITH 1')
       await client.query('ALTER SEQUENCE seasons_id_seq RESTART WITH 1')
       await client.query('ALTER SEQUENCE matches_id_seq RESTART WITH 1')
-      
+      await client.query('ALTER SEQUENCE cups_id_seq RESTART WITH 1')
+      await client.query('ALTER SEQUENCE cup_participants_id_seq RESTART WITH 1')
+      await client.query('ALTER SEQUENCE cup_matches_id_seq RESTART WITH 1')
+      await client.query('ALTER SEQUENCE cup_advancements_id_seq RESTART WITH 1')
+
       await client.query('COMMIT')
       console.log('🗑️ All data cleared from PostgreSQL database')
     } catch (error) {
@@ -1760,20 +1780,25 @@ class TennisDatabasePostgreSQL {
     const client = await this.pool.connect()
     try {
       await client.query('BEGIN')
-      
+
       // Use TRUNCATE for faster deletion
-      await client.query('TRUNCATE matches, season_players, seasons, players CASCADE')
-      
+      // Cup tables must be included — cups has SET NULL on season_id so it won't cascade from seasons
+      await client.query('TRUNCATE cup_advancements, cup_matches, cup_participants, cups, matches, season_players, seasons, players CASCADE')
+
       // Delete all users except the one performing the restore
       if (preserveUserId) {
         await client.query('DELETE FROM users WHERE id != $1', [preserveUserId])
       }
-      
+
       // Reset sequences
       await client.query('ALTER SEQUENCE players_id_seq RESTART WITH 1')
       await client.query('ALTER SEQUENCE seasons_id_seq RESTART WITH 1')
       await client.query('ALTER SEQUENCE matches_id_seq RESTART WITH 1')
-      
+      await client.query('ALTER SEQUENCE cups_id_seq RESTART WITH 1')
+      await client.query('ALTER SEQUENCE cup_participants_id_seq RESTART WITH 1')
+      await client.query('ALTER SEQUENCE cup_matches_id_seq RESTART WITH 1')
+      await client.query('ALTER SEQUENCE cup_advancements_id_seq RESTART WITH 1')
+
       await client.query('COMMIT')
       console.log('🗑️ All data cleared for restore (preserved current user)')
     } catch (error) {
@@ -1829,7 +1854,7 @@ class TennisDatabasePostgreSQL {
     if (updates.length > 0) {
       updates.push(`updated_at = NOW()`)
       params.push(key)
-      await this.query(`UPDATE site_images SET ${updates.join(', ')} WHERE key = $${idx}`)
+      await this.query(`UPDATE site_images SET ${updates.join(', ')} WHERE key = $${idx}`, params)
     }
   }
 
@@ -2133,32 +2158,24 @@ class TennisDatabasePostgreSQL {
       if (team1Score > team2Score) winnerId = match.team1_participant_id
       else if (team2Score > team1Score) winnerId = match.team2_participant_id
 
-      // If the winner changed from a previous value, cascade-clear the old winner downstream
-      const oldWinner = match.winner_participant_id
-      if (oldWinner !== null && winnerId !== null && oldWinner !== winnerId) {
-        await this._clearCupWinnerDownstream(client, cupId, matchId, oldWinner, match.round_number)
-      }
-
       if (winnerId) {
+        // Just record the winner — do NOT cascade to next round.
+        // Winner advancement happens via advanceRound() with shuffle.
         await client.query(`
           UPDATE cup_matches SET winner_participant_id = $1 WHERE id = $2
         `, [winnerId, matchId])
-
-        const advancements = await client.query(`
-          SELECT to_match_id, winner_slot FROM cup_advancements WHERE from_match_id = $1
-        `, [matchId])
-
-        for (const adv of advancements.rows) {
-          await client.query(`
-            UPDATE cup_matches
-            SET ${adv.winner_slot}_participant_id = $1, updated_at = NOW()
-            WHERE id = $2
-          `, [winnerId, adv.to_match_id])
-        }
       }
 
+      // Check if all matches in this round are now completed — signal to frontend
+      // that the round is ready for advancement.
+      const roundCheck = await client.query(`
+        SELECT COUNT(*) FILTER (WHERE status IN ('scheduled', 'in_progress')) AS pending
+        FROM cup_matches WHERE cup_id = $1 AND round_number = $2
+      `, [cupId, match.round_number])
+      const roundComplete = parseInt(roundCheck.rows[0].pending, 10) === 0
+
       await client.query('COMMIT')
-      return { success: true, winnerId, match }
+      return { success: true, winnerId, roundComplete }
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {})
       throw error
@@ -2176,8 +2193,7 @@ class TennisDatabasePostgreSQL {
 
   /**
    * Set a cup match winner manually (no scores required).
-   * Handles cascade: if this match previously advanced a different winner,
-   * recursively clears the old winner's path downstream before advancing the new one.
+   * Does NOT cascade — winner is recorded only. Advancement happens via advanceRound().
    */
   async setCupMatchWinner(cupId, matchId, winnerParticipantId) {
     const client = await this.pool.connect()
@@ -2208,34 +2224,131 @@ class TennisDatabasePostgreSQL {
         throw new Error('The selected participant is not in this match')
       }
 
-      // 2. If this match previously advanced a different winner, recursively clear downstream
-      const oldWinner = match.winner_participant_id
-      if (oldWinner !== null && oldWinner !== winnerParticipantId) {
-        await this._clearCupWinnerDownstream(client, cupId, matchId, oldWinner, match.round_number)
-      }
-
-      // 3. Set the winner and mark match as completed
+      // 2. Set the winner and mark match as completed — no cascade
       await client.query(`
         UPDATE cup_matches
         SET winner_participant_id = $1, status = 'completed', updated_at = NOW()
         WHERE id = $2
       `, [winnerParticipantId, matchId])
 
-      // 4. Advance winner to next round
-      const advancements = await client.query(`
-        SELECT to_match_id, winner_slot FROM cup_advancements WHERE from_match_id = $1
-      `, [matchId])
-
-      for (const adv of advancements.rows) {
-        await client.query(`
-          UPDATE cup_matches
-          SET ${adv.winner_slot}_participant_id = $1, updated_at = NOW()
-          WHERE id = $2
-        `, [winnerParticipantId, adv.to_match_id])
-      }
+      // Check if all matches in this round are now completed
+      const roundCheck = await client.query(`
+        SELECT COUNT(*) FILTER (WHERE status IN ('scheduled', 'in_progress')) AS pending
+        FROM cup_matches WHERE cup_id = $1 AND round_number = $2
+      `, [cupId, match.round_number])
+      const roundComplete = parseInt(roundCheck.rows[0].pending, 10) === 0
 
       await client.query('COMMIT')
-      return { success: true, winnerId: winnerParticipantId }
+      return { success: true, winnerId: winnerParticipantId, roundComplete }
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {})
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  /**
+   * Advance winners from a completed round to the next round with shuffle.
+   * - Collects all winners from the specified round
+   * - Shuffles them randomly
+   * - Assigns them to next round matches (2 per match)
+   * - Marks the current round as locked (status = 'locked')
+   */
+  async advanceRound(cupId, fromRound) {
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN')
+
+      // 1. Guard against double-advance: check if round is already locked
+      const lockedCheck = await client.query(`
+        SELECT COUNT(*) AS locked FROM cup_matches
+        WHERE cup_id = $1 AND round_number = $2 AND status = 'locked'
+      `, [cupId, fromRound])
+      if (parseInt(lockedCheck.rows[0].locked, 10) > 0) {
+        await client.query('ROLLBACK')
+        throw new Error('This round has already been advanced')
+      }
+
+      // 2. Verify all matches in the current round are completed
+      const pendingCheck = await client.query(`
+        SELECT COUNT(*) FILTER (WHERE status IN ('scheduled', 'in_progress')) AS pending
+        FROM cup_matches WHERE cup_id = $1 AND round_number = $2
+      `, [cupId, fromRound])
+      if (parseInt(pendingCheck.rows[0].pending, 10) > 0) {
+        throw new Error('Not all matches in this round are completed')
+      }
+
+      // 2. Get all winners from this round
+      const winners = await client.query(`
+        SELECT cm.id, cm.winner_participant_id
+        FROM cup_matches cm
+        WHERE cm.cup_id = $1 AND cm.round_number = $2
+          AND cm.status = 'completed' AND cm.winner_participant_id IS NOT NULL
+      `, [cupId, fromRound])
+
+      if (winners.rows.length === 0) {
+        throw new Error('No winners to advance')
+      }
+
+      // 3. Shuffle winners (Fisher-Yates)
+      const shuffled = winners.rows.map(w => w.winner_participant_id)
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1))
+        ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+      }
+
+      // 4. Get next round matches
+      const nextRound = fromRound + 1
+      const nextMatches = await client.query(`
+        SELECT id, match_number FROM cup_matches
+        WHERE cup_id = $1 AND round_number = $2
+        ORDER BY match_number ASC
+      `, [cupId, nextRound])
+
+      if (nextMatches.rows.length === 0) {
+        // This was the final round — tournament is over
+        await client.query(`
+          UPDATE cups SET status = 'completed', updated_at = NOW() WHERE id = $1
+        `, [cupId])
+        // Lock current round
+        await client.query(`
+          UPDATE cup_matches SET status = 'locked'
+          WHERE cup_id = $1 AND round_number = $2
+        `, [cupId, fromRound])
+        await client.query('COMMIT')
+        return { success: true, isFinal: true, winners: shuffled }
+      }
+
+      // 5. Assign shuffled winners to next round matches (2 per match)
+      let winnerIdx = 0
+      for (const match of nextMatches.rows) {
+        // team1 gets winner at current index
+        if (winnerIdx < shuffled.length) {
+          await client.query(`
+            UPDATE cup_matches SET team1_participant_id = $1, updated_at = NOW()
+            WHERE id = $2
+          `, [shuffled[winnerIdx], match.id])
+          winnerIdx++
+        }
+        // team2 gets next winner
+        if (winnerIdx < shuffled.length) {
+          await client.query(`
+            UPDATE cup_matches SET team2_participant_id = $1, updated_at = NOW()
+            WHERE id = $2
+          `, [shuffled[winnerIdx], match.id])
+          winnerIdx++
+        }
+      }
+
+      // 6. Lock the current round (status = 'locked' so it can't be edited)
+      await client.query(`
+        UPDATE cup_matches SET status = 'locked'
+        WHERE cup_id = $1 AND round_number = $2
+      `, [cupId, fromRound])
+
+      await client.query('COMMIT')
+      return { success: true, isFinal: false, winners: shuffled, nextRound }
     } catch (error) {
       await client.query('ROLLBACK').catch(() => {})
       throw error
@@ -2284,6 +2397,139 @@ class TennisDatabasePostgreSQL {
         await this._clearCupWinnerDownstream(client, cupId, dm.id, participantId, dm.round_number)
       }
     }
+  }
+
+  /**
+   * Get a single cup match by ID (scoped to cup).
+   */
+  async getCupMatchById(matchId, cupId) {
+    const result = await this.query(`
+      SELECT id, cup_id, round_number, match_number, status,
+             team1_participant_id, team2_participant_id,
+             winner_participant_id, team1_score, team2_score
+      FROM cup_matches WHERE id = $1 AND cup_id = $2
+    `, [matchId, cupId])
+    return result.rows[0] || null
+  }
+
+  /**
+   * Check if all matches in a given round of a cup are completed.
+   * Used to enforce round-by-round progression in cup tournaments.
+   */
+  async areAllMatchesInRoundCompleted(cupId, roundNumber) {
+    const result = await this.query(`
+      SELECT COUNT(*) AS pending
+      FROM cup_matches
+      WHERE cup_id = $1 AND round_number = $2 AND status IN ('scheduled', 'in_progress')
+    `, [cupId, roundNumber])
+    return parseInt(result.rows[0].pending, 10) === 0
+  }
+
+  async resetCupMatch(cupId, matchId) {
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN')
+
+      // Check status of match
+      const result = await client.query(`
+        SELECT status FROM cup_matches WHERE id = $1 AND cup_id = $2
+      `, [matchId, cupId])
+
+      if (result.rows.length === 0) {
+        throw new Error('Match not found')
+      }
+
+      if (result.rows[0].status === 'locked') {
+        throw new Error('Cannot reset a locked match')
+      }
+
+      await client.query(`
+        UPDATE cup_matches
+        SET team1_score = NULL, team2_score = NULL, winner_participant_id = NULL, status = 'scheduled', updated_at = NOW()
+        WHERE id = $1 AND cup_id = $2
+      `, [matchId, cupId])
+
+      await client.query('COMMIT')
+      return { success: true }
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {})
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  // ── Cup backup/restore helpers ─────────────────────────────────────────────
+  async getCupsForBackup() {
+    const cups = await this.query(`
+      SELECT id, name, season_id, format, num_teams, regulation_text,
+             status, start_date, end_date, created_by,
+             final_results, conclusion_image_path, conclusion_image_filename,
+             conclusion_image_content_type, created_at, updated_at
+      FROM cups ORDER BY id
+    `)
+    const result = []
+    for (const cup of cups.rows) {
+      // Include player names for simple restore (name-based lookups)
+      const participants = await this.query(`
+        SELECT cp.id, cp.cup_id, cp.player1_id, cp.player2_id, cp.team_name, cp.seed,
+               p1.name as player1_name, p2.name as player2_name
+        FROM cup_participants cp
+        JOIN players p1 ON cp.player1_id = p1.id
+        LEFT JOIN players p2 ON cp.player2_id = p2.id
+        WHERE cp.cup_id = $1
+        ORDER BY cp.seed ASC, cp.id ASC
+      `, [cup.id])
+      const matches = await this.query(`
+        SELECT id, cup_id, round_number, match_number, bracket_position,
+               team1_participant_id, team2_participant_id,
+               team1_score, team2_score, winner_participant_id,
+               play_date, status, created_at, updated_at
+        FROM cup_matches WHERE cup_id = $1 ORDER BY round_number ASC, match_number ASC
+      `, [cup.id])
+      const advancements = await this.query(`
+        SELECT id, from_match_id, to_match_id, winner_slot
+        FROM cup_advancements WHERE from_match_id IN (SELECT id FROM cup_matches WHERE cup_id = $1)
+        ORDER BY id
+      `, [cup.id])
+      // Include season name for simple restore (name-based lookup)
+      let seasonName = null
+      if (cup.season_id) {
+        const seasonResult = await this.query('SELECT name FROM seasons WHERE id = $1', [cup.season_id])
+        seasonName = seasonResult.rows[0]?.name || null
+      }
+      result.push({
+        ...cup, season_name: seasonName,
+        participants: participants.rows,
+        matches: matches.rows,
+        advancements: advancements.rows
+      })
+    }
+    return result
+  }
+
+  async createCupMatch(cupId, matchData) {
+    const result = await this.query(`
+      INSERT INTO cup_matches (cup_id, round_number, match_number, bracket_position,
+                               team1_participant_id, team2_participant_id,
+                               team1_score, team2_score, winner_participant_id,
+                               play_date, status, created_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      RETURNING id
+    `, [
+      cupId, matchData.round_number, matchData.match_number, matchData.bracket_position,
+      matchData.team1_participant_id, matchData.team2_participant_id,
+      matchData.team1_score, matchData.team2_score, matchData.winner_participant_id,
+      matchData.play_date, matchData.status, matchData.created_at
+    ])
+    return result.rows[0].id
+  }
+
+  async createCupAdvancement(fromMatchId, toMatchId, winnerSlot) {
+    await this.query(`
+      INSERT INTO cup_advancements (from_match_id, to_match_id, winner_slot)
+      VALUES ($1, $2, $3)
+    `, [fromMatchId, toMatchId, winnerSlot])
   }
 
   async close() {

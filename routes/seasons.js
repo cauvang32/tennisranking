@@ -108,8 +108,8 @@ export const createSeasonRouter = ({
     requireAdmin,
     [
       param('id').isInt().withMessage('Invalid season ID'),
-      body('name').isLength({ min: 1, max: 100 }).withMessage('Season name is required'),
-      body('startDate').isISO8601().withMessage('Valid start date is required'),
+      body('name').optional().isLength({ min: 1, max: 100 }).withMessage('Season name is required'),
+      body('startDate').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('Valid start date is required'),
       body('endDate').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('Valid end date is required'),
       body('autoEnd').optional().isBoolean().withMessage('autoEnd must be boolean'),
       body('description').optional({ nullable: true, checkFalsy: true }).isString().withMessage('Description must be string'),
@@ -118,9 +118,19 @@ export const createSeasonRouter = ({
     handleValidationErrors,
     asyncHandler(async (req, res) => {
       const seasonId = parseInt(req.params.id)
-      let { name, startDate, endDate, autoEnd = false, description = '', loseMoneyPerLoss = null } = req.body
-      endDate = endDate || null
-      description = description || ''
+      let { name, startDate, endDate, autoEnd, description, loseMoneyPerLoss } = req.body
+      // Partial update: keep existing values for omitted fields
+      const existing = await db.getSeasonById(seasonId)
+      if (!existing) {
+        res.status(404).json({ error: 'Season not found' })
+        return
+      }
+      name = name ?? existing.name
+      startDate = startDate ?? existing.start_date
+      endDate = endDate !== undefined ? endDate : existing.end_date
+      autoEnd = autoEnd !== undefined ? autoEnd : existing.auto_end
+      description = description !== undefined ? description : existing.description || ''
+      loseMoneyPerLoss = loseMoneyPerLoss !== undefined ? loseMoneyPerLoss : existing.lose_money_per_loss
 
       if (autoEnd && !endDate) {
         res.status(400).json({ success: false, error: 'Auto-end requires an end date to be set' })

@@ -22,7 +22,8 @@ export const createInlineAuthRouter = ({
   withCookieDefaults,
   clearCookieAllPaths,
   deriveCSRFSecretFromUser,
-  tokens,
+  createReusableToken,
+  verifyReusableToken,
   authLimiter,
   refreshLimiter,
   loginLimiter,
@@ -67,7 +68,7 @@ export const createInlineAuthRouter = ({
         const loginCsrfBody = req.body._loginCsrf
         const anonymousCsrfToken = req.get('X-CSRF-Token') || req.body._csrf
         const anonymousCsrfSecret = deriveCSRFSecretFromUser({ id: 'anonymous' })
-        const hasValidAnonymousCsrf = anonymousCsrfToken && tokens.verify(anonymousCsrfSecret, anonymousCsrfToken)
+        const hasValidAnonymousCsrf = anonymousCsrfToken && verifyReusableToken(anonymousCsrfSecret, anonymousCsrfToken)
 
         if ((!loginCsrfCookie || !loginCsrfBody || loginCsrfBody !== loginCsrfCookie) && !hasValidAnonymousCsrf) {
           return res.status(403).json({ error: 'Invalid login CSRF token' })
@@ -121,7 +122,7 @@ export const createInlineAuthRouter = ({
         res.cookie('authToken', token, withCookieDefaults({ httpOnly: true, maxAge: 15 * 60 * 1000 }))
         res.cookie('refreshToken', refreshToken, withCookieDefaults({ httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 }))
 
-        const csrfToken = tokens.create(deriveCSRFSecretFromUser(user))
+        const csrfToken = createReusableToken(deriveCSRFSecretFromUser(user))
 
         const isAPIClient = !req.headers.accept?.includes('text/html') && req.headers.accept?.includes('application/json')
         const response = {
@@ -148,7 +149,7 @@ export const createInlineAuthRouter = ({
       if (res.headersSent) return
       if (req.isAuthenticated) {
         const token = req.get('X-CSRF-Token') || req.body._csrf
-        if (!token || !tokens.verify(req.csrfSecret, token)) {
+        if (!token || !verifyReusableToken(req.csrfSecret, token)) {
           return res.status(403).json({ error: 'Invalid CSRF token', csrfRequired: true })
         }
         // Increment token_version for DB users to revoke all existing tokens
@@ -172,7 +173,7 @@ export const createInlineAuthRouter = ({
   // ── Auth status ────────────────────────────────────────────────────────
   router.get('/api/auth/status', checkAuth, (req, res) => {
     if (req.isAuthenticated) {
-      res.json({ authenticated: true, user: req.user, csrfToken: tokens.create(req.csrfSecret) })
+      res.json({ authenticated: true, user: req.user, csrfToken: createReusableToken(req.csrfSecret) })
     } else {
       res.json({ authenticated: false })
     }
@@ -214,7 +215,7 @@ export const createInlineAuthRouter = ({
       res.cookie('authToken', generateToken(user), withCookieDefaults({ httpOnly: true, maxAge: 15 * 60 * 1000 }))
       res.json({
         success: true,
-        csrfToken: tokens.create(deriveCSRFSecretFromUser(user)),
+        csrfToken: createReusableToken(deriveCSRFSecretFromUser(user)),
         user
       })
     } catch (error) {

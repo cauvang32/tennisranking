@@ -3311,6 +3311,16 @@ body.match-mode-solo .duo-only {
   font-weight: 600;
 }
 
+.bracket-round-actions {
+  text-align: center;
+  padding: var(--space-sm) 0;
+  margin-top: var(--space-sm);
+}
+
+.bracket-round-locked {
+  opacity: 0.6;
+}
+
 .bracket-match {
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
@@ -3646,4 +3656,105 @@ body.match-mode-solo .duo-only {
   .cup-card-actions {
     flex-direction: column;
   }
+}
+
+/* --------------------------------------------------------------------------- */
+/* Missing classes from refactoring — added to ensure consistent styling       */
+/* --------------------------------------------------------------------------- */
+
+.text-center { text-align: center; }
+
+.modal-content-large { max-width: 700px; }
+
+.inline-warning-note {
+  display: block;
+  margin-top: 8px;
+  font-size: 0.8125rem;
+  color: var(--color-warning);
+}
+
+/* Season-related classes */
+.season-heading-active {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-success);
+}
+
+.season-heading-ended {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--color-muted);
+}
+
+.season-text-muted {
+  font-size: 0.875rem;
+  color: var(--color-muted);
+}
+
+.season-auto-end {
+  display: inline-block;
+  margin-left: 8px;
+  font-size: 0.75rem;
+  padding: 2px 6px;
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+  border-radius: 4px;
+}
+
+.season-info-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  background: var(--color-info-bg);
+  color: var(--color-info);
+  border-radius: 4px;
+}
+
+.badge-item {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 0.75rem;
+  background: var(--surface-2);
+  border-radius: 3px;
+}
+
+.info-warning {
+  display: block;
+  padding: 8px 12px;
+  font-size: 0.875rem;
+  color: var(--color-warning);
+  background: var(--color-warning-bg);
+  border-radius: var(--radius-md);
+}
+
+.info-message {
+  display: block;
+  padding: 8px 12px;
+  font-size: 0.875rem;
+  color: var(--color-info);
+  background: var(--color-info-bg);
+  border-radius: var(--radius-md);
+}
+
+.info-message-compact {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  color: var(--color-info);
+  background: var(--color-info-bg);
+  border-radius: 4px;
+}
+
+.seasons-section--spaced {
+  margin-top: var(--space-lg);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-color);
 }

@@ -138,6 +138,8 @@ export const createImageRouter = ({
     authenticateToken,
     requireAdmin,
     conditionalRateLimit(createLimiter),
+    [param('key').isIn(IMAGE_KEYS).withMessage('Invalid image key')],
+    handleValidationErrors,
     imageUpload.single('image'),
     asyncHandler(async (req, res) => {
       const { key } = req.params

@@ -96,7 +96,7 @@ export function createImagesModule(ctx) {
       input.value = ''
       return
     }
-    const allowed = ['image/png', 'image/jpeg', 'image/webp', 'image/gif', 'image/svg+xml']
+    const allowed = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
     if (!allowed.includes(file.type)) {
       ctx.showToast('Định dạng không hợp lệ', 'error')
       input.value = ''
@@ -111,16 +111,20 @@ export function createImagesModule(ctx) {
         method: 'POST',
         body: formData
       })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        ctx.showToast(data.error || 'Lỗi khi tải lên hình ảnh', 'error')
+        input.value = ''
+        return
+      }
       const data = await res.json()
       if (data.success) {
         ctx.showToast(`Hình ảnh "${key}" đã được cập nhật`, 'success')
         if (key === 'hero_banner') loadHeroBanner()
         loadSiteImages()
-      } else {
-        ctx.showToast(data.error || 'Lỗi khi tải lên', 'error')
       }
     } catch (error) {
-      ctx.showToast(error.message, 'error')
+      ctx.showToast('Lỗi khi tải lên hình ảnh', 'error')
     }
     input.value = ''
   }
@@ -131,16 +135,19 @@ export function createImagesModule(ctx) {
       const res = await ctx.makeAuthenticatedRequest(`/images/${key}`, {
         method: 'DELETE'
       })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        ctx.showToast(data.error || 'Lỗi khi xóa hình ảnh', 'error')
+        return
+      }
       const data = await res.json()
       if (data.success) {
         ctx.showToast(`Đã xóa hình ảnh "${key}"`, 'success')
         if (key === 'hero_banner') loadHeroBanner()
         loadSiteImages()
-      } else {
-        ctx.showToast(data.error || 'Lỗi khi xóa', 'error')
       }
     } catch (error) {
-      ctx.showToast(error.message, 'error')
+      ctx.showToast('Lỗi khi xóa hình ảnh', 'error')
     }
   }
 

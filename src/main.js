@@ -129,12 +129,15 @@ class TennisRankingSystem {
       return token
     }
 
-    // ── Wire up feature modules ─────────────────────────────────────────────
-    wireFeatureModules(this)
-
     // ── Start! ──────────────────────────────────────────────────────────────
     this.startVersionPolling()
     this.init()
+  }
+
+  // Wire up feature modules — called from init() AFTER detectServerMode()
+  // so that apiBase is correct (may have been corrected from /api to /tennis/api)
+  wireModules() {
+    wireFeatureModules(this)
   }
 
   // ── SSE / cache coherence ─────────────────────────────────────────────────
@@ -153,7 +156,7 @@ class TennisRankingSystem {
     try {
       await Promise.all([this.loadPlayDates(), this.loadSeasons(), this.loadPlayers()])
       this.updateDateSelector()
-      this.updateSeasonSelector()
+      this.updateRankingsSeasonSelector()
       this.updatePlayerSelects()
       this.updateSeasonSelect()
 
@@ -161,12 +164,13 @@ class TennisRankingSystem {
       switch (activeTabId) {
         case 'rankings-tab': await this.renderRankings(); break
         case 'matches-tab': this.updateMatchHistoryDateSelector(); await this.renderMatchHistory(); break
-        case 'players-tab': this.renderPlayers(); break
-        case 'seasons-tab': this.renderSeasons(); break
-        case 'cups-tab': this.loadCups(); break
+        case 'players-tab': await this.loadPlayers(); this.renderPlayers(); break
+        case 'seasons-tab': await this.loadSeasons(); this.renderSeasons(); break
+        case 'cups-tab': await this.loadCups(); break
+        case 'images-tab': await this.loadSiteImages(); break
         case 'accounts-tab':
-          this.renderAccounts()
-          if (this.user?.role === 'admin') { this.renderCacheStatus(); this.fetchFcmStatus() }
+          await this.renderAccounts()
+          if (this.user?.role === 'admin') { await this.renderCacheStatus(); await this.fetchFcmStatus() }
           break
       }
     } catch (error) {
@@ -178,6 +182,10 @@ class TennisRankingSystem {
   async init() {
     try {
       await this.detectServerMode()
+
+      // Wire feature modules AFTER detectServerMode so apiBase is correct
+      this.wireModules()
+
       await this.checkAuthStatus()
       this.updateUIForAuthStatus()
 
@@ -202,7 +210,7 @@ class TennisRankingSystem {
       await this.loadInitialData()
       this.updateUIForAuthStatus()
       this.switchTab('rankings')
-      try { this.loadHeroBanner() } catch (e) { /* ignore if unauthenticated */ }
+      this.loadHeroBanner().catch(() => {}) // ignore if unauthenticated
       this.updateFileStatus('✅ Hệ thống đã sẵn sàng', 'success')
     } catch (error) {
       console.error('Error initializing system:', error)
@@ -212,7 +220,7 @@ class TennisRankingSystem {
   }
 
   hideAllViewModeSections() {
-    document.querySelectorAll('.view-mode-section').forEach(s => s.classList.add('hidden'))
+    document.querySelectorAll('.view-section').forEach(s => s.classList.remove('active'))
   }
 
   // ── Data loading ──────────────────────────────────────────────────────────
@@ -261,7 +269,7 @@ class TennisRankingSystem {
         this.normalizedPlayers = this.players.map(p => ({ normalized: normalizeText(p.name).toLowerCase(), id: p.id, name: p.name })).sort((a, b) => a.normalized.localeCompare(b.normalized))
         return
       }
-      const response = await fetch(`${this.apiBase}/players`)
+      const response = await fetch(`${this.apiBase}/players`, { credentials: 'include' })
       if (response.ok) {
         this.players = await response.json()
         this.setCache('players', null, this.players)
@@ -274,7 +282,7 @@ class TennisRankingSystem {
     try {
       const cached = this.getCache('seasons')
       if (cached) { this.seasons = cached; this.updateSeasonSelect(); return }
-      const response = await fetch(`${this.apiBase}/seasons`)
+      const response = await fetch(`${this.apiBase}/seasons`, { credentials: 'include' })
       if (response.ok) { this.seasons = await response.json(); this.setCache('seasons', null, this.seasons); this.updateSeasonSelect() }
     } catch (error) { console.error('Error loading seasons:', error) }
   }
@@ -283,7 +291,7 @@ class TennisRankingSystem {
     try {
       const cached = this.getCache('playDates')
       if (cached) { this.playDates = cached; return }
-      const response = await fetch(`${this.apiBase}/play-dates`)
+      const response = await fetch(`${this.apiBase}/play-dates`, { credentials: 'include' })
       if (response.ok) { this.playDates = await response.json(); this.setCache('playDates', null, this.playDates) }
     } catch (error) { console.error('Error loading play dates:', error) }
   }
@@ -292,15 +300,18 @@ class TennisRankingSystem {
     try {
       this.matches = []
       let nextCursor = null
+      let page = 0
+      const MAX_PAGES = 100 // safety guard: max 5000 matches
       do {
         const url = nextCursor ? `${this.apiBase}/matches?after=${nextCursor}&limit=50` : `${this.apiBase}/matches?limit=50`
-        const response = await fetch(url)
+        const response = await fetch(url, { credentials: 'include' })
         if (!response.ok) break
         const batch = await response.json()
         if (!batch || batch.length === 0) break
         this.matches.push(...batch)
         nextCursor = response.headers.get('X-Next-Cursor') || null
-      } while (nextCursor)
+        page++
+      } while (nextCursor && page < MAX_PAGES)
       if (this.matches.length > 0) this.setCache('matches', 'all', this.matches)
     } catch (error) { console.error('Error loading matches:', error) }
   }
@@ -317,7 +328,7 @@ class TennisRankingSystem {
       }
       if (document.querySelector('.tab-content.active')?.id === 'rankings-tab') {
         this.updateDateSelector()
-        this.updateSeasonSelector()
+        this.updateRankingsSeasonSelector()
         await this.renderRankings()
       }
       this.updatePlayerSelects()
@@ -420,13 +431,8 @@ class TennisRankingSystem {
       const accountForm = document.getElementById('accountForm')
       if (accountForm) accountForm.addEventListener('submit', (e) => { e.preventDefault(); this.saveAccount() })
 
-      // Add player
-      const addPlayerBtn = document.getElementById('addPlayer')
-      if (addPlayerBtn) addPlayerBtn.addEventListener('click', () => this.addPlayer())
-      ;['playerName', 'newPlayerName'].forEach(id => {
-        const input = document.getElementById(id)
-        if (input) input.addEventListener('keypress', (e) => { if (e.key === 'Enter') this.addPlayer() })
-      })
+      // Add player — handled by players module setupEventListeners
+      // (removed duplicate listeners from main.js)
 
       // Delete player (event delegation)
       document.addEventListener('click', async (e) => {
@@ -569,7 +575,7 @@ function wireFeatureModules(app) {
     getRankEmoji: app._rankings.getRankEmoji,
     renderForm: app._rankings.renderForm,
     updateDateSelector: app._rankings.updateDateSelector,
-    updateSeasonSelector: app._rankings.updateSeasonSelector,
+    updateRankingsSeasonSelector: app._rankings.updateRankingsSeasonSelector,
     switchViewMode: app._rankings.switchViewMode,
     setupViewModeUI: app._rankings.setupViewModeUI,
   })
@@ -681,7 +687,7 @@ function showModal(modalId) {
 
 function hideModal(modalId) {
   const modal = document.getElementById(modalId)
-  if (modal) { modal.classList.remove('show', 'active'); modal.style.display = ''; document.body.style.overflow = '' }
+  if (modal) { modal.classList.remove('show'); modal.style.display = ''; document.body.style.overflow = '' }
 }
 
 function updateFileStatus(message, type = 'info') {
@@ -729,7 +735,7 @@ TennisRankingSystem.prototype.switchTab = async function (tabName) {
     switch (tabName) {
       case 'rankings':
         this.updateDateSelector()
-        this.updateSeasonSelector()
+        this.updateRankingsSeasonSelector()
         this.setupViewModeUI()
         await this.renderRankings()
         break
@@ -741,14 +747,14 @@ TennisRankingSystem.prototype.switchTab = async function (tabName) {
         this.updateMatchHistoryDateSelector()
         await this.renderMatchHistory()
         break
-      case 'players': this.renderPlayers(); break
-      case 'seasons': this.renderSeasons(); break
+      case 'players': await this.loadPlayers(); this.renderPlayers(); break
+      case 'seasons': await this.loadSeasons(); this.renderSeasons(); break
       case 'accounts':
-        this.renderAccounts()
-        if (this.user?.role === 'admin') this.renderCacheStatus()
+        await this.renderAccounts()
+        if (this.user?.role === 'admin') { await this.renderCacheStatus(); await this.fetchFcmStatus() }
         break
-      case 'images': this.loadSiteImages(); break
-      case 'cups': this.loadCups(); break
+      case 'images': await this.loadSiteImages(); break
+      case 'cups': await this.loadCups(); break
     }
   } catch (error) {
     if (prevActiveBtn) prevActiveBtn.classList.add('active')
@@ -830,6 +836,6 @@ document.addEventListener('DOMContentLoaded', () => {
 })
 
 // Immediate init (constructor handles DOMContentLoaded wait internally)
-if (!document.readyState.includes('loading')) {
+if (!document.readyState.includes('loading') && !window.__tennisApp) {
   window.__tennisApp = new TennisRankingSystem()
 }

@@ -1,7 +1,8 @@
 import express from 'express'
 import { Router } from 'express'
 import config from '../config/env.js'
-import { deriveCSRFSecretFromUser, tokens } from '../middleware/csrf.js'
+import { deriveCSRFSecretFromUser, createReusableToken } from '../middleware/csrf.js'
+import { readToken, verifyToken } from '../lib/jwt-encryption.js'
 import { getRealClientIP } from '../access-logger.js'
 
 /**
@@ -31,13 +32,13 @@ export const createSystemRouter = ({
   // ── CSRF token endpoint ───────────────────────────────────────────────────
   router.get('/api/csrf-token', (req, res) => {
     const csrfSecret = deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })
-    const csrfToken = tokens.create(csrfSecret)
+    const csrfToken = createReusableToken(csrfSecret)
     res.json({ csrfToken })
   })
 
   router.post('/api/csrf-token', (req, res) => {
     const csrfSecret = deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })
-    const csrfToken = tokens.create(csrfSecret)
+    const csrfToken = createReusableToken(csrfSecret)
     res.json({ csrfToken })
   })
 
@@ -105,7 +106,7 @@ export const createSystemRouter = ({
       }
 
       // CSP-safe: set CSRF token for all sessions
-      initData.csrfToken = tokens.create(deriveCSRFSecretFromUser(req.user || { id: 'anonymous' }))
+      initData.csrfToken = createReusableToken(deriveCSRFSecretFromUser(req.user || { id: 'anonymous' }))
 
       const hitCount = [rankingsHit, playersHit, seasonsHit, activeSeasonsHit, playDatesHit, activeSeasonHit].filter(Boolean).length
       // L7: Only expose Redis-Cache diagnostic header in development

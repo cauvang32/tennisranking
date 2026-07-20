@@ -217,10 +217,7 @@ export function updateUIForAuthStatus(app) {
     el.classList.toggle('hidden', userRole !== 'admin')
   })
 
-  const editorElements = document.querySelectorAll('.editor-only')
-  editorElements.forEach(el => {
-    el.classList.toggle('hidden', !(userRole === 'admin' || userRole === 'editor'))
-  })
+  // NOTE: `edit-only` already covers admin+editor — no separate `editor-only` class in HTML
 
   const guestInfoElements = document.querySelectorAll('.guest-info')
   guestInfoElements.forEach(el => {

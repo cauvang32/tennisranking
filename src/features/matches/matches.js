@@ -9,11 +9,12 @@ export function createMatchesModule(ctx) {
     apiBase,
     escapeHtml, formatDate, formatMoney, showToast,
     invalidateCache, loadMatches, loadPlayDates, renderRankings, getCache, setCache,
-    setTodaysDate, updateTeamLabelsForMatchType,
+    setTodaysDate,
   } = ctx
 
   // NOTE: ctx.isAuthenticated, ctx.user, ctx.currentMatchType, ctx.currentWinningTeam,
   // ctx.isManualWinnerMode, ctx.players, ctx.matches, ctx.seasons are mutable — read from ctx, not closure
+  // NOTE: updateTeamLabelsForMatchType uses `this` on prototype — must call via ctx, not destructure
 
   /** Render match history table (only if matches tab is active) */
   async function renderMatchHistory() {
@@ -45,7 +46,7 @@ export function createMatchesModule(ctx) {
 
       matchList = getCache('matches', cacheKey)
       if (!matchList && apiUrl) {
-        const response = await fetch(apiUrl)
+        const response = await fetch(apiUrl, { credentials: 'include' })
         if (response.ok) {
           matchList = await response.json()
           setCache('matches', cacheKey, matchList)
@@ -168,15 +169,19 @@ export function createMatchesModule(ctx) {
       const data = await response.json()
 
       if (response.ok) {
-        invalidateCache(['rankings', 'matches', 'playDates'])
-        await loadMatches()
-        await loadPlayDates()
-        ctx.resetMatchForm()
-        renderRankings()
-        const activeTabId = document.querySelector('.tab-content.active')?.id
-        if (activeTabId === 'matches-tab') renderMatchHistory()
-        ctx.updateDateSelector()
         showToast('Đã ghi nhận kết quả trận đấu', 'success')
+        try {
+          invalidateCache(['rankings', 'matches', 'playDates'])
+          await loadMatches()
+          await loadPlayDates()
+          ctx.resetMatchForm()
+          renderRankings()
+          const activeTabId = document.querySelector('.tab-content.active')?.id
+          if (activeTabId === 'matches-tab') renderMatchHistory()
+          ctx.updateDateSelector()
+        } catch (reloadErr) {
+          console.warn('Post-create data reload failed:', reloadErr)
+        }
       } else {
         showToast(data.error || 'Lỗi khi ghi nhận kết quả', 'error')
       }
@@ -293,7 +298,7 @@ export function createMatchesModule(ctx) {
     }
 
     try {
-      const response = await fetch(`${apiBase}/seasons/${seasonId}/players`)
+      const response = await fetch(`${apiBase}/seasons/${seasonId}/players`, { credentials: 'include' })
       let seasonPlayers = []
       if (response.ok) seasonPlayers = await response.json()
       if (seasonPlayers.length === 0) seasonPlayers = ctx.players
@@ -359,7 +364,7 @@ export function createMatchesModule(ctx) {
     })
 
     setTodaysDate()
-    updateTeamLabelsForMatchType()
+    ctx.updateTeamLabelsForMatchType()
   }
 
   /** Auto-winner detection based on scores */

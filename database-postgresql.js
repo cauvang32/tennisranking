@@ -1969,6 +1969,10 @@ class TennisDatabasePostgreSQL {
 
   async reorderCupParticipants(cupId, orderedParticipantIds) {
     if (!orderedParticipantIds || orderedParticipantIds.length === 0) return
+    // Guard against unbounded loop from user-controlled input
+    if (orderedParticipantIds.length > 500) {
+      throw new Error('Too many participants (max 500)')
+    }
     const client = await this.pool.connect()
     try {
       await client.query('BEGIN')

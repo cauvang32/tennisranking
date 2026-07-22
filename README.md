@@ -1,198 +1,147 @@
-# Tennis Doubles Ranking System
+# Tennis Ranking System
 
-A full-stack web application for managing tennis doubles (and singles) matches, rankings, and seasons. Built with vanilla JavaScript (Vite), Express, PostgreSQL, and Redis.
-
-## Table of Contents
-
-- [Features](#features)
-- [Quick Start](#quick-start)
-- [Project Structure](#project-structure)
-- [API Reference](#api-reference)
-- [Architecture](#architecture)
-- [Security](#security)
-- [Deployment](#deployment)
-- [Database Schema](#database-schema)
-- [Configuration](#configuration)
-- [Testing](#testing)
-- [Troubleshooting](#troubleshooting)
-
----
+Full-stack web application for managing tennis doubles and singles matches, rankings, cup tournaments, and seasons. Built with Express 5, PostgreSQL 15, Redis 7, and a vanilla-JS Vite SPA.
 
 ## Features
 
-### 🎾 Player Management
-- Add, edit, and remove players dynamically
-- Per-season player rosters (`season_players` junction table)
-- Player statistics: wins, losses, points, money lost, recent form
-
-### 🏆 Match Recording
-- **Doubles (duo)**: 2v2 matches
-- **Singles (solo)**: 1v1 matches
-- **Manual partner selection**: Players choose their own partners
-- **Score tracking** with winner/loser selection
-- **Image parsing**: AI-powered match screenshot parsing via OpenAI vision API
-- **Bulk creation**: Create multiple matches at once
-- **Play date management**: Group matches by date, get latest dates
-
-### 📊 Ranking System
-- **Point-based ranking**: Winners get 4 points, losers get 1 point
-- **Multi-season support**: Track rankings per season, by date, and lifetime
-- **Form tracking**: Recent win/loss streaks (last 5 matches)
-- **Money tracking**: Configurable loss penalty (default 20,000 VND) per season
-- **Pre-computed stats**: `player_lifetime_stats` and `player_season_stats` tables with auto-updating triggers
-- **Real-time updates**: Rankings update via SSE (Server-Sent Events) push
-
-### 📅 Season Management
-- Multiple concurrent active seasons
-- Auto-end by date, manual end/reactivate
-- Per-season player rosters and configurable loss penalty
-- Season backup before migration
-
-### 📁 Export & Backup
-- **Excel export**: Rankings, matches, and statistics to `.xlsx` (streaming for large datasets)
-- **JSON backup/restore**: Full database backup including users
-- **Date/season/lifetime** export modes
-- **Clear all data**: Admin-only endpoint to reset the database
-
-### 🔒 Security
-- JWT authentication (HS256, 15m access / 7d refresh) encrypted with **AES-256-GCM** in httpOnly cookies
-- CSRF protection: HMAC-derived secret per session-id cookie + double-submit token
-- bcrypt password hashing (14 rounds)
-- Role-based access: `admin` (full CRUD), `editor` (match edits only), `viewer` (read-only)
-- Helmet with strict CSP, HSTS, Permissions-Policy, frameguard deny
-- Redis-backed rate limiting with dynamic scaling (CPU/RAM-aware)
-- Token versioning for server-side JWT revocation
-
-### 🔔 Push Notifications
-- FCM (Firebase Cloud Messaging) push notifications via BullMQ queue
-- FCM token registration and management
-- Topic-based push sending (fire-and-forget)
-- Pause/resume/sent status for FCM campaigns
-
----
+- **Players** — CRUD management with per-season rosters and lifetime statistics
+- **Matches** — Doubles (2v2) and singles (1v1) with manual partner selection, bulk creation, and AI-powered screenshot parsing via OpenAI vision
+- **Rankings** — Point-based system (4 pts win / 1 pt loss) with per-season, per-date, and lifetime views; real-time SSE updates
+- **Seasons** — Multi-season support with auto-end by date, configurable loss penalty, final results text, and conclusion images
+- **Cup Tournaments** — Single-elimination brackets with seed management, auto-generated fixtures, bye handling, score entry, and winner advancement
+- **Image Editor** — Admin self-service interface for managing site images (banner, logo, favicon, background)
+- **Export** — Excel export for rankings and matches (streaming for large datasets)
+- **Backup** — Full JSON backup/restore with clear-all option
+- **Push Notifications** — FCM push notifications via BullMQ background worker
+- **Security** — AES-256-GCM encrypted JWT in httpOnly cookies, HMAC-derived CSRF protection, bcrypt (12-14 rounds), Helmet with strict CSP, Redis-backed dynamic rate limiting, token versioning for server-side revocation
 
 ## Quick Start
 
-### Option 1: Docker (Recommended)
+### Prerequisites
+
+- Node.js 22
+- Docker & Docker Compose (for PostgreSQL + Redis)
+
+### 1. Set up environment
 
 ```bash
-# Copy and configure environment variables
 cp .env.example .env
-
-# Start full stack (app + PostgreSQL + Redis)
-docker compose up -d
+# Edit .env — at minimum set DB_PASSWORD, ADMIN_*, EDITOR_*, JWT_SECRET, CSRF_SECRET
 ```
 
-The app will be available at `http://localhost:3001`.
+Generate secrets:
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
 
-### Option 2: Local Development
+### 2. Start database services
 
 ```bash
-# Start database services only
 docker compose up -d postgres redis
+```
 
-# Install dependencies
+### 3. Install dependencies & run
+
+```bash
 npm install
-
-# Configure environment
-cp .env.example .env
-
-# Start dev servers (Vite HMR + Express concurrently)
-npm run dev-full
+npm run dev-full          # Vite HMR (5173) + Express (3001) via concurrently
 ```
 
 Frontend: `http://localhost:5173` | API: `http://localhost:3001`
 
-### Option 3: PM2 (Production)
+### Docker (FCM Worker)
+
+The FCM background worker runs in Docker alongside PostgreSQL and Redis:
 
 ```bash
-npm run build
-pm2 start ecosystem.config.cjs --env production
+docker compose up -d       # starts postgres, redis, and tennis-worker
 ```
 
-### Database Setup (Standalone)
+The main app runs on the host via PM2 (see [Deployment](#deployment)).
 
-For setting up PostgreSQL/Redis without the app:
+## Deployment
+
+| Mode | Command | Notes |
+|------|---------|-------|
+| **PM2 cluster** | `npm run build && pm2 start ecosystem.config.cjs --env production` | 2 workers. Requires external PG + Redis. Use `./scripts/start-with-redis.sh` when Redis is in Docker. |
+| **Docker (worker)** | `docker compose up -d` | PostgreSQL + Redis + FCM worker. App runs on host via PM2. |
+| **Bare node** | `NODE_ENV=production node server.js` | Single process. |
+| **Dev** | `npm run dev-full` | Vite HMR + Express via concurrently. |
+
+### Subpath Deployment
+
+The default production subpath is `/tennis/`. Override with `BASE_PATH`:
 
 ```bash
-# Interactive setup (local or Docker PostgreSQL)
-./setup.sh setup
-
-# Or run all steps: DB + migrations
-./setup.sh all
+npm run deploy:subpath     # BASE_PATH=/tennis/
+npm run deploy:subdomain   # BASE_PATH=/
 ```
-
-See [setup.sh](setup.sh) for full documentation.
-
----
 
 ## Project Structure
 
 ```
-├── config/                  # Environment & cookie configuration
-│   ├── env.js               # Typed config, validates required secrets
+├── config/
+│   ├── env.js               # Typed config, validates required secrets at boot
 │   └── cookie.js            # Cookie helpers (clearCookieAllPaths)
-├── lib/                     # Core libraries
-│   ├── redis-cache.js       # Redis caching (24h TTL, stampede protection, NOTIFY)
+├── lib/
+│   ├── redis-cache.js       # Redis cache (24h TTL, stampede protection, LISTEN/NOTIFY)
 │   ├── jwt-encryption.js    # AES-256-GCM JWT encryption/decryption
 │   ├── push-sender.js       # FCM push sender (topic-based)
-│   ├── notification-queue.js# BullMQ-based FCM notification queue
-│   ├── security-helpers.js  # Timing-safe compare, CSRF derivation, session mgmt
+│   ├── notification-queue.js # BullMQ-based FCM notification queue
+│   ├── security-helpers.js  # Timing-safe compare, CSRF derivation
 │   └── ai-parser.js         # OpenAI vision API for match screenshot parsing
-├── middleware/              # Express middleware
+├── middleware/
 │   ├── auth.js              # JWT auth, role-based access
 │   ├── csrf.js              # Global CSRF protection (HMAC-derived)
-│   ├── compression.js       # Custom Brotli + gzip compression
+│   ├── compression.js       # Brotli + gzip compression
 │   └── rate-limiter.js      # Redis-backed dynamic rate limiting
-├── routes/                  # API route modules (each exports a factory)
+├── routes/
 │   ├── players.js           # Player CRUD
-│   ├── seasons.js           # Season CRUD, check-expired, active seasons
+│   ├── seasons.js           # Season CRUD, end/reactivate, final results
 │   ├── matches.js           # Match CRUD, bulk-create, image parsing, play dates
 │   ├── rankings.js          # Lifetime, season, date rankings
+│   ├── cups.js              # Cup tournament CRUD, brackets, scores, participants
+│   ├── images.js            # Site image upload/preview/metadata, season conclusion images
 │   ├── export.js            # Excel export (rankings, matches, seasons)
 │   ├── admin.js             # Admin: access stats, logs, IP analysis, security dashboard, FCM
 │   ├── backup.js            # JSON backup/restore, clear all data
 │   ├── health.js            # Health checks, performance, cache stats
 │   ├── system.js            # CSRF token, data version, SSE events, config debug
 │   ├── users.js             # User CRUD, password change
-│   └── devices.js           # FCM token registration
-├── utils/                   # Utility modules
+│   ├── auth-inline.js       # Login, logout, refresh, status inline routes
+│   ├── devices.js           # FCM token registration
+│   └── ...
+├── utils/
 │   ├── async-handler.js     # Async route wrapper, error codes, timeout middleware
 │   ├── excel-helper.js      # Excel export (write-excel-file)
 │   └── stream-helper.js     # JSON/Excel streaming via pg-cursor
-├── worker.js                # FCM background worker (BullMQ queue processor)
-├── migrations/              # Database migrations (idempotent)
-│   ├── add-performance-indexes.sql  # Performance indexes
-│   ├── add-match-details-view.sql   # match_details view + updated_at triggers
-│   └── ...                  # Application migrations
-├── tests/                   # Vitest test suite
-├── src/                     # Frontend (Vite SPA)
-│   ├── main.js              # Frontend SPA (~4000 lines, vanilla JS)
-│   └── style.css            # Global styles
+├── migrations/              # Database migrations (idempotent, apply in order)
+├── src/                     # Frontend (Vite SPA, modular vanilla JS)
+│   ├── main.js              # App bootstrap
+│   ├── style.css            # Global styles
+│   ├── modules/             # Cross-cutting modules (api-client, auth, cache, SSE, CSRF, ...)
+│   ├── features/            # Feature modules (accounts, cups, export, images, matches, ...)
+│   └── lib/                 # Shared frontend utilities
 ├── public/                  # Static assets
-├── server.js                # Express app entry point (~687 lines)
-├── database-postgresql.js   # Database adapter (~1557 lines)
+├── server.js                # Express app entry (thin orchestration layer)
+├── database-postgresql.js   # PostgreSQL adapter (all queries)
 ├── worker.js                # FCM background worker (BullMQ)
-├── docker-compose.yml       # Full-stack Docker (app + PG + Redis)
-├── Dockerfile               # Multi-stage Node 22 Alpine build
-├── ecosystem.config.cjs     # PM2 cluster configuration
-├── setup.sh                 # Unified setup + migration script
-├── .env.example             # Environment variable template
-├── vite.config.js           # Vite 8 config (subpath deployment)
-└── package.json             # Dependencies and scripts
+├── docker-compose.yml       # PostgreSQL + Redis + FCM worker
+├── Dockerfile               # Node 22 Alpine (FCM worker image)
+├── ecosystem.config.cjs     # PM2 cluster configuration (2 workers)
+├── vite.config.js           # Vite 8 config (Rolldown, subpath deployment)
+└── package.json
 ```
-
----
 
 ## API Reference
 
 ### Authentication
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| `POST` | `/api/auth/login` | No | Login, returns httpOnly JWT cookies |
-| `POST` | `/api/auth/logout` | Yes | Logout, invalidate tokens |
-| `GET` | `/api/auth/status` | Optional | Check auth status |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/auth/login` | Login, returns httpOnly JWT cookies |
+| `POST` | `/api/auth/logout` | Logout, invalidate tokens |
+| `GET` | `/api/auth/status` | Check auth status |
 
 ### Players
 
@@ -212,10 +161,10 @@ See [setup.sh](setup.sh) for full documentation.
 | `GET` | `/api/seasons/:id/players` | Optional | Get players in a season |
 | `POST` | `/api/seasons` | Admin | Create season |
 | `PUT` | `/api/seasons/:id` | Admin | Update season |
+| `PUT` | `/api/seasons/:id/results` | Admin | Update final results text |
 | `POST` | `/api/seasons/:id/end` | Admin | End season |
 | `POST` | `/api/seasons/:id/reactivate` | Admin | Reactivate season |
 | `DELETE` | `/api/seasons/:id` | Admin | Delete season |
-| `GET` | `/api/seasons/check-expired` | Admin | Check expired seasons |
 
 ### Matches
 
@@ -225,13 +174,13 @@ See [setup.sh](setup.sh) for full documentation.
 | `GET` | `/api/matches/by-date/:date` | Optional | Get matches by date |
 | `GET` | `/api/matches/by-season/:seasonId` | Optional | Get matches by season |
 | `GET` | `/api/matches/:id` | Optional | Get single match |
-| `POST` | `/api/matches` | Editor | Create match |
-| `PUT` | `/api/matches/:id` | Editor | Update match |
-| `DELETE` | `/api/matches/:id` | Editor | Delete match |
+| `POST` | `/api/matches` | Editor+ | Create match |
+| `PUT` | `/api/matches/:id` | Editor+ | Update match |
+| `DELETE` | `/api/matches/:id` | Editor+ | Delete match |
 | `GET` | `/api/matches/play-dates/list` | Optional | List all play dates |
 | `GET` | `/api/matches/play-dates/latest` | Optional | Get latest play date |
-| `POST` | `/api/matches/bulk-create` | Editor | Create multiple matches |
-| `POST` | `/api/matches/parse-image` | Editor | Parse match from image (AI) |
+| `POST` | `/api/matches/bulk-create` | Editor+ | Create multiple matches |
+| `POST` | `/api/matches/parse-image` | Editor+ | Parse match from image (AI) |
 
 ### Rankings
 
@@ -241,14 +190,42 @@ See [setup.sh](setup.sh) for full documentation.
 | `GET` | `/api/rankings/season/:seasonId` | Optional | Season rankings |
 | `GET` | `/api/rankings/date/:date` | Optional | Rankings by date |
 
-### Export (Excel)
+### Cup Tournaments
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `GET` | `/api/export` | Auth | Export rankings (current) |
-| `GET` | `/api/export/date/:date` | Auth | Export rankings by date |
-| `GET` | `/api/export/season/:seasonId` | Auth | Export season rankings |
-| `GET` | `/api/export/lifetime` | Auth | Export lifetime rankings |
+| `GET` | `/api/cups` | Optional | List all cups |
+| `GET` | `/api/cups/:id` | Optional | Get cup detail with bracket |
+| `POST` | `/api/cups` | Admin | Create cup |
+| `PUT` | `/api/cups/:id` | Admin | Update cup |
+| `DELETE` | `/api/cups/:id` | Admin | Delete cup |
+| `POST` | `/api/cups/:id/participants` | Admin | Add participants |
+| `PUT` | `/api/cups/:id/seeds/reorder` | Admin | Reorder seeds |
+| `POST` | `/api/cups/:id/generate-bracket` | Admin | Generate knockout bracket |
+| `PUT` | `/api/cups/:id/matches/:mid` | Admin | Update match score |
+| `PUT` | `/api/cups/:id/status` | Admin | Transition cup status |
+
+### Images
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/images` | Admin | List site images |
+| `GET` | `/api/images/:key/file` | Optional | Get image file (cached) |
+| `POST` | `/api/images/:key` | Admin | Upload image |
+| `PUT` | `/api/images/:key/meta` | Admin | Update image metadata |
+| `DELETE` | `/api/images/:key` | Admin | Deactivate image |
+| `POST` | `/api/images/season/:seasonId/conclusion` | Admin | Upload season conclusion image |
+| `GET` | `/api/images/season/:seasonId/conclusion/file` | Optional | Get conclusion image |
+| `DELETE` | `/api/images/season/:seasonId/conclusion` | Admin | Delete conclusion image |
+
+### Export
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `GET` | `/api/export-excel` | Auth | Export current rankings |
+| `GET` | `/api/export-excel/date/:date` | Auth | Export rankings by date |
+| `GET` | `/api/export-excel/season/:seasonId` | Auth | Export season rankings |
+| `GET` | `/api/export-excel/lifetime` | Auth | Export lifetime rankings |
 
 ### Admin
 
@@ -269,26 +246,21 @@ See [setup.sh](setup.sh) for full documentation.
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
 | `GET` | `/api/backup` | Admin | Full JSON backup |
-| `GET` | `/api/backup-data` | Admin | Backup data only |
 | `POST` | `/api/restore` | Admin | Restore from backup |
-| `POST` | `/api/restore-data` | Admin | Restore data only |
 | `DELETE` | `/api/backup/clear-all-data` | Admin | Clear all data |
 
 ### Health & System
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| `GET` | `/health` | No | Health check (Docker HEALTHCHECK) |
-| `GET` | `/api/health` | No | Detailed health info |
-| `GET` | `/api/performance` | No | Performance metrics |
-| `GET` | `/api/cache-stats` | No | Redis cache statistics |
-| `GET` | `/api/init` | Optional | Bootstrap data for frontend (never cached) |
-| `GET` | `/api/csrf-token` | No | Get CSRF token |
-| `POST` | `/api/csrf-token` | No | Request CSRF token |
-| `GET` | `/api/data-version` | No | Server data version (polling) |
-| `GET` | `/api/events` | No | SSE real-time updates (no timeout) |
-| `POST` | `/api/csp-report` | No | CSP violation report endpoint |
-| `GET` | `/api/debug/config` | Admin | Debug configuration |
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/health` | Health check (Docker HEALTHCHECK) |
+| `GET` | `/api/health` | Detailed health info |
+| `GET` | `/api/performance` | Performance metrics |
+| `GET` | `/api/cache-stats` | Redis cache statistics |
+| `GET` | `/api/init` | Bootstrap data for frontend |
+| `GET` | `/api/events` | SSE real-time updates |
+| `GET` | `/api/data-version` | Server data version |
+| `GET` | `/api/csrf-token` | Get CSRF token |
 
 ### Users
 
@@ -296,7 +268,6 @@ See [setup.sh](setup.sh) for full documentation.
 |--------|----------|------|-------------|
 | `GET` | `/api/users` | Admin | List all users |
 | `POST` | `/api/users` | Admin | Create user |
-| `GET` | `/api/users/:id` | Admin | Get single user |
 | `PUT` | `/api/users/:id` | Admin | Update user |
 | `PUT` | `/api/users/:id/password` | Admin | Change user password |
 | `DELETE` | `/api/users/:id` | Admin | Delete user |
@@ -305,9 +276,7 @@ See [setup.sh](setup.sh) for full documentation.
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `POST` | `/api/devices/register` | Editor | Register FCM token |
-
----
+| `POST` | `/api/devices/register` | Editor+ | Register FCM token |
 
 ## Architecture
 
@@ -317,12 +286,12 @@ See [setup.sh](setup.sh) for full documentation.
 ┌──────────┐     ┌─────────────┐     ┌──────────┐     ┌──────────┐
 │  Browser  │◄──►│  Express    │◄──►│PostgreSQL│◄──►│  Redis   │
 │  (Vite)  │ SSE │  (server.js)│     │  (PG15)  │     │  (R7)    │
-└──────────┘     └──────┬──────┘     └──────────┘     └──────────┘
-                         │
-                         ▼
-                  ┌─────────────┐
-                  │   BullMQ   │
-                  │  (Queue)   │
+└──────────┘     └──────┬──────┘     └──────────┘     └─────┬────┘
+                         │                                    │
+                         ▼                                    ▼
+                  ┌─────────────┐                      ┌─────────────┐
+                  │   BullMQ   │◄─────────────────────│  (Queue)   │
+                  │  (Queue)   │                      └─────────────┘
                   └──────┬──────┘
                          ▼
                   ┌─────────────┐
@@ -333,9 +302,9 @@ See [setup.sh](setup.sh) for full documentation.
 
 ### Three-Tier Cache
 
-1. **PostgreSQL** — source of truth, with `NOTIFY` triggers on data mutations.
-2. **Redis** (`lib/redis-cache.js`) — 24h TTL, stampede protection via distributed locks, preloads startup keys (`rankings:lifetime`, `players`, `seasons`, etc.) on boot. Subscribes to PG `LISTEN/NOTIFY` for invalidation; emits `versionChange` events.
-3. **Client** (`src/main.js`) — type-specific TTLs (rankings 2m, matches 1m, players 10m, version-poll 30s). Polls `/api/events` SSE + server data version to invalidate.
+1. **PostgreSQL** — source of truth, with `NOTIFY` triggers on data mutations
+2. **Redis** — 24h TTL, stampede protection via distributed locks, preloads startup keys on boot. Subscribes to PG `LISTEN/NOTIFY` for invalidation
+3. **Client** — type-specific TTLs (rankings 2m, matches 1m, players 10m). Polls SSE + data version to invalidate
 
 ### Cache Invalidation Flow
 
@@ -347,11 +316,10 @@ DB mutation → PG trigger → pg_notify('cache_invalidation')
 
 ### Router Factory Pattern
 
-Every route module exports a factory; dependencies are passed in, not imported. This keeps `server.js` as the single wiring point.
+Every route module exports a factory; dependencies are injected, not imported. This keeps `server.js` as the single wiring point.
 
 ```javascript
-// routes/players.js
-export const createPlayerRouter = ({ db, checkAuth, rankingsCache, handleValidationErrors }) => {
+export const createPlayerRouter = ({ db, checkAuth, rankingsCache }) => {
   const router = Router()
   router.get('/', checkAuth, asyncHandler(async (req, res) => {
     const { data } = await rankingsCache.getOrSet('players', () => db.getPlayers())
@@ -361,209 +329,68 @@ export const createPlayerRouter = ({ db, checkAuth, rankingsCache, handleValidat
 }
 ```
 
-Wired in `server.js` via `app.use('/api/players', createPlayerRouter(routeCtx))`.
-
-### SSE (Server-Sent Events)
-
-- Real-time updates via `/api/events` (no request timeout).
-- `server.js` listens to `rankingsCache.on('versionChange', ...)` and fans out to all SSE clients.
-- Cache headers (`ETag: W/"v-{version}"`) on `/api` GETs enable 304s.
-- Default max 1000 SSE clients (`MAX_SSE_CLIENTS`).
-
 ### Auth & Security
 
-- **JWT**: HS256, 15m access / 7d refresh, encrypted with **AES-256-GCM** in httpOnly cookies.
-- **CSRF**: HMAC-derived secret per session-id cookie + double-submit token. Required on all non-GET requests via `X-CSRF-Token` header.
-- **bcrypt**: 14 rounds.
-- **Helmet**: Strict CSP, HSTS, Permissions-Policy, frameguard deny.
-- **Rate limiting**: Redis-backed with dynamic scaling when CPU>80% or RAM>85%.
-- **Token versioning**: `token_version` column on `users` for server-side JWT revocation on logout/password change.
+- **JWT**: HS256, 15m access / 7d refresh, encrypted with AES-256-GCM in httpOnly cookies
+- **CSRF**: HMAC-derived secret per user ID + double-submit token via `X-CSRF-Token` header
+- **Roles**: `admin` (full CRUD), `editor` (match edits + FCM registration)
+- **Helmet**: Strict CSP, HSTS, Permissions-Policy, frameguard deny
+- **Rate limiting**: Redis-backed with dynamic scaling when CPU > 80% or RAM > 85%
+- **Token versioning**: Server-side JWT revocation on logout/password change
 
-### Two Auth Tiers
+### Frontend Architecture
 
-- `admin` — full CRUD access (players, seasons, matches, users, system config).
-- `editor` — match edits only (create, update, delete matches).
+Modular vanilla-JS SPA organized into:
 
----
-
-## Deployment
-
-| Mode | Command | Notes |
-|------|---------|-------|
-| **Docker** | `docker compose up -d` | Full stack (app + PG + Redis), recommended. `pm2-runtime` inside container, `dumb-init` PID 1. |
-| **PM2 cluster** | `npm run build && pm2 start ecosystem.config.cjs --env production` | Requires external PG + Redis. Cluster mode, 2 workers by default. |
-| **Bare node** | `NODE_ENV=production node server.js` | Single process. |
-| **Dev** | `npm run dev-full` | Vite HMR + Express. |
-
-PM2/cluster is safe because: rate limits use Redis (`rate-limit-redis-tennis:<name>`), each worker subscribes to PG `LISTEN/NOTIFY` for SSE, and the data version uses a Redis version-lock so all workers broadcast the same version number.
-
-### Deployment Modes
-
-| Mode | Command | Notes |
-|------|---------|-------|
-| Docker | `docker compose up -d` | App + PG + Redis, recommended. |
-| PM2 cluster | `npm run build && pm2 start ecosystem.config.cjs --env production` | Requires external PG + Redis. |
-| Bare node | `NODE_ENV=production node server.js` | Single process. |
-| Dev | `npm run dev-full` | Vite HMR + Express. |
-
-### Subpath Deployment
-
-Default production subpath is `/tennis/`. Set `SUBPATH` (or `BASE_PATH`) env var.
-
-```bash
-# Build for subpath
-npm run build:subpath
-
-# Deploy for subpath
-npm run deploy:subpath
-
-# Build for root domain
-npm run build:subdomain
-
-# Deploy for root domain
-npm run deploy:subdomain
-```
-
----
-
-## Database Schema
-
-Key tables managed through `database-postgresql.js` (~1557 lines):
-
-| Table | Description |
-|-------|-------------|
-| `players` | Player records (name, created_at, updated_at) |
-| `seasons` | Seasons (name, start_date, end_date, auto_end, description, ended_at, ended_by, lose_money_per_loss) |
-| `season_players` | Junction table: which players belong to which seasons |
-| `matches` | Match records (player1-4, winning_team, play_date, season_id, match_type: duo/solo) |
-| `users` | User accounts (username, password_hash, role, token_version) |
-| `devices` | FCM device tokens (user_id, token, platform) |
-| `player_lifetime_stats` | Pre-computed lifetime stats (auto-updated by trigger) |
-| `player_season_stats` | Pre-computed per-season stats (auto-updated by trigger) |
-
-### Indexes
-
-Performance indexes are created by `migrations/add-performance-indexes.sql`:
-- `idx_matches_season_id` — fast season filtering
-- `idx_matches_play_date` — fast date-range queries
-- `idx_matches_player1_id`, `idx_matches_player2_id`, etc. — fast player lookups
-- `idx_seasons_start_date`, `idx_seasons_end_date` — date range queries
-- `idx_season_players_player_id`, `idx_season_players_season_id` — junction lookups
-
-### Views
-
-- `match_details` — Enriched match view with player names, season info.
-
-### Triggers
-
-- `matches_cache_invalidation` — Notifies Redis cache on match changes.
-- `players_cache_invalidation` — Notifies Redis cache on player changes.
-- `seasons_cache_invalidation` — Notifies Redis cache on season changes.
-- `trg_matches_ranking_stats` — Auto-updates `player_lifetime_stats` and `player_season_stats` on match CRUD.
-
----
+- **`src/modules/`** — cross-cutting concerns: API client, app state, auth manager, cache manager, CSRF handler, SSE manager, tab manager, UI helpers
+- **`src/features/`** — domain modules: accounts, cups, export, images, matches, players, rankings, seasons
 
 ## Configuration
 
 ### Required Environment Variables
 
-`ADMIN_USERNAME`, `ADMIN_PASSWORD`, `EDITOR_USERNAME`, `EDITOR_PASSWORD`, `JWT_SECRET`, `CSRF_SECRET` are **all required at startup** — `config/env.js` calls `process.exit(1)` if any are missing.
+The following are **required at startup** — the server exits if any are missing:
 
-Generate secrets:
-```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"  # JWT_SECRET
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"  # CSRF_SECRET
-```
+`ADMIN_USERNAME`, `ADMIN_PASSWORD`, `EDITOR_USERNAME`, `EDITOR_PASSWORD`, `JWT_SECRET`, `CSRF_SECRET`
 
-### All Environment Variables
-
-See [`.env.example`](.env.example) for the full list. Key groups:
-
-| Group | Variables |
-|-------|-----------|
-| **Database** | `DB_TYPE`, `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` |
-| **Redis** | `REDIS_URL` |
-| **Auth** | `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `EDITOR_USERNAME`, `EDITOR_PASSWORD` |
-| **Security** | `JWT_SECRET`, `CSRF_SECRET`, `BCRYPT_ROUNDS` (default 14) |
-| **Rate Limiting** | `RATE_LIMIT_*` (requests per window, window size, CPU/RAM thresholds) |
-| **CORS** | `ALLOWED_ORIGINS` (comma-separated) |
-| **Cache** | `CACHE_TTL` (default 24h) |
-| **Server** | `PORT` (default 3001), `SUBPATH` / `BASE_PATH` (default `/tennis/`) |
-| **SSE** | `MAX_SSE_CLIENTS` (default 1000) |
-| **AI Parser** | `AI_API_KEY`, `AI_API_URL`, `AI_MODEL` |
-| **FCM** | `GOOGLE_APPLICATION_CREDENTIALS` (path to service account JSON) |
-
----
+See [`.env.example`](.env.example) for the full list of all variables (database, Redis, rate limiting, cache, CORS, AI parser, FCM, etc.).
 
 ## Testing
 
 ```bash
-npm test              # Run all tests
+npm test              # Run all tests (vitest)
 npm run test:unit     # Unit tests only
 npm run test:watch    # Watch mode
 npm run test:cors     # Quick CORS check via curl
 ```
 
----
-
 ## Common Commands
 
 ```bash
-# Install
-npm install
-
-# Local dev (hybrid: PG+Redis in Docker, app on host)
-docker compose up -d postgres redis
-npm run dev-full          # Vite (5173) + Express (3001) via concurrently
-
-# Build / production
-npm run build             # vite build → dist/
-npm run server            # node server.js (production)
-npm start                 # build + server
-npm run deploy:production # build + server with NODE_ENV=production
-npm run deploy:subpath    # BASE_PATH=/tennis/ build + serve
-
-# Full stack via Docker
-docker compose up -d      # app + postgres + redis (port 3001)
-
-# Health / diagnostics
-npm run health-check      # GET /health
+npm install                       # Install dependencies
+docker compose up -d postgres redis  # Start DB services
+npm run dev-full                  # Dev: Vite + Express
+npm run build                     # Build frontend to dist/
+npm run server                    # Run Express server
+npm start                         # Build + server
+npm run deploy:production         # Production build + server
+npm run health-check              # GET /health
 ```
 
----
+## Database
+
+Key tables: `players`, `seasons`, `season_players`, `matches`, `users`, `devices`, `cups`, `cup_matches`, `cup_advancements`, `site_images`, `player_lifetime_stats`, `player_season_stats`.
+
+Migrations are idempotent shell scripts in `migrations/`. Apply in numerical order. Pre-computed stats tables are auto-updated via PostgreSQL triggers on match CRUD.
 
 ## Troubleshooting
 
-### Gotchas
-
-- **ESM only** — use `import/export`, never `require()`. Node 20.
-- **Subpath** — production default is `/tennis/`. Set `SUBPATH` (or `BASE_PATH`) env var. Static serving and API normalization both honor it.
-- **Cookies** — always clear via `clearCookieAllPaths(res, name)` (not `res.clearCookie`) due to historical path variations.
-- **`/api/init` is never cached** — it carries per-user auth state. Other auth routes skip the ETag middleware.
-- **SSE** — request timeout middleware explicitly skips `/api/events`; set `MAX_SSE_CLIENTS` (default 1000).
-- **Trust proxy** — auto-on in production. Off in dev. Affects `req.ip` and rate-limit keying.
-- **CSRF secret derivation** — `HMAC-SHA256(CSRF_SECRET, sessionId)`. The session-id cookie is the only thing stored; the secret is never persisted.
-
-### Critical Patterns
-
-**After every mutation, invalidate cache:**
-```javascript
-await rankingsCache.invalidateOnPlayerChange()
-await rankingsCache.invalidateOnMatchChange(playDate)
-await rankingsCache.invalidateOnSeasonChange()
-```
-
-**Always wrap async routes:**
-```javascript
-asyncHandler(async (req, res) => { ... })
-```
-
-**Validate input:**
-```javascript
-use([body('name').trim().escape()])
-```
-
----
+- **ESM only** — use `import/export`, never `require()`
+- **Subpath** — production default is `/tennis/`. Override with `BASE_PATH` env var
+- **Cookies** — always clear via `clearCookieAllPaths(res, name)` due to historical path variations
+- **`/api/init` is never cached** — it carries per-user auth state
+- **SSE** — request timeout middleware skips `/api/events`; max 1000 clients by default
+- **PM2 + Docker Redis race** — use `./scripts/start-with-redis.sh` when Redis runs in Docker with host port mapping
 
 ## License
 

@@ -72,7 +72,7 @@ export function createUiHelpers() {
   }
 
   function formatMoney(amount) {
-    if (amount == null) return '0 ₫'
+    if (amount == null) return '0 ₫' // eslint-disable-line eqeqeq -- intentional null check for both null and undefined
     return Number(amount).toLocaleString('vi-VN') + ' ₫'
   }
 

@@ -6,35 +6,17 @@
 import writeXlsxFile from 'write-excel-file/node'
 
 /**
- * Column width mapping (characters to approximate width)
- */
-const DEFAULT_WIDTHS = {
-  id: 10,
-  name: 30,
-  date: 15,
-  score: 15,
-  player: 20,
-  season: 20,
-  number: 10,
-  percentage: 15,
-  money: 20,
-  form: 30,
-  datetime: 20,
-  boolean: 15
-}
-
-/**
  * Create a data row from an object based on column schema
  */
 const createDataRow = (obj, columns) => {
   return columns.map(col => {
-    let value = obj[col.key]
-    
+    const value = obj[col.key]
+
     // Handle null/undefined
     if (value === null || value === undefined) {
       return { value: '', type: String }
     }
-    
+
     // Handle dates
     if (value instanceof Date) {
       return { value, type: Date, format: 'yyyy-mm-dd' }

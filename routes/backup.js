@@ -17,7 +17,6 @@ export const createBackupRouter = ({
   requireAdmin,
   conditionalRateLimit,
   criticalLimiter,
-  restoreLimiter,
   strictRestoreLimiter,
   exportLimiter,
   handleValidationErrors,
@@ -69,6 +68,14 @@ export const createBackupRouter = ({
 
       if (!backupData.players || !backupData.seasons || !backupData.matches) {
         return res.status(400).json({ error: 'Invalid backup file structure' })
+      }
+
+      // CWE-400: Limit restore payload size to prevent DoS via massive payloads
+      if (backupData.matches.length > 10000) {
+        return res.status(400).json({ error: 'Too many matches in backup (max 10000)' })
+      }
+      if (backupData.players.length > 5000) {
+        return res.status(400).json({ error: 'Too many players in backup (max 5000)' })
       }
 
       const hasUsers = backupData.users && backupData.users.length > 0

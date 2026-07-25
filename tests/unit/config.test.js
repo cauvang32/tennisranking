@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect } from 'vitest'
 
 // Set required env vars before importing modules
 process.env.ADMIN_USERNAME = 'test_admin'
@@ -88,7 +88,7 @@ describe('config/env.js', () => {
   })
 })
 
-const { withCookieDefaults, clearCookieAllPaths, getCookiePathsToClear } = await import('../../config/cookie.js')
+const { withCookieDefaults, getCookiePathsToClear } = await import('../../config/cookie.js')
 
 describe('config/cookie.js', () => {
   describe('withCookieDefaults', () => {

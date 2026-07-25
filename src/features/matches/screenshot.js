@@ -324,8 +324,6 @@ export function createScreenshotModule(ctx) {
     const matches = []
 
     for (const card of cards) {
-      const index = card.dataset.index
-      const match = ctx.parsedMatchesBuffer[index]
       // Read matchType from DOM (dataset) to avoid stale indices after removal
       const isSolo = card.dataset.matchType === 'solo'
 

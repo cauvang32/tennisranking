@@ -336,7 +336,7 @@ function isBot(userAgent) {
 }
 
 // Suspicious request detection
-function isSuspiciousRequest(req, realIP) {
+function isSuspiciousRequest(req, _realIP) {
   const suspiciousPatterns = [
     // Common attack patterns
     /\.\./,                    // Directory traversal
@@ -372,7 +372,7 @@ function isSuspiciousRequest(req, realIP) {
 }
 
 // Request type classification
-function classifyRequest(path, method) {
+function classifyRequest(path, _method) {
   if (path.startsWith('/api/')) {
     if (path.includes('/auth/')) return 'auth'
     if (path.includes('/players')) return 'players'

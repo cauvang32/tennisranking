@@ -26,7 +26,6 @@ export function createAccountsModule(ctx) {
   // ─── Account Modal ───────────────────────────────────────────────
 
   function showAccountModal(account) {
-    const modal = document.getElementById('accountModal')
     const title = document.getElementById('accountModalTitle')
     const form = document.getElementById('accountForm')
     const passwordHint = document.getElementById('passwordHint')

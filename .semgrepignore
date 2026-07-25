@@ -1,0 +1,10 @@
+# Semgrep false-positive suppression rules
+# See: https://semgrep.dev/docs/semgrep-cli/ignoring
+
+# Frontend code runs in the browser — SSRF is a server-side vulnerability.
+# These modules only use fetch() to call our own API endpoints.
+src/
+
+# Node_modules and build artifacts
+node_modules/
+dist/

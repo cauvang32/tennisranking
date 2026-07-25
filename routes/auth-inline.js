@@ -24,7 +24,6 @@ export const createInlineAuthRouter = ({
   deriveCSRFSecretFromUser,
   createReusableToken,
   verifyReusableToken,
-  authLimiter,
   refreshLimiter,
   loginLimiter,
   handleValidationErrors,

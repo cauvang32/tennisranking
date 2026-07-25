@@ -1,4 +1,3 @@
-import config from '../config/env.js'
 import { readToken, verifyToken } from '../lib/jwt-encryption.js'
 
 // S5: LRU cache for tokenVersion lookups.
@@ -37,10 +36,8 @@ function invalidateTokenVersionCache(userId) {
 export { invalidateTokenVersionCache }
 
 export const buildAuthMiddleware = ({
-  jwt,
   security,
-  db,
-  roles = ['admin', 'editor']
+  db
 }) => {
   const { clearCookieAllPaths, deriveCSRFSecretFromUser } = security
 

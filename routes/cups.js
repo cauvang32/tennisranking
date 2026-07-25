@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url'
 import fs from 'fs'
 import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
+import { validateFilePath } from '../lib/security-helpers.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -632,8 +633,9 @@ export const createCupRouter = ({
         res.status(404).json({ error: 'Conclusion image not found' })
         return
       }
-      const filePath = join(__dirname, '..', cup.conclusion_image_path)
-      if (!fs.existsSync(filePath)) {
+      // CWE-22: Validate that the conclusion image path stays within the project root
+      const filePath = validateFilePath(join(__dirname, '..'), cup.conclusion_image_path)
+      if (!filePath || !fs.existsSync(filePath)) {
         res.status(404).json({ error: 'Image file not found on disk' })
         return
       }
@@ -660,8 +662,8 @@ export const createCupRouter = ({
       if (!cup) return res.status(404).json({ error: 'Cup not found' })
 
       if (cup.conclusion_image_path) {
-        const oldPath = join(__dirname, '..', cup.conclusion_image_path)
-        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath)
+        const oldPath = validateFilePath(join(__dirname, '..'), cup.conclusion_image_path)
+        if (oldPath && fs.existsSync(oldPath)) fs.unlinkSync(oldPath)
       }
 
       await db.query(`

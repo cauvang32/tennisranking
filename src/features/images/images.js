@@ -62,7 +62,7 @@ export function createImagesModule(ctx) {
   }
 
   function renderImageEditor(img) {
-    const { key, filename, file_size, uploaded_at, alt_text, is_active } = img
+    const { key, file_size, uploaded_at, alt_text, is_active } = img
     const previewEl = document.getElementById(`${key}-preview`)
     if (previewEl) {
       if (is_active && img.storage_path) {

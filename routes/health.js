@@ -206,7 +206,6 @@ export const createHealthRouter = ({
       return res.status(403).json({ error: 'Metrics endpoint restricted to localhost' })
     }
     const cacheStats = rankingsCache.getStats()
-    const info = rankingsCache.isConnected ? { currentEntries: cacheStats.currentEntries, memoryUsage: 'ok' } : { currentEntries: 0, memoryUsage: 'disconnected' }
 
     const lines = [
       '# HELP tennis_cache_hits Total cache hits',

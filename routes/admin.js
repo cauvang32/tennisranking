@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { query } from 'express-validator'
-import { getRealClientIP, logError, getLogStats } from '../access-logger.js'
+import { getRealClientIP, getLogStats } from '../access-logger.js'
 
 /**
  * Admin analytics routes (admin-only).

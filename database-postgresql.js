@@ -1,14 +1,8 @@
 import pg from 'pg'
-import { dirname, join, normalize, resolve } from 'path'
-import { fileURLToPath } from 'url'
-import fs from 'fs/promises'
-import { readFileSync } from 'fs'
+import { normalize, resolve } from 'path'
 import config from './config/env.js'
 
 const { Pool } = pg
-
-const __filename = fileURLToPath(import.meta.url)
-const __dirname = dirname(__filename)
 
 // Build SSL configuration synchronously (required for constructor)
 function buildSSLConfig() {
@@ -561,7 +555,7 @@ class TennisDatabasePostgreSQL {
 
   async createDefaultSeason() {
     const existingSeasons = await this.query('SELECT COUNT(*) as count FROM seasons')
-    if (existingSeasons.rows[0].count == 0) {
+    if (existingSeasons.rows[0].count == 0) { // eslint-disable-line eqeqeq -- null check
       const currentDate = new Date().toISOString().split('T')[0]
       await this.query(`
         INSERT INTO seasons (name, start_date, is_active) 
@@ -576,9 +570,11 @@ class TennisDatabasePostgreSQL {
 
   // Players CRUD operations
   async getPlayers(limit) {
+    // eslint-disable-next-line eqeqeq -- intentional null check for both null and undefined
     const sql = limit != null
       ? 'SELECT id, name, created_at FROM players ORDER BY name LIMIT $1'
       : 'SELECT id, name, created_at FROM players ORDER BY name'
+    // eslint-disable-next-line eqeqeq -- intentional null check for both null and undefined
     const result = await this.query(sql, limit != null ? [limit] : [])
     return result.rows
   }
@@ -619,9 +615,11 @@ class TennisDatabasePostgreSQL {
 
   // Seasons CRUD operations
   async getSeasons(limit) {
+    // eslint-disable-next-line eqeqeq -- intentional null check for both null and undefined
     const sql = limit != null
       ? `SELECT ${SEASON_SELECT_COLS} FROM seasons ORDER BY is_active DESC, start_date DESC LIMIT $1`
       : `SELECT ${SEASON_SELECT_COLS} FROM seasons ORDER BY is_active DESC, start_date DESC`
+    // eslint-disable-next-line eqeqeq -- intentional null check for both null and undefined
     const result = await this.query(sql, limit != null ? [limit] : [])
     return result.rows
   }
@@ -1887,9 +1885,11 @@ class TennisDatabasePostgreSQL {
              status, start_date, end_date, created_by,
              COALESCE(final_results, '') as final_results,
              created_at, updated_at`
+    // eslint-disable-next-line eqeqeq -- intentional null check for both null and undefined
     const sql = limit != null
       ? `SELECT ${selectCols} FROM cups ORDER BY created_at DESC LIMIT $1`
       : `SELECT ${selectCols} FROM cups ORDER BY created_at DESC`
+    // eslint-disable-next-line eqeqeq -- intentional null check for both null and undefined
     const result = await this.query(sql, limit != null ? [limit] : [])
     return result.rows
   }

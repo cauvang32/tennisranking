@@ -1,12 +1,13 @@
-import { Router, json as expressJson } from 'express'
+import { Router } from 'express'
 import multer from 'multer'
-import { body, param, query } from 'express-validator'
+import { body, param } from 'express-validator'
 import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
 import fsPromises from 'fs/promises'
 import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
+import { validateFilePath } from '../lib/security-helpers.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -114,8 +115,9 @@ export const createImageRouter = ({
       }
       return
     }
-    const filePath = join(__dirname, '..', image.storage_path)
-    if (!fs.existsSync(filePath)) {
+    // CWE-22: Validate that the storage path stays within the project root
+    const filePath = validateFilePath(join(__dirname, '..'), image.storage_path)
+    if (!filePath || !fs.existsSync(filePath)) {
       // Fallback for hero_banner
       if (key === 'hero_banner') {
         res.sendFile(join(__dirname, '..', 'public', 'image.png'))
@@ -286,8 +288,9 @@ export const createImageRouter = ({
         return
       }
 
-      const filePath = join(__dirname, '..', season.conclusion_image_path)
-      if (!fs.existsSync(filePath)) {
+      // CWE-22: Validate that the conclusion image path stays within the project root
+      const filePath = validateFilePath(join(__dirname, '..'), season.conclusion_image_path)
+      if (!filePath || !fs.existsSync(filePath)) {
         res.status(404).json({ error: 'Image file not found on disk' })
         return
       }

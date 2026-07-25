@@ -3,7 +3,6 @@ import { Router, json as expressJson } from 'express'
 import { body, param, query } from 'express-validator'
 import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
-import { streamJsonResponse } from '../utils/stream-helper.js'
 import { parseImageMatches } from '../lib/ai-parser.js'
 
 export const createMatchRouter = ({
@@ -20,26 +19,6 @@ export const createMatchRouter = ({
   pushSender
 }) => {
   const router = Router()
-
-  // SQL for match listing (shared between cached and streamed paths)
-  const MATCHES_LIST_SQL = `
-    SELECT m.id, m.season_id, TO_CHAR(m.play_date, 'YYYY-MM-DD') as play_date,
-      m.player1_id, m.player2_id, m.player3_id, m.player4_id,
-      m.team1_score, m.team2_score, m.winning_team, 
-      COALESCE(m.match_type, 'duo') as match_type,
-      m.created_at,
-      s.name as season_name,
-      COALESCE(s.lose_money_per_loss, 20000) as lose_money_per_loss,
-      p1.name as player1_name, COALESCE(p2.name, '') as player2_name, 
-      p3.name as player3_name, COALESCE(p4.name, '') as player4_name
-    FROM matches m
-    JOIN seasons s ON m.season_id = s.id
-    JOIN players p1 ON m.player1_id = p1.id
-    LEFT JOIN players p2 ON m.player2_id = p2.id
-    JOIN players p3 ON m.player3_id = p3.id
-    LEFT JOIN players p4 ON m.player4_id = p4.id
-    ORDER BY m.play_date DESC, m.created_at DESC
-  `
 
   router.get('/', checkAuth, [
     query('limit').optional().isInt({ min: 1, max: 1000 }).withMessage('Limit must be between 1 and 1000'),
@@ -396,6 +375,12 @@ export const createMatchRouter = ({
         return
       }
 
+      // CWE-400: Limit bulk operations to prevent DoS via large payloads
+      if (matches.length > 200) {
+        res.status(400).json({ error: 'Tối đa 200 trận đấu mỗi lần gửi' })
+        return
+      }
+
       const client = await db.pool.connect()
       let createdCount = 0
 
@@ -404,7 +389,7 @@ export const createMatchRouter = ({
       // This avoids N+1 queries where each match triggers a separate DB call.
       const seasonPlayerIdsSet = new Set()
       for (const match of matches) {
-        const { seasonId, player1Id, player2Id, player3Id, player4Id, matchType = 'duo' } = match
+        const { seasonId: _seasonId, player1Id, player2Id, player3Id, player4Id, matchType = 'duo' } = match
         const pIds = matchType === 'duo'
           ? [player1Id, player2Id, player3Id, player4Id]
           : [player1Id, player3Id]
@@ -561,10 +546,10 @@ export const createMatchRouter = ({
         const team2Score = parseInt(m.team2Score) || 0
         const winningTeam = team1Score > team2Score ? 1 : team2Score > team1Score ? 2 : 1
 
-        let player1Name = (typeof m.player1Name === 'string' && m.player1Name.trim()) || ''
+        const player1Name = (typeof m.player1Name === 'string' && m.player1Name.trim()) || ''
         let player2Name = (typeof m.player2Name === 'string' && m.player2Name.trim()) || null
         let player3Name = (typeof m.player3Name === 'string' && m.player3Name.trim()) || ''
-        let player4Name = (typeof m.player4Name === 'string' && m.player4Name.trim()) || null
+        const player4Name = (typeof m.player4Name === 'string' && m.player4Name.trim()) || null
 
         // Handle solo matches: the model may put the two opponents in
         // player1 + player2 (with player3/player4 = null). Our DB format

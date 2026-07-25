@@ -80,7 +80,8 @@ export const createSeasonRouter = ({
     ],
     handleValidationErrors,
     asyncHandler(async (req, res) => {
-      let { name, startDate, endDate, autoEnd = false, description = '', loseMoneyPerLoss = 20000, playerIds = [] } = req.body
+      const { name, startDate, autoEnd = false, loseMoneyPerLoss = 20000, playerIds = [] } = req.body
+      let { endDate, description = '' } = req.body
       endDate = endDate || null
       description = description || ''
 

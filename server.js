@@ -24,7 +24,6 @@ import { fileURLToPath } from 'url'
 import { dirname, join } from 'path'
 import cors from 'cors'
 import helmet from 'helmet'
-import jwt from 'jsonwebtoken'
 import bcrypt from 'bcrypt'
 import cookieParser from 'cookie-parser'
 import { validationResult } from 'express-validator'
@@ -47,7 +46,7 @@ import { createTimeoutMiddleware } from './utils/async-handler.js'
 import RedisCache from './lib/redis-cache.js'
 import TennisDatabase from './database-postgresql.js'
 import { createPushSender } from './lib/push-sender.js'
-import { getRealClientIP, logAccess } from './access-logger.js'
+import { logAccess } from './access-logger.js'
 
 // Route factories
 import { createPlayerRouter } from './routes/players.js'
@@ -218,7 +217,6 @@ const securityForAuth = {
 }
 
 const { authenticateToken, checkAuth, requireAdmin, requireEditor } = buildAuthMiddleware({
-  jwt,
   security: securityForAuth,
   db
 })

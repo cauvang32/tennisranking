@@ -26,7 +26,7 @@ export const createAuthRouter = ({
     asyncHandler(async (req, res) => {
       const users = await db.getUsers()
       // Remove password_hash from response
-      const safeUsers = users.map(({ password_hash, ...user }) => user)
+      const safeUsers = users.map(({ password_hash: _ph, ...user }) => user)
       res.setHeader('Cache-Control', 'no-store')
       res.json(sanitizeResponse(safeUsers))
     })
@@ -46,7 +46,7 @@ export const createAuthRouter = ({
         return res.status(404).json({ error: 'User not found' })
       }
       // Remove password_hash from response
-      const { password_hash, ...safeUser } = user
+      const { password_hash: _ph, ...safeUser } = user
       res.json(sanitizeResponse(safeUser))
     })
   )

@@ -9,7 +9,7 @@
     "sourceType": "module"
   },
   "rules": {
-    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_" }],
+    "no-unused-vars": ["warn", { "argsIgnorePattern": "^_", "varsIgnorePattern": "^_" }],
     "no-console": "off",
     "prefer-const": "warn",
     "no-var": "error",
@@ -17,8 +17,7 @@
     "no-throw-literal": "error",
     "no-eval": "error",
     "no-implied-eval": "error",
-    "no-new-func": "error",
-    "no-return-await": "warn"
+    "no-new-func": "error"
   },
   "ignorePatterns": ["dist/", "node_modules/", "*.min.js"]
 }

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 
 // Copy of extractJSON from ai-parser.js for standalone testing
 function extractJSON(text) {
-  let cleaned = text
+  const cleaned = text
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```\s*$/g, '')
 

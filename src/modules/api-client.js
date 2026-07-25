@@ -3,9 +3,9 @@
  * All feature modules route API calls through this single layer.
  */
 
-import { getCSRFToken, makeAuthenticatedRequest } from '../modules/csrf-handler.js'
+import { makeAuthenticatedRequest } from '../modules/csrf-handler.js'
 
-export function createApiClient(apiBase, csrfModule) {
+export function createApiClient(apiBase) {
   const base = apiBase
 
   async function request(path, options = {}) {

@@ -56,7 +56,7 @@ export function createPlayersModule(ctx) {
         body: JSON.stringify({ name: playerName })
       })
       if (response.ok) {
-        const data = await response.json()
+        await response.json()
         ctx.invalidateCache(['players'])
         await ctx.loadPlayers()
         render()

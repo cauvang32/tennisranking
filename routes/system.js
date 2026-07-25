@@ -2,7 +2,6 @@ import express from 'express'
 import { Router } from 'express'
 import config from '../config/env.js'
 import { deriveCSRFSecretFromUser, createReusableToken } from '../middleware/csrf.js'
-import { readToken, verifyToken } from '../lib/jwt-encryption.js'
 import { getRealClientIP } from '../access-logger.js'
 
 /**

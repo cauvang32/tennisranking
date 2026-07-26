@@ -252,15 +252,15 @@ deploy:
 
     # ── Stop PM2 app first ────────────────────────────────────────
     - pm2 stop tennis || true
-    - sudo docker compose up -d postgres redis redis-queue
+    - docker compose up -d postgres redis redis-queue
 
     # ── Install runtime and migrate before starting new processes ──
     - npm ci --omit=dev
     - npm run migrate
 
     # ── Rebuild & restart Docker FCM worker ───────────────────────
-    - sudo docker compose build tennis-worker
-    - sudo docker compose up -d tennis-worker
+    - docker compose build tennis-worker
+    - docker compose up -d tennis-worker
 
     # ── Restart PM2 app ───────────────────────────────────────────
     - install -d -m 755 "$DEPLOY_PATH/dist"
@@ -327,8 +327,8 @@ rollback:
     # ── Restore the previously tested immutable frontend artifact ─
     - install -d -m 755 "$DEPLOY_PATH/dist"
     - cp -a "$PERSISTENT_DATA_PATH/releases/$ROLLBACK_SHA/dist/." "$DEPLOY_PATH/dist/"
-    - sudo docker compose build tennis-worker
-    - sudo docker compose up -d tennis-worker
+    - docker compose build tennis-worker
+    - docker compose up -d tennis-worker
     - pm2 delete tennis || true
     - bash scripts/start-with-redis.sh
 

@@ -1,7 +1,8 @@
 import dotenv from 'dotenv'
 import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
-import { dirname, join, resolve } from 'path'
+import { dirname, join } from 'path'
+import { uploadRoot } from './upload-paths.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -164,9 +165,7 @@ const config = {
   // User-generated files are persistent application data. Production should
   // point this outside the Git checkout (for example
   // /home/vps/tennisranking-data/uploads) so git reset/redeploy cannot remove it.
-  uploadRoot: resolve(
-    process.env.UPLOAD_ROOT || join(__dirname, '..', 'data', 'uploads')
-  ),
+  uploadRoot,
 
   // Database connection pool
   // Default of 10 is reasonable for a single-worker app; increase for PM2 cluster mode.

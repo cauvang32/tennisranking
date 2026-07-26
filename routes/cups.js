@@ -1,34 +1,40 @@
 import { Router } from 'express'
 import { body, param } from 'express-validator'
 import multer from 'multer'
-import { dirname, join } from 'path'
+import { dirname } from 'path'
 import { fileURLToPath } from 'url'
 import fs from 'fs'
 import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
-import { validateFilePath } from '../lib/security-helpers.js'
+import {
+  createUploadFilename,
+  ensureUploadDirectory,
+  resolveUploadPath,
+  toStoredUploadPath,
+  validateUploadedImage
+} from '../lib/upload-storage.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
-const CUP_UPLOAD_DIR = join(__dirname, '..', 'data', 'uploads', 'cups')
-if (!fs.existsSync(CUP_UPLOAD_DIR)) fs.mkdirSync(CUP_UPLOAD_DIR, { recursive: true })
+const CUP_UPLOAD_DIR = await ensureUploadDirectory('cups')
+const safeImageContentType = value =>
+  ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(value)
+    ? value
+    : 'application/octet-stream'
 
 const cupImageStorage = multer.diskStorage({
   destination: (req, _file, cb) => {
     const cupId = req.params?.id
     if (cupId) {
-      const dir = join(CUP_UPLOAD_DIR, String(cupId))
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-      cb(null, dir)
+      ensureUploadDirectory('cups', String(cupId)).then(
+        directory => cb(null, directory),
+        error => cb(error)
+      )
     } else {
       cb(null, CUP_UPLOAD_DIR)
     }
   },
-  filename: (_req, file, cb) => {
-    const ext = file.mimetype.split('/')[1] || 'png'
-    const prefix = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}`
-    cb(null, `${prefix}.${ext}`)
-  }
+  filename: (_req, file, cb) => cb(null, createUploadFilename(file.mimetype))
 })
 const imageUpload = multer({
   storage: cupImageStorage,
@@ -588,26 +594,36 @@ export const createCupRouter = ({
     '/:id/conclusion-image',
     authenticateToken,
     requireAdmin,
+    [param('id').isInt({ min: 1 }).withMessage('Invalid cup ID')],
+    handleValidationErrors,
     imageUpload.single('image'),
+    validateUploadedImage,
     asyncHandler(async (req, res) => {
       const cupId = parseInt(req.params.id)
       const cup = await db.getCupById(cupId)
-      if (!cup) return res.status(404).json({ error: 'Cup not found' })
+      if (!cup) {
+        if (req.file) await fs.promises.unlink(req.file.path).catch(() => {})
+        return res.status(404).json({ error: 'Cup not found' })
+      }
 
       if (!req.file) {
         res.status(400).json({ error: 'No image file provided' })
         return
       }
 
-      const storagePath = req.file.path.replace(
-        join(__dirname, '..'), ''
-      ).replace(/\\/g, '/')
+      const storagePath = toStoredUploadPath(req.file.path)
 
       await db.query(`
         UPDATE cups SET conclusion_image_path = $1, conclusion_image_filename = $2,
           conclusion_image_content_type = $3, conclusion_image_size = $4, updated_at = NOW()
         WHERE id = $5
       `, [storagePath, req.file.originalname, req.file.mimetype, req.file.size, cupId])
+      if (cup.conclusion_image_path && cup.conclusion_image_path !== storagePath) {
+        const oldPath = resolveUploadPath(cup.conclusion_image_path)
+        if (oldPath) {
+          await fs.promises.unlink(oldPath).catch(() => {})
+        }
+      }
 
       await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
       await rankingsCache.invalidateByPrefix('cups*')
@@ -634,13 +650,13 @@ export const createCupRouter = ({
         return
       }
       // CWE-22: Validate that the conclusion image path stays within the project root
-      const filePath = validateFilePath(join(__dirname, '..'), cup.conclusion_image_path)
+      const filePath = resolveUploadPath(cup.conclusion_image_path)
       if (!filePath || !fs.existsSync(filePath)) {
         res.status(404).json({ error: 'Image file not found on disk' })
         return
       }
       res.set({
-        'Content-Type': cup.conclusion_image_content_type || 'image/png',
+        'Content-Type': safeImageContentType(cup.conclusion_image_content_type),
         'Cache-Control': 'public, max-age=31536000, immutable',
         'X-Content-Type-Options': 'nosniff'
       })
@@ -662,7 +678,7 @@ export const createCupRouter = ({
       if (!cup) return res.status(404).json({ error: 'Cup not found' })
 
       if (cup.conclusion_image_path) {
-        const oldPath = validateFilePath(join(__dirname, '..'), cup.conclusion_image_path)
+        const oldPath = resolveUploadPath(cup.conclusion_image_path)
         if (oldPath && fs.existsSync(oldPath)) fs.unlinkSync(oldPath)
       }
 

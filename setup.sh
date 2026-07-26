@@ -148,7 +148,7 @@ cmd_setup() {
     info "Database configuration:"
     info "  DB_NAME:     $DB_NAME"
     info "  DB_USER:     $DB_USER"
-    info "  DB_PASSWORD: $DB_PASSWORD"
+    info "  DB_PASSWORD: [generated; written only to the protected credentials file]"
     info "  DB_HOST:     $DB_HOST:$DB_PORT"
     info "  REDIS_PORT:  $REDIS_PORT"
 
@@ -197,7 +197,7 @@ cmd_setup() {
 ║    Host:     $DB_HOST:$DB_PORT                        ║
 ║    Database: $DB_NAME                                   ║
 ║    User:     $DB_USER                                   ║
-║    Password: $DB_PASSWORD                               ║
+║    Password: stored in .db-credentials (mode 600)       ║
 ║                                                          ║
 ║  Redis:                                                 ║
 ║    Host:     localhost:$REDIS_PORT                      ║
@@ -226,6 +226,7 @@ EOF
 
     # Save credentials
     local credentials_file=".db-credentials"
+    umask 077
     cat > "$credentials_file" <<CREDS
 # Tennis Ranking System — Database Credentials
 # Generated on $(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -238,6 +239,7 @@ DB_HOST=localhost
 DB_PORT=$DB_PORT
 REDIS_URL=redis://localhost:$REDIS_PORT
 CREDS
+    chmod 600 "$credentials_file"
 
     echo ""
     success "Credentials saved to $credentials_file"
@@ -248,18 +250,22 @@ CREDS
 # Each entry: name|description|sql_file
 # Order matters — migrations run top-to-bottom.
 declare -a MIGRATIONS=(
-    "performance-indexes|Add performance indexes|migrations/add-performance-indexes.sql"
-    "cache-notify-triggers|Add PostgreSQL NOTIFY triggers for Redis cache invalidation|migrations/add-cache-notify-triggers.sql"
-    "match-details-view|Add match_details view + updated_at triggers|migrations/add-match-details-view.sql"
-    "devices-table|Add FCM devices table|migrations/add-devices-table.sh"
-    "token-version|Add token_version for JWT revocation|migrations/add-token-version.sh"
-    "ranking-summary|Add pre-computed ranking stats + triggers|migrations/04-add-ranking-summary.sh"
-    "fix-trigger-unnest|Fix unnest syntax in ranking trigger|migrations/05-fix-trigger-unnest.sh"
-    "score-difference|Add score_difference generated column|migrations/06-add-score-difference.sh"
-    "daily-stats|Add player_daily_stats table|migrations/07-add-daily-stats.sh"
-    "site-images|Add site_images table for image editor|migrations/08-add-site-images.sh"
-    "season-results|Add final_results & conclusion image columns to seasons|migrations/09-add-season-results.sh"
-    "cup-tournaments|Add cup tournament tables (cups, participants, matches, advancements)|migrations/10-add-cup-tournaments.sh"
+    "users-bootstrap|Create the base users table required by later migrations|11-bootstrap-users.sql"
+    "performance-indexes|Add performance indexes|add-performance-indexes.sql"
+    "cache-notify-triggers|Add PostgreSQL NOTIFY triggers for Redis cache invalidation|add-cache-notify-triggers.sql"
+    "match-details-view|Add match_details view + updated_at triggers|add-match-details-view.sql"
+    "devices-table|Add FCM devices table|add-devices-table.sh"
+    "token-version|Add token_version for JWT revocation|add-token-version.sh"
+    "refresh-sessions|Add one-time refresh token sessions|12-add-refresh-sessions.sql"
+    "cache-event-identifiers|Add transaction-scoped cache event IDs|13-cache-event-identifiers.sql"
+    "ranking-summary|Add pre-computed ranking stats + triggers|04-add-ranking-summary.sh"
+    "fix-trigger-unnest|Fix unnest syntax in ranking trigger|05-fix-trigger-unnest.sh"
+    "score-difference|Add score_difference generated column|06-add-score-difference.sh"
+    "daily-stats|Add player_daily_stats table|07-add-daily-stats.sh"
+    "site-images|Add site_images table for image editor|08-add-site-images.sh"
+    "season-results|Add final_results & conclusion image columns to seasons|09-add-season-results.sh"
+    "cup-tournaments|Add cup tournament tables (cups, participants, matches, advancements)|10-add-cup-tournaments.sh"
+    "cup-results|Add cup results and conclusion image columns|11-add-cup-results.sh"
 )
 
 # Track which migrations have been applied
@@ -267,6 +273,12 @@ get_applied_migrations() {
     # Check if the migration's SQL/table exists in the database
     local applied=()
     local has_table
+    has_table=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'users');" 2>/dev/null || echo "false")
+    if [ "$has_table" = "t" ]; then
+        applied+=("users-bootstrap")
+    fi
+
     has_table=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
         "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'player_lifetime_stats');" 2>/dev/null || echo "false")
 
@@ -281,14 +293,17 @@ get_applied_migrations() {
         applied+=("devices-table")
     fi
 
-    has_table=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
-        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'users' AND column_name = 'token_version' FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'token_version');" 2>/dev/null || echo "false")
-    # Simpler check
     local has_tv
     has_tv=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
         "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'users' AND column_name = 'token_version';" 2>/dev/null || echo "0")
     if [ "$has_tv" != "0" ]; then
         applied+=("token-version")
+    fi
+
+    has_table=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'refresh_sessions');" 2>/dev/null || echo "false")
+    if [ "$has_table" = "t" ]; then
+        applied+=("refresh-sessions")
     fi
 
     # Check cache triggers
@@ -297,6 +312,12 @@ get_applied_migrations() {
         "SELECT COUNT(*) FROM pg_trigger WHERE tgname = 'matches_cache_invalidation';" 2>/dev/null || echo "0")
     if [ "$has_trig" != "0" ]; then
         applied+=("cache-notify-triggers")
+    fi
+
+    has_trig=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+        "SELECT COUNT(*) FROM pg_proc WHERE proname = 'notify_cache_invalidation' AND pg_get_functiondef(oid) LIKE '%eventId%';" 2>/dev/null || echo "0")
+    if [ "$has_trig" != "0" ]; then
+        applied+=("cache-event-identifiers")
     fi
 
     # Check score-difference (migration 06)
@@ -334,6 +355,13 @@ get_applied_migrations() {
         "SELECT COUNT(*) FROM information_schema.tables WHERE table_name IN ('cups', 'cup_participants', 'cup_matches', 'cup_advancements');" 2>/dev/null || echo "0")
     if [ "$has_cups" = "4" ]; then
         applied+=("cup-tournaments")
+    fi
+
+    local has_cup_results
+    has_cup_results=$(docker exec "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+        "SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'cups' AND column_name IN ('final_results', 'conclusion_image_path');" 2>/dev/null || echo "0")
+    if [ "$has_cup_results" = "2" ]; then
+        applied+=("cup-results")
     fi
 
     echo "${applied[@]}"
@@ -402,10 +430,8 @@ cmd_migrate() {
                     error "  Migration script not found: $migration_script"
                     continue
                 fi
-                # Override container name in the script
-                sed "s/DB_CONTAINER=.*/DB_CONTAINER=\"$DB_CONTAINER\"/" "$migration_script" | \
-                    envsubst '$DB_CONTAINER $DB_USER $DB_NAME' | \
-                    bash || {
+                DB_CONTAINER="$DB_CONTAINER" DB_USER="$DB_USER" DB_NAME="$DB_NAME" \
+                    bash "$migration_script" || {
                     error "  Migration $name failed!"
                     exit 1
                 }
@@ -415,7 +441,7 @@ cmd_migrate() {
                     error "  Migration SQL not found: $migration_sql"
                     continue
                 fi
-                docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -f "$migration_sql" || {
+                docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" < "$migration_sql" || {
                     error "  Migration $name failed!"
                     exit 1
                 }
@@ -458,16 +484,15 @@ cmd_migrate() {
                         error "Migration script not found: $migration_script"
                         continue
                     fi
-                    sed "s/DB_CONTAINER=.*/DB_CONTAINER=\"$DB_CONTAINER\"/" "$migration_script" | \
-                        envsubst '$DB_CONTAINER $DB_USER $DB_NAME' | \
-                        bash || { error "Migration $name failed!"; exit 1; }
+                    DB_CONTAINER="$DB_CONTAINER" DB_USER="$DB_USER" DB_NAME="$DB_NAME" \
+                        bash "$migration_script" || { error "Migration $name failed!"; exit 1; }
                 elif [[ "$sql_file" == *.sql ]]; then
                     local migration_sql="migrations/$sql_file"
                     if [ ! -f "$migration_sql" ]; then
                         error "Migration SQL not found: $migration_sql"
                         continue
                     fi
-                    docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -f "$migration_sql" || {
+                    docker exec -i "$DB_CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" < "$migration_sql" || {
                         error "Migration $name failed!"
                         exit 1
                     }

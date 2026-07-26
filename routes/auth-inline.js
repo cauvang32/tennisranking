@@ -30,6 +30,8 @@ export const createInlineAuthRouter = ({
   invalidateTokenVersionCache
 }) => {
   const router = Router()
+  const hashRefreshToken = token => crypto.createHash('sha256').update(token).digest('hex')
+  const refreshExpiry = token => new Date((verifyToken(token)?.exp || 0) * 1000)
 
   // ── Login ──────────────────────────────────────────────────────────────
   // R1: Double-submit CSRF cookie for login.
@@ -117,13 +119,18 @@ export const createInlineAuthRouter = ({
 
         const token = generateToken(user)
         const refreshToken = generateRefreshToken(user)
+        await db.createRefreshSession({
+          tokenHash: hashRefreshToken(refreshToken),
+          userId: user.id || null,
+          username: user.username,
+          expiresAt: refreshExpiry(refreshToken)
+        })
 
         res.cookie('authToken', token, withCookieDefaults({ httpOnly: true, maxAge: 15 * 60 * 1000 }))
         res.cookie('refreshToken', refreshToken, withCookieDefaults({ httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 }))
 
         const csrfToken = createReusableToken(deriveCSRFSecretFromUser(user))
 
-        const isAPIClient = !req.headers.accept?.includes('text/html') && req.headers.accept?.includes('application/json')
         const response = {
           success: true, message: 'Login successful', csrfToken,
           user: {
@@ -131,8 +138,7 @@ export const createInlineAuthRouter = ({
             role: user.role, displayName: user.displayName, isSystemUser: !isDbUser
           }
         }
-        if (isAPIClient) { response.token = token; response.authMethod = 'bearer_token' }
-        else { response.authMethod = 'httponly_cookie' }
+        response.authMethod = 'httponly_cookie'
 
         res.json(response)
       } catch (error) {
@@ -157,6 +163,10 @@ export const createInlineAuthRouter = ({
           // S5: Invalidate token version cache so next auth check sees the new version
           if (invalidateTokenVersionCache) invalidateTokenVersionCache(req.user.id)
         }
+      }
+      const refreshToken = req.cookies?.refreshToken
+      if (refreshToken) {
+        await db.revokeRefreshSession(hashRefreshToken(readToken(refreshToken) || refreshToken)).catch(() => {})
       }
       // Nuclear option: force browser to destroy all cookies for this site
       res.setHeader('Clear-Site-Data', '"cookies"')
@@ -185,8 +195,9 @@ export const createInlineAuthRouter = ({
       if (!enc) return res.status(401).json({ error: 'No refresh token provided' })
 
       let decoded
+      let rawToken
       try {
-        const rawToken = readToken(enc) || enc
+        rawToken = readToken(enc) || enc
         decoded = verifyToken(rawToken)
         if (!decoded) return res.status(401).json({ error: 'Invalid refresh token' })
         if (decoded.type !== 'refresh') return res.status(401).json({ error: 'Invalid token type' })
@@ -211,7 +222,21 @@ export const createInlineAuthRouter = ({
         id: decoded.id, username: decoded.username,
         role: decoded.role, tokenVersion: decoded.tokenVersion
       }
+      const nextRefreshToken = generateRefreshToken(user)
+      const rotated = await db.rotateRefreshSession({
+        oldTokenHash: hashRefreshToken(rawToken),
+        newTokenHash: hashRefreshToken(nextRefreshToken),
+        userId: user.id || null,
+        username: user.username,
+        expiresAt: refreshExpiry(nextRefreshToken)
+      })
+      if (!rotated) {
+        clearCookieAllPaths(res, 'authToken')
+        clearCookieAllPaths(res, 'refreshToken')
+        return res.status(401).json({ error: 'Refresh token was already used or revoked' })
+      }
       res.cookie('authToken', generateToken(user), withCookieDefaults({ httpOnly: true, maxAge: 15 * 60 * 1000 }))
+      res.cookie('refreshToken', nextRefreshToken, withCookieDefaults({ httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 }))
       res.json({
         success: true,
         csrfToken: createReusableToken(deriveCSRFSecretFromUser(user)),

@@ -197,12 +197,13 @@ export const writeExcelBuffer = async (sheets) => {
   const sheetData = sheets.map(sheet => buildSheetData(sheet.data, sheet.columns))
   const sheetNames = sheets.map(sheet => truncateSheetName(sheet.name))
   const columnWidths = sheets.map(sheet => createColumnWidths(sheet.columns))
-  
-  return writeXlsxFile(sheetData, {
-    sheets: sheetNames,
-    columns: columnWidths,
-    buffer: true
-  })
+
+  const workbook = sheetData.map((data, index) => ({
+    data,
+    sheet: sheetNames[index],
+    columns: columnWidths[index]
+  }))
+  return writeXlsxFile(workbook).toBuffer()
 }
 
 /**

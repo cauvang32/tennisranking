@@ -8,6 +8,7 @@
  * transparent to the frontend (no API contract change).
  */
 import Cursor from 'pg-cursor'
+import { finished } from 'stream/promises'
 
 const BATCH_SIZE = 200 // rows per DB round-trip
 
@@ -118,9 +119,19 @@ export async function streamExcelResponse(pool, sql, params, res, options) {
   const { default: writeXlsxFile } = await import('write-excel-file/node')
 
   const client = await pool.connect()
+  const maxRows = Math.max(1, Number(process.env.EXPORT_MAX_ROWS) || 25000)
+  let cursor
+  let closed = false
 
   try {
-    const cursor = client.query(new Cursor(sql, params))
+    cursor = client.query(new Cursor(sql, params))
+    const closeCursor = () => {
+      if (!closed) {
+        closed = true
+        cursor?.close(() => {})
+      }
+    }
+    res.once('close', closeCursor)
 
     // Build header row
     const headerRow = columns.map(col => ({
@@ -147,6 +158,11 @@ export async function streamExcelResponse(pool, sql, params, res, options) {
       if (rows.length === 0) break
 
       for (let row of rows) {
+        if (allRows.length > maxRows) {
+          const error = new Error(`Export exceeds the configured ${maxRows} row limit`)
+          error.statusCode = 413
+          throw error
+        }
         if (transform) row = transform(row)
         const dataRow = columns.map(col => {
           const value = row[col.key]
@@ -159,19 +175,27 @@ export async function streamExcelResponse(pool, sql, params, res, options) {
       }
     }
 
-    cursor.close(() => {})
+    closeCursor()
 
-    // Generate buffer and send
+    // The library streams the generated archive to the socket. The explicit
+    // row ceiling keeps worksheet construction within a predictable bound.
     const columnWidths = columns.map(col => ({ width: col.width || 15 }))
-    const buffer = await writeXlsxFile([allRows], {
-      columns: [columnWidths],
-      buffer: true
-    })
+    const output = await writeXlsxFile(allRows, { columns: columnWidths }).toStream()
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
-    res.send(Buffer.from(buffer))
+    output.pipe(res)
+    await finished(output)
+  } catch (error) {
+    if (!res.headersSent) {
+      res.status(error.statusCode || 500).json({
+        error: error.statusCode === 413 ? error.message : 'Failed to generate export'
+      })
+      return
+    }
+    throw error
   } finally {
+    if (!closed) cursor?.close(() => {})
     client.release()
   }
 }

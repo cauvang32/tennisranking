@@ -32,6 +32,7 @@ data/postgres/
 data/postgres-data/
 data/postgres-init/01-init.sql
 data/redis-data/dump.rdb
+data/uploads/
 backend.md
 docker-compose.yml
 firebase-service-account.json

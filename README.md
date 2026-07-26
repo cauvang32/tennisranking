@@ -13,7 +13,7 @@ Full-stack web application for managing tennis doubles and singles matches, rank
 - **Export** — Excel export for rankings and matches (streaming for large datasets)
 - **Backup** — Full JSON backup/restore with clear-all option
 - **Push Notifications** — FCM push notifications via BullMQ background worker
-- **Security** — AES-256-GCM encrypted JWT in httpOnly cookies, HMAC-derived CSRF protection, bcrypt (12-14 rounds), Helmet with strict CSP, Redis-backed dynamic rate limiting, token versioning for server-side revocation
+- **Security** — signed JWTs in Secure HttpOnly SameSite cookies, rotating one-time refresh sessions, HMAC-derived CSRF protection, bcrypt, strict Helmet CSP, Redis-backed rate limiting, and server-side revocation
 
 ## Quick Start
 
@@ -85,7 +85,7 @@ npm run deploy:subdomain   # BASE_PATH=/
 │   └── cookie.js            # Cookie helpers (clearCookieAllPaths)
 ├── lib/
 │   ├── redis-cache.js       # Redis cache (24h TTL, stampede protection, LISTEN/NOTIFY)
-│   ├── jwt-encryption.js    # AES-256-GCM JWT encryption/decryption
+│   ├── jwt-encryption.js    # JWT signing/verification and legacy-token migration
 │   ├── push-sender.js       # FCM push sender (topic-based)
 │   ├── notification-queue.js # BullMQ-based FCM notification queue
 │   ├── security-helpers.js  # Timing-safe compare, CSRF derivation
@@ -331,7 +331,7 @@ export const createPlayerRouter = ({ db, checkAuth, rankingsCache }) => {
 
 ### Auth & Security
 
-- **JWT**: HS256, 15m access / 7d refresh, encrypted with AES-256-GCM in httpOnly cookies
+- **JWT**: RS256 when configured (HS256 fallback), 15m access / 7d rotating refresh sessions, stored in Secure HttpOnly cookies
 - **CSRF**: HMAC-derived secret per user ID + double-submit token via `X-CSRF-Token` header
 - **Roles**: `admin` (full CRUD), `editor` (match edits + FCM registration)
 - **Helmet**: Strict CSP, HSTS, Permissions-Policy, frameguard deny

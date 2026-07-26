@@ -8,7 +8,7 @@ process.env.EDITOR_PASSWORD = 'test_password'
 process.env.JWT_SECRET = 'test_jwt_secret_at_least_32_characters_long_xyz'
 process.env.CSRF_SECRET = 'test_csrf_secret_at_least_32_characters_long_xyz'
 
-const { readToken, generateToken, generateRefreshToken } = await import('../../lib/jwt-encryption.js')
+const { readToken, generateToken, generateRefreshToken, verifyToken } = await import('../../lib/jwt-encryption.js')
 
 describe('JWT Module', () => {
   describe('readToken', () => {
@@ -68,7 +68,10 @@ describe('JWT Module', () => {
       expect(payload.email).toBe('test@test.com')
       expect(payload.role).toBe('editor')
       expect(payload.type).toBe('access')
+      expect(payload.iss).toBe('tennis-ranking')
+      expect(payload.aud).toBe('tennis-ranking-web')
       expect(payload.exp).toBeDefined()
+      expect(verifyToken(token)?.username).toBe('testuser')
     })
   })
 
@@ -82,6 +85,7 @@ describe('JWT Module', () => {
       expect(payload.type).toBe('refresh')
       expect(payload.username).toBe('testuser')
       expect(payload.role).toBe('admin')
+      expect(payload.jti).toBeDefined()
     })
 
     it('should have a longer expiry than access tokens', () => {

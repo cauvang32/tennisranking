@@ -57,6 +57,15 @@ export const createHealthRouter = ({
     })
   })
 
+  // Readiness is dependency-aware and is suitable for deployment traffic
+  // switching. /health remains a cheap process liveness probe.
+  router.get('/ready', async (_req, res) => {
+    const database = await checkDatabaseHealth()
+    const cacheReady = rankingsCache.getStats().isConnected
+    const ready = database.status === 'healthy' && cacheReady
+    res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'not_ready' })
+  })
+
   // ── Admin-only health (sanitized — no internal proxy headers) ──────────────
   // Strips infrastructure details (proxy headers, NODE_ENV, topology) to prevent
   // attackers from understanding the deployment architecture.
@@ -65,7 +74,7 @@ export const createHealthRouter = ({
     const cacheStats = rankingsCache.getStats()
 
     // Check if FCM push sender is configured (firebase-admin)
-    const fcmStatus = app?.locals?.pushSender ? 'configured' : 'disabled'
+    const fcmStatus = app?.locals?.pushSender?.enabled ? 'configured' : 'disabled'
     const aiConfigured = process.env.AI_MODEL ? 'configured' : 'disabled'
 
     res.status(dbHealth.status === 'healthy' ? 200 : 503).json({
@@ -121,8 +130,7 @@ export const createHealthRouter = ({
     } catch (error) {
       // Even a failed send to invalid token means the endpoint is reachable
       if (error.code === 'messaging/invalid-registration-token' ||
-          error.code === 'messaging/too-many-registration-tokens' ||
-          error.code === 'unavailable') {
+          error.code === 'messaging/too-many-registration-tokens') {
         checks.fcm.status = 'healthy'
         checks.fcm.message = 'FCM endpoint reachable (token rejected as expected)'
       } else {
@@ -136,6 +144,7 @@ export const createHealthRouter = ({
       try {
         const response = await fetch(`${config.ai.baseUrl}/models`, {
           method: 'GET',
+          signal: AbortSignal.timeout(10000),
           headers: { Authorization: `Bearer ${config.ai.apiKey}` }
         })
         if (response.ok) {

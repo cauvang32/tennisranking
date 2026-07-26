@@ -19,6 +19,7 @@ services:
     environment:
       - RUN_WORKERS=true
       - REDIS_URL=redis://tennis-redis:6379/0
+      - QUEUE_REDIS_URL=redis://tennis-redis-queue:6379/0
       - DB_HOST=postgres
       - DB_NAME=${DB_NAME:-tennis_ranking}
       - DB_USER=${DB_USER:-tennis_user}
@@ -33,18 +34,30 @@ services:
       - CSRF_SECRET=${CSRF_SECRET}
     volumes:
       # Map the production firebase json file path to the container
-      - /etc/tennis-pro/firebase-service-account.json:/etc/tennis-pro/firebase-service-account.json
+      - /etc/tennis-pro/firebase-service-account.json:/etc/tennis-pro/firebase-service-account.json:ro
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+      redis-queue:
+        condition: service_healthy
     networks:
       - tennis-network
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 1.0
 
   # ── PostgreSQL Database ─────────────────────────────────────────────────────
   postgres:
-    image: postgres:15-alpine
+    image: postgres:15-alpine@sha256:3d0f7584ed7d04e27fa050d6683a74746608faf21f202be78460d679cc56461f
     container_name: tennis-postgres
     ports:
       - "127.0.0.1:5432:5432"
@@ -66,11 +79,27 @@ services:
 
   # ── Redis Cache ─────────────────────────────────────────────────────────────
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
     container_name: tennis-redis
     ports:
       - "127.0.0.1:6380:6379"
-    command: redis-server --appendonly yes --maxmemory 1gb --maxmemory-policy noeviction
+    command: redis-server --appendonly no --save "" --maxmemory 512mb --maxmemory-policy allkeys-lfu
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - tennis-network
+
+  # Persistent BullMQ storage is isolated from disposable cache/rate-limit data.
+  redis-queue:
+    image: redis:7-alpine@sha256:6ab0b6e7381779332f97b8ca76193e45b0756f38d4c0dcda72dbb3c32061ab99
+    container_name: tennis-redis-queue
+    ports:
+      - "127.0.0.1:6381:6379"
+    command: redis-server --appendonly yes --appendfsync everysec --maxmemory 512mb --maxmemory-policy noeviction
     volumes:
       - redis-data:/data
     restart: unless-stopped

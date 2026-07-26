@@ -32,6 +32,13 @@ export const createBackupRouter = ({
     authenticateToken, requireAdmin, conditionalRateLimit(criticalLimiter),
     asyncHandler(async (req, res) => {
       console.log(`📦 BACKUP requested by user: ${req.user.username}`)
+      const maxMatches = Math.max(1, Number(process.env.BACKUP_MAX_MATCHES) || 25000)
+      const countResult = await db.query('SELECT COUNT(*)::int AS count FROM matches')
+      if (countResult.rows[0].count > maxMatches) {
+        return res.status(413).json({
+          error: `Backup exceeds ${maxMatches} matches; use the offline database backup procedure`
+        })
+      }
       const [players, seasons, matches, users, seasonPlayersMap, cups] = await Promise.all([
         db.getPlayers(), db.getSeasons(), db.getMatches(), db.getUsers(), db.getAllSeasonPlayers(), db.getCupsForBackup()
       ])

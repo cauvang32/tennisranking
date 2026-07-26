@@ -1,5 +1,6 @@
 import pg from 'pg'
 import { normalize, resolve } from 'path'
+import { readFileSync } from 'fs'
 import config from './config/env.js'
 
 const { Pool } = pg
@@ -10,7 +11,9 @@ function buildSSLConfig() {
     return false
   }
 
-  const rejectUnauthorized = process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false'
+  const rejectUnauthorized = config.isProduction
+    ? true
+    : process.env.DB_SSL_REJECT_UNAUTHORIZED !== 'false'
   const sslConfig = { rejectUnauthorized }
 
   // Support custom CA certificate for self-signed certs
@@ -64,6 +67,8 @@ class TennisDatabasePostgreSQL {
       max: config.dbPoolMax,
       idleTimeoutMillis: config.dbIdleTimeoutMs,
       connectionTimeoutMillis: config.dbConnectionTimeoutMs,
+      statement_timeout: config.dbStatementTimeoutMs,
+      query_timeout: config.dbStatementTimeoutMs + 1000,
     }
     this.pool = null
     this.isConnected = false
@@ -145,7 +150,8 @@ class TennisDatabasePostgreSQL {
       return
     }
 
-    const delayMs = Math.min(5000 * (2 ** this.retryAttempt), this.maxReconnectDelayMs)
+    const baseDelayMs = Math.min(5000 * (2 ** this.retryAttempt), this.maxReconnectDelayMs)
+    const delayMs = Math.round(baseDelayMs * (0.8 + Math.random() * 0.4))
     this.retryAttempt += 1
 
     this.reconnectTimer = setTimeout(async () => {
@@ -166,6 +172,9 @@ class TennisDatabasePostgreSQL {
     
     try {
       await client.query('BEGIN')
+      // Serialize schema bootstrap across PM2 workers. Long-term schema changes
+      // live in migrations; this lock protects legacy idempotent bootstrap DDL.
+      await client.query(`SELECT pg_advisory_xact_lock(hashtext('tennis-schema-bootstrap'))`)
 
       // Players table
       await client.query(`
@@ -256,17 +265,24 @@ class TennisDatabasePostgreSQL {
         INCLUDE (player1_id, player2_id, player3_id, player4_id, winning_team);
       `)
 
-      // O5: Keep the schema lean — older single-column indexes are superseded
-      // by the composite indexes above or are redundant with existing unique keys.
-      // Note: idx_matches_play_date, idx_seasons_active_start_date, and
-      // idx_season_players_composite are created later in the "General performance indexes" section.
-      await client.query(`DROP INDEX IF EXISTS idx_matches_season_id`)
-      await client.query(`DROP INDEX IF EXISTS idx_matches_match_type`)
-      await client.query(`DROP INDEX IF EXISTS idx_seasons_active`)
-      await client.query(`DROP INDEX IF EXISTS idx_season_players_season_id`)
-      await client.query(`DROP INDEX IF EXISTS idx_season_players_player_id`)
-      await client.query(`DROP INDEX IF EXISTS idx_players_name`)
-      await client.query(`DROP INDEX IF EXISTS idx_cups_name`)
+      // Users must exist before devices declares its foreign key on a fresh DB.
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS users (
+          id SERIAL PRIMARY KEY,
+          username VARCHAR(100) UNIQUE NOT NULL,
+          email VARCHAR(255),
+          password_hash TEXT NOT NULL,
+          role VARCHAR(20) NOT NULL CHECK (role IN ('admin', 'editor', 'viewer')),
+          display_name VARCHAR(255),
+          is_active BOOLEAN DEFAULT true,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          last_login TIMESTAMPTZ,
+          token_version INTEGER NOT NULL DEFAULT 0,
+          created_by VARCHAR(100),
+          notes TEXT
+        )
+      `)
 
       // FCM device registry — self-bootstrapped so a fresh DB doesn't need the
       // separate migrations/add-devices-table.sh to be run first.
@@ -325,6 +341,27 @@ class TennisDatabasePostgreSQL {
       `)
       await client.query(`
         CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active)
+      `)
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS refresh_sessions (
+          id BIGSERIAL PRIMARY KEY,
+          token_hash CHAR(64) UNIQUE NOT NULL,
+          user_id INTEGER NULL REFERENCES users(id) ON DELETE CASCADE,
+          username VARCHAR(100) NOT NULL,
+          expires_at TIMESTAMPTZ NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          rotated_at TIMESTAMPTZ,
+          revoked_at TIMESTAMPTZ,
+          replaced_by_hash CHAR(64)
+        )
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_refresh_sessions_active
+        ON refresh_sessions(token_hash, expires_at) WHERE revoked_at IS NULL
+      `)
+      await client.query(`
+        CREATE INDEX IF NOT EXISTS idx_refresh_sessions_expires_at
+        ON refresh_sessions(expires_at)
       `)
 
       // Notification preferences on users table (idempotent)
@@ -522,26 +559,21 @@ class TennisDatabasePostgreSQL {
         CREATE INDEX IF NOT EXISTS idx_season_players_composite ON season_players(season_id, player_id)
       `)
 
-      // Cleanup obsolete or redundant indexes that no longer match current queries.
-      await client.query(`DROP INDEX IF EXISTS idx_matches_season_id`)
-      await client.query(`DROP INDEX IF EXISTS idx_matches_match_type`)
-      await client.query(`DROP INDEX IF EXISTS idx_matches_player1_date`)
-      await client.query(`DROP INDEX IF EXISTS idx_matches_player2_date`)
-      await client.query(`DROP INDEX IF EXISTS idx_matches_player3_date`)
-      await client.query(`DROP INDEX IF EXISTS idx_matches_player4_date`)
-      await client.query(`DROP INDEX IF EXISTS idx_seasons_active`)
-      await client.query(`DROP INDEX IF EXISTS idx_players_name`)
-      await client.query(`DROP INDEX IF EXISTS idx_cups_name`)
-      await client.query(`DROP INDEX IF EXISTS idx_season_players_season_id`)
-      await client.query(`DROP INDEX IF EXISTS idx_season_players_player_id`)
-
-      // Update check constraint on cup_matches status to include 'locked'
+      // Repair the historical constraint only when it lacks the locked state;
+      // avoid taking an unnecessary table lock on every application startup.
       await client.query(`
-        ALTER TABLE cup_matches DROP CONSTRAINT IF EXISTS check_cup_match_status
-      `)
-      await client.query(`
-        ALTER TABLE cup_matches ADD CONSTRAINT check_cup_match_status
-        CHECK (status IN ('scheduled', 'in_progress', 'completed', 'forfeited', 'cancelled', 'locked'))
+        DO $$ BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint
+            WHERE conrelid = 'cup_matches'::regclass
+              AND conname = 'check_cup_match_status'
+              AND pg_get_constraintdef(oid) LIKE '%locked%'
+          ) THEN
+            ALTER TABLE cup_matches DROP CONSTRAINT IF EXISTS check_cup_match_status;
+            ALTER TABLE cup_matches ADD CONSTRAINT check_cup_match_status
+              CHECK (status IN ('scheduled', 'in_progress', 'completed', 'forfeited', 'cancelled', 'locked'));
+          END IF;
+        END $$;
       `)
 
       await client.query('COMMIT')
@@ -565,7 +597,16 @@ class TennisDatabasePostgreSQL {
   }
 
   async query(text, params = []) {
-    return this.pool.query(text, params)
+    const startedAt = performance.now()
+    try {
+      return await this.pool.query(text, params)
+    } finally {
+      const durationMs = performance.now() - startedAt
+      if (durationMs >= config.dbSlowQueryMs) {
+        const operation = String(text).trim().split(/\s+/, 1)[0]?.toUpperCase() || 'QUERY'
+        console.warn(`⚠️ Slow database ${operation}: ${Math.round(durationMs)}ms`)
+      }
+    }
   }
 
   // Players CRUD operations
@@ -1591,6 +1632,52 @@ class TennisDatabasePostgreSQL {
     return result.rows[0].token_version
   }
 
+  async createRefreshSession({ tokenHash, userId = null, username, expiresAt }) {
+    await this.query(`
+      DELETE FROM refresh_sessions
+      WHERE expires_at < NOW() OR revoked_at < NOW() - INTERVAL '30 days'
+    `)
+    await this.query(`
+      INSERT INTO refresh_sessions (token_hash, user_id, username, expires_at)
+      VALUES ($1, $2, $3, $4)
+    `, [tokenHash, userId, username, expiresAt])
+  }
+
+  async rotateRefreshSession({ oldTokenHash, newTokenHash, userId = null, username, expiresAt }) {
+    const client = await this.pool.connect()
+    try {
+      await client.query('BEGIN')
+      const consumed = await client.query(`
+        UPDATE refresh_sessions
+        SET revoked_at = NOW(), rotated_at = NOW(), replaced_by_hash = $2
+        WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > NOW()
+        RETURNING id
+      `, [oldTokenHash, newTokenHash])
+      if (consumed.rowCount !== 1) {
+        await client.query('ROLLBACK')
+        return false
+      }
+      await client.query(`
+        INSERT INTO refresh_sessions (token_hash, user_id, username, expires_at)
+        VALUES ($1, $2, $3, $4)
+      `, [newTokenHash, userId, username, expiresAt])
+      await client.query('COMMIT')
+      return true
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => {})
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
+  async revokeRefreshSession(tokenHash) {
+    await this.query(`
+      UPDATE refresh_sessions SET revoked_at = COALESCE(revoked_at, NOW())
+      WHERE token_hash = $1
+    `, [tokenHash])
+  }
+
   async updateUserLastLogin(userId) {
     await this.query(`
       UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = $1
@@ -2466,50 +2553,65 @@ class TennisDatabasePostgreSQL {
   // ── Cup backup/restore helpers ─────────────────────────────────────────────
   async getCupsForBackup() {
     const cups = await this.query(`
-      SELECT id, name, season_id, format, num_teams, regulation_text,
-             status, start_date, end_date, created_by,
-             final_results, conclusion_image_path, conclusion_image_filename,
-             conclusion_image_content_type, created_at, updated_at
-      FROM cups ORDER BY id
+      SELECT c.id, c.name, c.season_id, c.format, c.num_teams, c.regulation_text,
+             c.status, c.start_date, c.end_date, c.created_by,
+             c.final_results, c.conclusion_image_path, c.conclusion_image_filename,
+             c.conclusion_image_content_type, c.created_at, c.updated_at,
+             s.name AS season_name
+      FROM cups c
+      LEFT JOIN seasons s ON s.id = c.season_id
+      ORDER BY c.id
     `)
-    const result = []
-    for (const cup of cups.rows) {
-      // Include player names for simple restore (name-based lookups)
-      const participants = await this.query(`
+    if (cups.rows.length === 0) return []
+    const cupIds = cups.rows.map(cup => cup.id)
+    const [participants, matches, advancements] = await Promise.all([
+      this.query(`
         SELECT cp.id, cp.cup_id, cp.player1_id, cp.player2_id, cp.team_name, cp.seed,
                p1.name as player1_name, p2.name as player2_name
         FROM cup_participants cp
         JOIN players p1 ON cp.player1_id = p1.id
         LEFT JOIN players p2 ON cp.player2_id = p2.id
-        WHERE cp.cup_id = $1
-        ORDER BY cp.seed ASC, cp.id ASC
-      `, [cup.id])
-      const matches = await this.query(`
+        WHERE cp.cup_id = ANY($1::int[])
+        ORDER BY cp.cup_id, cp.seed ASC, cp.id ASC
+      `, [cupIds]),
+      this.query(`
         SELECT id, cup_id, round_number, match_number, bracket_position,
                team1_participant_id, team2_participant_id,
                team1_score, team2_score, winner_participant_id,
                play_date, status, created_at, updated_at
-        FROM cup_matches WHERE cup_id = $1 ORDER BY round_number ASC, match_number ASC
-      `, [cup.id])
-      const advancements = await this.query(`
-        SELECT id, from_match_id, to_match_id, winner_slot
-        FROM cup_advancements WHERE from_match_id IN (SELECT id FROM cup_matches WHERE cup_id = $1)
-        ORDER BY id
-      `, [cup.id])
-      // Include season name for simple restore (name-based lookup)
-      let seasonName = null
-      if (cup.season_id) {
-        const seasonResult = await this.query('SELECT name FROM seasons WHERE id = $1', [cup.season_id])
-        seasonName = seasonResult.rows[0]?.name || null
+        FROM cup_matches
+        WHERE cup_id = ANY($1::int[])
+        ORDER BY cup_id, round_number ASC, match_number ASC
+      `, [cupIds]),
+      this.query(`
+        SELECT ca.id, cm.cup_id, ca.from_match_id, ca.to_match_id, ca.winner_slot
+        FROM cup_advancements ca
+        JOIN cup_matches cm ON cm.id = ca.from_match_id
+        WHERE cm.cup_id = ANY($1::int[])
+        ORDER BY cm.cup_id, ca.id
+      `, [cupIds])
+    ])
+
+    const groupByCup = rows => rows.reduce((map, row) => {
+      const list = map.get(row.cup_id) || []
+      list.push(row)
+      map.set(row.cup_id, list)
+      return map
+    }, new Map())
+    const participantMap = groupByCup(participants.rows)
+    const matchMap = groupByCup(matches.rows)
+    const advancementMap = groupByCup(advancements.rows)
+
+    return cups.rows.map(cup => {
+      const { season_name: seasonName = null } = cup
+      return {
+        ...cup,
+        season_name: seasonName,
+        participants: participantMap.get(cup.id) || [],
+        matches: matchMap.get(cup.id) || [],
+        advancements: (advancementMap.get(cup.id) || []).map(({ cup_id: _cupId, ...row }) => row)
       }
-      result.push({
-        ...cup, season_name: seasonName,
-        participants: participants.rows,
-        matches: matches.rows,
-        advancements: advancements.rows
-      })
-    }
-    return result
+    })
   }
 
   async createCupMatch(cupId, matchData) {

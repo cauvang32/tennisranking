@@ -44,7 +44,7 @@ const createRateLimitClient = () => {
     // enableOfflineQueue defaults to true — commands are queued while
     // Redis is connecting, so the first HTTP request won't fail even if Redis
     // isn't ready yet.  IORedis will retry connecting in the background.
-    rateLimitRedis = new IORedis(config.redisUrl, {
+    rateLimitRedis = new IORedis(config.rateLimitRedisUrl, {
       maxRetriesPerRequest: null,
       connectTimeout: 5000,
       retryStrategy(times) {

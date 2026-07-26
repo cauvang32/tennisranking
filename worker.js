@@ -11,9 +11,15 @@ let pushSender = null
 // ── Lightweight health check server (for Docker HEALTHCHECK) ────────────────
 // Separate from the main app so the worker has its own health probe.
 // Checks: process alive, DB reachable, Redis reachable (via pushSender).
-const healthServer = http.createServer((req, res) => {
+const healthServer = http.createServer(async (req, res) => {
   if (req.url === '/health') {
-    const dbStatus = db?.pool ? 'connected' : 'disconnected'
+    let dbStatus = 'disconnected'
+    try {
+      if (db?.isConnected) {
+        await db.query('SELECT 1')
+        dbStatus = 'connected'
+      }
+    } catch { /* unhealthy response below */ }
     const fcmStatus = pushSender?.enabled ? 'active' : 'disabled'
     const isReady = dbStatus === 'connected'
     res.writeHead(isReady ? 200 : 503, { 'Content-Type': 'application/json' })
@@ -35,7 +41,8 @@ async function start() {
   // Initialize PostgreSQL database
   db = new DB()
   try {
-    await db.init()
+    const initialized = await db.init()
+    if (!initialized) throw new Error('Database initialization returned an unhealthy status')
     console.log('✅ PostgreSQL database connection established')
   } catch (error) {
     console.error('❌ PostgreSQL initialization failed:', error.message)

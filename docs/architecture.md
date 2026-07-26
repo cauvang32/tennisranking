@@ -36,7 +36,7 @@ ranking/
 │   ├── env.js               # Validates env vars, exports typed config
 │   └── cookie.js            # Cookie defaults, path-clearing helpers
 ├── lib/                     # Core libraries
-│   ├── jwt-encryption.js    # AES-256-GCM JWT encrypt/decrypt
+│   ├── jwt-encryption.js    # JWT signing and verification
 │   ├── redis-cache.js       # Redis caching with stampede protection
 │   └── security-helpers.js  # CSRF derivation, timing-safe compare
 ├── middleware/              # Express middleware
@@ -121,7 +121,7 @@ sequenceDiagram
     DB-->>S: user record (with bcrypt hash)
     S->>S: bcrypt.compare(password, hash)
     S->>S: Generate JWT (HS256)
-    S->>S: Encrypt JWT (AES-256-GCM)
+    S->>S: Sign access and refresh JWTs
     S-->>C: Set httpOnly cookies (authToken, refreshToken)
     Note over C,S: All subsequent requests include cookies automatically
 
@@ -173,7 +173,7 @@ Key design decisions:
 |-------|---------------|
 | Transport | HSTS (2 years), upgrade-insecure-requests |
 | Headers | Helmet (CSP, X-Frame-Options, Permissions-Policy) |
-| Authentication | JWT in AES-256-GCM encrypted httpOnly cookies |
+| Authentication | Signed JWTs in Secure HttpOnly cookies with rotating refresh sessions |
 | CSRF | HMAC-derived secrets + double-submit token pattern |
 | Passwords | bcrypt with 14 rounds |
 | Rate Limiting | Redis-backed, dynamic, user-aware |

@@ -44,7 +44,7 @@ There is no separate lint script — ESLint config exists at `.eslintrc.json` bu
 
 ```
 config/      env.js (typed config, validates required secrets), cookie.js
-lib/         redis-cache.js, jwt-encryption.js (AES-256-GCM), security-helpers.js
+lib/         redis-cache.js, jwt-encryption.js, upload-storage.js, security-helpers.js
 middleware/  auth.js, csrf.js, compression.js, rate-limiter.js
 routes/      *.js — each exports a `createXxxRouter({ db, rankingsCache, ... })` factory
 utils/       async-handler.js, excel-helper.js, stream-helper.js
@@ -82,7 +82,7 @@ Wired in `server.js` via `app.use('/api/players', createPlayerRouter(routeCtx))`
 
 ### Auth & security
 
-- JWT (HS256, 15m access / 7d refresh) encrypted with **AES-256-GCM** in httpOnly cookies (`lib/jwt-encryption.js`).
+- JWT (RS256 when configured, HS256 fallback; 15m access / 7d refresh) in Secure HttpOnly cookies. Refresh sessions are hashed, rotated, and one-time-use (`lib/jwt-encryption.js`, `routes/auth-inline.js`).
 - CSRF: HMAC-derived secret from user ID + double-submit token (`middleware/csrf.js`). Required on all non-GET requests via `X-CSRF-Token` header.
 - bcrypt with 14 rounds (`BCRYPT_ROUNDS`).
 - Helmet with strict CSP, HSTS, Permissions-Policy, frameguard deny.

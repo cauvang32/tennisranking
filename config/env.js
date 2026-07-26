@@ -1,7 +1,7 @@
 import dotenv from 'dotenv'
 import { readFileSync } from 'fs'
 import { fileURLToPath } from 'url'
-import { dirname, join } from 'path'
+import { dirname, join, resolve } from 'path'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -37,10 +37,26 @@ for (const key of required) {
     process.exit(1)
   }
 }
+if (process.env.NODE_ENV === 'production') {
+  for (const key of ['JWT_SECRET', 'CSRF_SECRET']) {
+    if (process.env[key].length < 32) {
+      console.error(`❌ ${key} must contain at least 32 characters in production`)
+      process.exit(1)
+    }
+  }
+  if (process.env.JWT_SECRET === process.env.CSRF_SECRET) {
+    console.error('❌ JWT_SECRET and CSRF_SECRET must be different')
+    process.exit(1)
+  }
+}
 
 // ── Exported typed config (read once at startup) ────────────────────────────
 
 const determineSecureCookies = () => {
+  // Production authentication cookies must never be sent over plaintext HTTP.
+  // Ignore an accidentally stale COOKIE_SECURE=false rather than silently
+  // weakening every login session after a deployment.
+  if (process.env.NODE_ENV === 'production') return true
   const raw = process.env.COOKIE_SECURE
   if (raw !== undefined) {
     const normalized = raw.toString().toLowerCase()
@@ -67,7 +83,10 @@ function _readRsaKey(envName) {
     return null
   }
 }
-const sameSitePolicy = process.env.COOKIE_SAMESITE || (secureCookiesEnabled ? 'strict' : 'lax')
+const configuredSameSite = process.env.COOKIE_SAMESITE?.toLowerCase()
+const sameSitePolicy = process.env.NODE_ENV === 'production'
+  ? 'strict'
+  : (['strict', 'lax', 'none'].includes(configuredSameSite) ? configuredSameSite : 'lax')
 const cookieDomain = process.env.COOKIE_DOMAIN || undefined
 
 const config = {
@@ -103,6 +122,8 @@ const config = {
   bcryptRounds: parseInt(process.env.BCRYPT_ROUNDS) || 12, // 2^12 = 4096 work factor (OWASP min 2^10)
   jwtAccessTokenExpiry: process.env.JWT_ACCESS_TOKEN_EXPIRY || '15m',
   jwtRefreshTokenExpiry: process.env.JWT_REFRESH_TOKEN_EXPIRY || '7d',
+  jwtIssuer: process.env.JWT_ISSUER || 'tennis-ranking',
+  jwtAudience: process.env.JWT_AUDIENCE || 'tennis-ranking-web',
   // Prefer RS256 (asymmetric) when valid RSA keys are provided; fall back to HS256 otherwise.
   // Keys shorter than 200 chars are clearly invalid (just a header) — skip RS256.
   jwtAlgorithm: (() => {
@@ -135,7 +156,17 @@ const config = {
   // Graceful shutdown timeout in milliseconds (4500ms default)
   shutdownTimeoutMs: parseInt(process.env.SHUTDOWN_TIMEOUT_MS) || 4500,
   publicDomain: process.env.PUBLIC_DOMAIN,
-  trustProxy: envFlagTrue(process.env.TRUST_PROXY) || envFlagTrue(process.env.BEHIND_PROXY) || process.env.NODE_ENV === 'production',
+  // Express proxy trust changes the security boundary for req.ip and all
+  // IP-based rate limits. It must be an explicit deployment decision.
+  trustProxy: envFlagTrue(process.env.TRUST_PROXY) || envFlagTrue(process.env.BEHIND_PROXY),
+  trustProxyHops: Math.max(1, parseInt(process.env.TRUST_PROXY_HOPS, 10) || 1),
+
+  // User-generated files are persistent application data. Production should
+  // point this outside the Git checkout (for example
+  // /home/vps/tennisranking-data/uploads) so git reset/redeploy cannot remove it.
+  uploadRoot: resolve(
+    process.env.UPLOAD_ROOT || join(__dirname, '..', 'data', 'uploads')
+  ),
 
   // Database connection pool
   // Default of 10 is reasonable for a single-worker app; increase for PM2 cluster mode.
@@ -143,9 +174,13 @@ const config = {
   dbPoolMax: parseInt(process.env.DB_POOL_MAX) || 10,
   dbIdleTimeoutMs: parseInt(process.env.DB_IDLE_TIMEOUT_MS) || 30000,
   dbConnectionTimeoutMs: parseInt(process.env.DB_CONNECTION_TIMEOUT_MS) || 2000,
+  dbStatementTimeoutMs: parseInt(process.env.DB_STATEMENT_TIMEOUT_MS) || 30000,
+  dbSlowQueryMs: parseInt(process.env.DB_SLOW_QUERY_MS) || 500,
 
   // Redis
   redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',
+  queueRedisUrl: process.env.QUEUE_REDIS_URL || process.env.REDIS_URL || 'redis://localhost:6379',
+  rateLimitRedisUrl: process.env.RATE_LIMIT_REDIS_URL || process.env.REDIS_URL || 'redis://localhost:6379',
   cacheTtlSeconds: parseInt(process.env.CACHE_TTL_SECONDS) || 24 * 60 * 60,
   cachePreloadInterval: parseInt(process.env.CACHE_PRELOAD_INTERVAL) || 240000,
 
@@ -158,12 +193,22 @@ const config = {
       .map(o => o.trim())
       .filter(o => o !== '')
       .map(o => {
-        if (o === 'null') return 'null'
+        if (o === 'null') {
+          if (process.env.NODE_ENV === 'production') {
+            console.warn('⚠️ ALLOWED_ORIGINS: ignoring unsafe "null" origin in production')
+            return null
+          }
+          return 'null'
+        }
         // Strip path and query from configured origins for comparison with Origin header.
         // The browser sends Origin without path (e.g., "https://tennis.example.com"),
         // but admins may configure origins with paths (e.g., "https://tennis.example.com/tennis").
         try {
           const url = new URL(o)
+          if (process.env.NODE_ENV === 'production' && url.protocol !== 'https:') {
+            console.warn(`⚠️ ALLOWED_ORIGINS: ignoring non-HTTPS production origin "${o}"`)
+            return null
+          }
           return `${url.protocol}//${url.host}`
         } catch {
           console.warn(`⚠️ ALLOWED_ORIGINS: ignoring invalid origin "${o}" (must start with http:// or https://)`)
@@ -220,7 +265,9 @@ const config = {
 
   // Auto-redirect from domain root to subpath (e.g. domain.com → domain.com/tennis).
   // Set to false to serve the app at the domain root without redirecting.
-  allowSubpathRedirect: envFlagTrue(process.env.ALLOW_SUBPATH_REDIRECT) ?? true,
+  allowSubpathRedirect: process.env.ALLOW_SUBPATH_REDIRECT === undefined
+    ? true
+    : envFlagTrue(process.env.ALLOW_SUBPATH_REDIRECT),
 
   // AI Image Parser (optional — if AI_MODEL is set, AI_API_KEY becomes required)
   ai: {

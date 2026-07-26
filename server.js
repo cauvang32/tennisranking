@@ -42,11 +42,13 @@ import {
   strictRestoreLimiter, loginLimiter, deviceRegisterLimiter, cspReportLimiter
 } from './middleware/rate-limiter.js'
 import { buildAuthMiddleware, invalidateTokenVersionCache } from './middleware/auth.js'
+import { privateApiCacheControl } from './middleware/api-cache-control.js'
 import { createTimeoutMiddleware } from './utils/async-handler.js'
 import RedisCache from './lib/redis-cache.js'
 import TennisDatabase from './database-postgresql.js'
 import { createPushSender } from './lib/push-sender.js'
 import { logAccess } from './access-logger.js'
+import { uploadRoot } from './lib/upload-storage.js'
 
 // Route factories
 import { createPlayerRouter } from './routes/players.js'
@@ -75,6 +77,12 @@ const SUBPATH = config.subpath
 // L1: Hoist subpathNorm to module scope — computed once, reused in two middleware locations
 const subpathNorm = SUBPATH.endsWith('/') ? SUBPATH.slice(0, -1) : SUBPATH
 const isDevelopment = config.isDevelopment
+const allowRasterUpload = (req, res, next) => {
+  if (!/\.(png|jpe?g|webp|gif)$/i.test(req.path)) {
+    return res.status(404).json({ error: 'File not found' })
+  }
+  next()
+}
 
 console.log('🎯 Server subpath configuration:', SUBPATH)
 console.log('🔧 Environment:', config.nodeEnv)
@@ -92,6 +100,14 @@ if (!dbReady) {
   console.warn('⚠️  PostgreSQL unavailable at startup - server will keep retrying in the background')
 }
 
+const rankingsCache = new RedisCache({
+  redisUrl: config.redisUrl,
+  ttl: config.cacheTtlSeconds,
+  devLogging: isDevelopment,
+  maxKeySize: 256 * 1024
+})
+rankingsCache.db = db
+
 // One-time check for expired seasons at startup (previously per-request in seasons routes).
 if (db.pool) {
   try {
@@ -104,14 +120,6 @@ if (db.pool) {
     console.error('❌ Startup expired-season check failed:', err.message)
   }
 }
-
-const rankingsCache = new RedisCache({
-  redisUrl: config.redisUrl,
-  ttl: config.cacheTtlSeconds,
-  devLogging: isDevelopment,
-  maxKeySize: 256 * 1024  // 256 KB — skip caching oversized values
-})
-rankingsCache.db = db
 
 try {
   const redisConnected = await rankingsCache.connect()
@@ -162,6 +170,7 @@ try {
   console.error('📵 FCM init threw unexpectedly, push notifications disabled:', error.message)
   pushSender = { enabled: false, sendMatch: async () => {}, sendSeason: async () => {}, close: async () => {} }
 }
+app.locals.pushSender = pushSender
 
 // Daily cleanup of FCM tokens not refreshed in 60 days.
 // Run once at startup so freshly-stale tokens from prior deploys are reaped
@@ -225,8 +234,8 @@ const { authenticateToken, checkAuth, requireAdmin, requireEditor } = buildAuthM
 
 // Trust proxy
 if (config.trustProxy) {
-  app.set('trust proxy', 1)
-  console.log('🔗 Trust proxy enabled')
+  app.set('trust proxy', config.trustProxyHops)
+  console.log(`🔗 Trust proxy enabled (${config.trustProxyHops} trusted hop(s))`)
 } else {
   app.set('trust proxy', false)
   console.log('🔧 Trust proxy disabled - development mode')
@@ -322,15 +331,19 @@ app.use(gzipMiddleware)
 const _timeoutMw = createTimeoutMiddleware(config.requestTimeoutMs)
 app.use('/api', (req, res, next) => {
   if (req.path === '/events') return next()
-  // Skip socket timeout for /parse-image — it waits on an external AI API
-  // that may take longer than the request timeout. Give it 5min instead of
-  // the default 30s, but still enforce a hard cap to prevent connection exhaustion.
+  // AI provider calls have a 60s AbortSignal timeout; give the socket a small
+  // cleanup margin without allowing multi-minute connection exhaustion.
   if (req.path === '/matches/parse-image') {
-    req.socket.setTimeout(300000)
+    req.socket.setTimeout(75000)
     return next()
   }
   _timeoutMw(req, res, next)
 })
+
+// Route-specific limits must run before the global parser. A later parser
+// cannot increase the limit after the request stream has been consumed.
+app.use('/api/restore', express.json({ limit: '50mb' }))
+app.use('/api/matches/parse-image', express.json({ limit: '12mb' }))
 
 // Body parsing
 app.use(express.json({ limit: '1mb' }))
@@ -363,7 +376,8 @@ if (!isDevelopment) {
     // Not authenticated — reject with 401 (not 403, per OWASP guidance)
     res.status(401).json({ error: 'Authentication required to access uploads' })
   })
-  app.use('/uploads', express.static(join(__dirname, 'data/uploads'), {
+  app.use('/uploads', allowRasterUpload)
+  app.use('/uploads', express.static(uploadRoot, {
     maxAge: '365d',
     setHeaders: (res, filePath) => {
       // SECURITY: Block SVG execution even if file exists (defense-in-depth).
@@ -379,7 +393,8 @@ if (!isDevelopment) {
 } else {
   console.log('🚧 Development mode: Static files handled by Vite')
   // Serve uploads in dev too (auth-gated in production, open in dev)
-  app.use('/uploads', express.static(join(__dirname, 'data/uploads'), {
+  app.use('/uploads', allowRasterUpload)
+  app.use('/uploads', express.static(uploadRoot, {
     maxAge: '0',
     setHeaders: (res, filePath) => {
       // SECURITY (S3): Block SVG execution even in dev (defense-in-depth)
@@ -408,44 +423,11 @@ if (SUBPATH !== '/') {
   })
 }
 
-// API cache headers (ETag based on data version)
-// Skip routes that return user-specific or auth state — ETag only encodes
-// the data version, not the user identity. Without these exclusions an admin's
-// cached response for `/api/players` or `/api/admin/*` would be served to guests.
+// Authenticated API responses must never be stored or conditionally completed
+// before route-level authorization runs. Client data synchronization uses SSE.
 const apiCachePaths = subpathNorm !== '/' ? [`${subpathNorm}/api`, '/api'] : ['/api']
 
-// Routes that must never receive ETag / 304 responses because their bodies vary
-// per-user, per-session, or per-role. Public rankings (GET /rankings/*) are safe
-// to cache since they don't depend on auth state.
-const skipETagRoutes = [
-  '/auth/',       // login response body includes user data
-  '/init',        // contains per-user auth state
-  '/admin/',      // admin dashboard may return role-specific data
-  '/users',       // user list/profile
-  '/devices',     // device registry (per-user)
-]
-
-app.use(apiCachePaths, (req, res, next) => {
-  if (req.method === 'GET' && !skipETagRoutes.some(p => req.path.startsWith(p))) {
-    res.setHeader('Cache-Control', 'no-cache')
-    res.setHeader('Pragma', 'no-cache')
-    const dv = rankingsCache.getDataVersion()
-    if (dv) {
-      const etag = `W/"v-${dv}"`
-      res.setHeader('ETag', etag)
-      if (req.get('If-None-Match') === etag) return res.status(304).end()
-    }
-  } else {
-    // Never cache: auth routes, admin, users, devices, or non-GET methods
-    if (req.path === '/init') {
-      res.setHeader('Vary', 'Cookie')
-    }
-    res.setHeader('Cache-Control', 'no-store, max-age=0')
-    res.setHeader('Pragma', 'no-cache')
-    res.setHeader('Expires', '0')
-  }
-  next()
-})
+app.use(apiCachePaths, privateApiCacheControl)
 
 // Access logging — skip static assets, health checks, and SPA HTML to avoid
 // log spam (an SPA page load can request 10+ assets, each would allocate a

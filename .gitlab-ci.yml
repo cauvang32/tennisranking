@@ -19,6 +19,9 @@ stages:
 
 variables:
   DEPLOY_PATH: /home/vps/tennisranking
+  PERSISTENT_DATA_PATH: /home/vps/tennisranking-data
+  PRODUCTION_ORIGIN: https://hungsanity.com
+  PRODUCTION_DOMAIN: hungsanity.com
   GIT_ORIGIN: https://git.quocanh.tech/cauvang32/tennisranking
   NPM_CACHE_DIR: "$CI_PROJECT_DIR/.cache/npm"
   # Note: NODE_ENV=production is set only at deploy time, not globally
@@ -29,7 +32,7 @@ variables:
 # DEFAULT - DOCKER RUNNER
 # =========================
 default:
-  image: node:20-slim
+  image: node:22-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
   tags:
     - docker
   before_script:
@@ -73,49 +76,64 @@ setup-dependencies:
 npm-audit:
   stage: security
   needs: [setup-dependencies]
-  rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
     - echo "🔍 Running npm audit..."
-    - npm audit --json --audit-level=moderate > npm-audit-report.json || true
+    - npm audit --omit=dev --json --audit-level=high > npm-audit-report.json
   artifacts:
     paths:
       - npm-audit-report.json
     expire_in: 30 days
     when: always
-  allow_failure: true
 
 eslint:
   stage: security
   needs: [setup-dependencies]
-  rules:
-    - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   script:
     - echo "📋 Running ESLint..."
-    - npx eslint src/ lib/ middleware/ routes/ utils/ --ext .js,.ts --format json --output-file eslint-report.json || true
+    - npm run lint -- --format json --output-file eslint-report.json
   artifacts:
     paths:
       - eslint-report.json
     expire_in: 30 days
     when: always
-  allow_failure: true
+
+# v0.69.3 is an immutable, known-safe Trivy release. Keep the multi-arch
+# manifest digest pinned; do not replace it with a mutable latest tag.
+trivy-fs:
+  stage: security
+  image:
+    name: ghcr.io/aquasecurity/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c
+    entrypoint: [""]
+  needs: [setup-dependencies]
+  script:
+    - trivy fs --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed --skip-version-check --format json --output trivy-report.json --exit-code 1 .
+  artifacts:
+    paths:
+      - trivy-report.json
+    expire_in: 30 days
+    when: always
+  cache:
+    key: trivy-db
+    paths:
+      - .cache/trivy/
+  variables:
+    TRIVY_CACHE_DIR: "$CI_PROJECT_DIR/.cache/trivy"
 
 tests:
   stage: test
   needs: [setup-dependencies]
   script:
     - echo "🧪 Running tests..."
-    - npm test || echo "⚠️ Tests failed or not configured"
-  allow_failure: true
+    - npm test
 
 snyk:
   stage: security
-  image: node:20-slim
+  image: node:22-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
   needs: [setup-dependencies]
   rules:
     - if: '$CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH'
   before_script:
-    - npm install -g snyk@latest || true
+    - npm install -g snyk@1.1301.0
   script: |
     echo "🔎 Snyk job starting..."
     echo "SNYK_TOKEN length: ${#SNYK_TOKEN}"
@@ -191,23 +209,67 @@ deploy:
     - set -e
     - echo "🚀 Starting deployment to production..."
   script:
+    - install -d -m 750 "$PERSISTENT_DATA_PATH/uploads"
+    # Copy media out of the Git checkout before reset. This migrates existing
+    # deployments and makes every subsequent deployment independent of Git.
+    - |
+      if [ -d "$DEPLOY_PATH/data/uploads" ]; then
+        cp -a "$DEPLOY_PATH/data/uploads/." "$PERSISTENT_DATA_PATH/uploads/"
+      fi
     - cd "$DEPLOY_PATH"
     - git config --global --add safe.directory "$DEPLOY_PATH"
     - git remote set-url origin "$GIT_ORIGIN" || git remote add origin "$GIT_ORIGIN"
+    - |
+      previous_sha="$(git rev-parse HEAD 2>/dev/null || true)"
+      if [ -n "$previous_sha" ] && [ -d dist ]; then
+        install -d -m 750 "$PERSISTENT_DATA_PATH/releases/$previous_sha/dist"
+        cp -a dist/. "$PERSISTENT_DATA_PATH/releases/$previous_sha/dist/"
+      fi
     - git fetch origin
     - git reset --hard origin/$CI_DEFAULT_BRANCH
+    - |
+      touch .env
+      chmod 600 .env
+      set_env_value() {
+        key="$1"
+        value="$2"
+        if grep -q "^${key}=" .env; then
+          sed -i "s|^${key}=.*|${key}=${value}|" .env
+        else
+          printf '%s=%s\n' "$key" "$value" >> .env
+        fi
+      }
+      set_env_value UPLOAD_ROOT "$PERSISTENT_DATA_PATH/uploads"
+      set_env_value QUEUE_REDIS_URL "redis://127.0.0.1:6381/0"
+      set_env_value RATE_LIMIT_REDIS_URL "redis://127.0.0.1:6381/1"
+      set_env_value ALLOWED_ORIGINS "$PRODUCTION_ORIGIN"
+      set_env_value PUBLIC_DOMAIN "$PRODUCTION_DOMAIN"
+      set_env_value COOKIE_SECURE "true"
+      set_env_value COOKIE_SAMESITE "strict"
+      set_env_value ALLOW_DEV_ORIGINS "false"
+      set_env_value TRUST_PROXY "true"
+      set_env_value TRUST_PROXY_HOPS "1"
 
     # ── Stop PM2 app first ────────────────────────────────────────
     - pm2 stop tennis || true
+    - sudo docker compose up -d postgres redis redis-queue
+
+    # ── Install runtime and migrate before starting new processes ──
+    - npm ci --omit=dev
+    - npm run migrate
 
     # ── Rebuild & restart Docker FCM worker ───────────────────────
-    #- sudo docker compose down tennis-worker || true
-    #- sudo docker compose build --no-cache tennis-worker
-    #- sudo docker compose up -d tennis-worker
+    - sudo docker compose build tennis-worker
+    - sudo docker compose up -d tennis-worker
 
     # ── Restart PM2 app ───────────────────────────────────────────
-    - npm install --production=false
-    - npm run build
+    - install -d -m 755 "$DEPLOY_PATH/dist"
+    - cp -a "$CI_PROJECT_DIR/dist/." "$DEPLOY_PATH/dist/"
+    - install -d -m 750 "$PERSISTENT_DATA_PATH/releases/$CI_COMMIT_SHA/dist"
+    - cp -a "$CI_PROJECT_DIR/dist/." "$PERSISTENT_DATA_PATH/releases/$CI_COMMIT_SHA/dist/"
+    - export UPLOAD_ROOT="$PERSISTENT_DATA_PATH/uploads"
+    - export QUEUE_REDIS_URL="redis://127.0.0.1:6381/0"
+    - export RATE_LIMIT_REDIS_URL="redis://127.0.0.1:6381/1"
     - pm2 delete tennis || true
     - bash scripts/start-with-redis.sh
   environment:
@@ -248,19 +310,25 @@ rollback:
     - echo "⏪ Rolling back to previous commit..."
     - echo "🔧 Configuring git safe directory..."
     - git config --global --add safe.directory "$DEPLOY_PATH"
-    - git reset --hard HEAD~1
+    - export ROLLBACK_SHA="$(git rev-parse HEAD~1)"
+    - test -f "$PERSISTENT_DATA_PATH/releases/$ROLLBACK_SHA/dist/index.html"
+    - git reset --hard "$ROLLBACK_SHA"
 
     # ── Stop PM2 app first ────────────────────────────────────────
     - pm2 stop tennis || true
 
     # ── Rebuild & restart Docker FCM worker ───────────────────────
-    #- sudo docker compose down tennis-worker || true
-    #- sudo docker compose build --no-cache tennis-worker
-    #- sudo docker compose up -d tennis-worker
+    - npm ci --omit=dev
+    - npm run migrate
+    - export UPLOAD_ROOT="$PERSISTENT_DATA_PATH/uploads"
+    - export QUEUE_REDIS_URL="redis://127.0.0.1:6381/0"
+    - export RATE_LIMIT_REDIS_URL="redis://127.0.0.1:6381/1"
 
-    # ── Restart PM2 app ───────────────────────────────────────────
-    - npm install --production=false
-    - npm run build
+    # ── Restore the previously tested immutable frontend artifact ─
+    - install -d -m 755 "$DEPLOY_PATH/dist"
+    - cp -a "$PERSISTENT_DATA_PATH/releases/$ROLLBACK_SHA/dist/." "$DEPLOY_PATH/dist/"
+    - sudo docker compose build tennis-worker
+    - sudo docker compose up -d tennis-worker
     - pm2 delete tennis || true
     - bash scripts/start-with-redis.sh
 

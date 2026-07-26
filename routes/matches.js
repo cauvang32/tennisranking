@@ -2,6 +2,7 @@ import crypto from 'crypto'
 import { Router, json as expressJson } from 'express'
 import { body, param, query } from 'express-validator'
 import config from '../config/env.js'
+import { imageSize } from 'image-size'
 import { asyncHandler } from '../utils/async-handler.js'
 import { parseImageMatches } from '../lib/ai-parser.js'
 
@@ -13,6 +14,7 @@ export const createMatchRouter = ({
   conditionalRateLimit,
   createLimiter,
   deleteLimiter,
+  criticalLimiter,
   handleValidationErrors,
   rankingsCache,
   sanitizeResponse,
@@ -225,7 +227,7 @@ export const createMatchRouter = ({
         // For solo matches, player2 and player4 are null
         const matchId = await db.addMatch(seasonId, playDate, player1Id, null, player3Id, null, team1Score, team2Score, winningTeam, resolvedMatchType)
         fireMatchPush(matchId, req.body, resolvedMatchType)
-        try { await rankingsCache.invalidateOnMatchChange(playDate) } catch (err) { console.error('Cache invalidation failed after match create:', err.message) }
+        try { await rankingsCache.invalidateOnMatchChange(playDate, seasonId, matchId) } catch (err) { console.error('Cache invalidation failed after match create:', err.message) }
         res.json({ success: true, id: matchId })
       } else {
         // Duo match validation (existing logic)
@@ -244,7 +246,7 @@ export const createMatchRouter = ({
 
         const matchId = await db.addMatch(seasonId, playDate, player1Id, player2Id, player3Id, player4Id, team1Score, team2Score, winningTeam, resolvedMatchType)
         fireMatchPush(matchId, req.body, resolvedMatchType)
-        try { await rankingsCache.invalidateOnMatchChange(playDate) } catch (err) { console.error('Cache invalidation failed after match create:', err.message) }
+        try { await rankingsCache.invalidateOnMatchChange(playDate, seasonId, matchId) } catch (err) { console.error('Cache invalidation failed after match create:', err.message) }
         res.json({ success: true, id: matchId })
       }
     })
@@ -303,10 +305,10 @@ export const createMatchRouter = ({
       }
       
       // Invalidate new date + old date if play_date changed
-      try { await rankingsCache.invalidateOnMatchChange(playDate) } catch (err) { console.error('Cache invalidation failed after match update:', err.message) }
+      try { await rankingsCache.invalidateOnMatchChange(playDate, seasonId, matchId) } catch (err) { console.error('Cache invalidation failed after match update:', err.message) }
       const oldDate = existingMatch.play_date?.split?.('T')?.[0] || existingMatch.play_date
       if (oldDate && oldDate !== playDate) {
-        try { await rankingsCache.invalidateOnMatchChange(oldDate) } catch (err) { console.error('Cache invalidation failed for old date:', err.message) }
+        try { await rankingsCache.invalidateOnMatchChange(oldDate, existingMatch.season_id, matchId) } catch (err) { console.error('Cache invalidation failed for old date:', err.message) }
       }
       // Also invalidate player rankings if players changed
       if (player1Id !== existingMatch.player1_id || player2Id !== existingMatch.player2_id ||
@@ -333,7 +335,7 @@ export const createMatchRouter = ({
       }
       const matchDate = existingMatch.play_date
       await db.deleteMatch(matchId)
-      try { await rankingsCache.invalidateOnMatchChange(matchDate) } catch (err) { console.error('Cache invalidation failed after match delete:', err.message) }
+      try { await rankingsCache.invalidateOnMatchChange(matchDate, existingMatch.season_id, matchId) } catch (err) { console.error('Cache invalidation failed after match delete:', err.message) }
       res.json({ success: true, message: 'Match deleted successfully' })
     })
   )
@@ -488,7 +490,8 @@ export const createMatchRouter = ({
     '/parse-image',
     authenticateToken,
     requireEditor,
-    expressJson({ limit: '50mb' }),
+    conditionalRateLimit(criticalLimiter),
+    expressJson({ limit: '12mb' }),
     asyncHandler(async (req, res) => {
       const { imageBase64, mimeType } = req.body
 
@@ -499,10 +502,10 @@ export const createMatchRouter = ({
 
       // Validate image size: base64 string should be reasonable (< 20MB)
       // A 5MB image = ~6.7MB base64. 20MB base64 ≈ 15MP image, well above phone cameras.
-      const maxBase64Length = 20 * 1024 * 1024 // 20MB
+      const maxBase64Length = 11 * 1024 * 1024
       if (imageBase64.length > maxBase64Length) {
         res.status(400).json({
-          error: `Hình ảnh quá lớn (${(imageBase64.length / 1024 / 1024).toFixed(1)}MB). Tối đa 20MB.`
+          error: `Hình ảnh quá lớn (${(imageBase64.length / 1024 / 1024).toFixed(1)}MB). Tối đa 8MB.`
         })
         return
       }
@@ -513,15 +516,51 @@ export const createMatchRouter = ({
         return
       }
 
-      let parsed
+      if (typeof imageBase64 !== 'string' ||
+          imageBase64.length % 4 !== 0 ||
+          !/^[A-Za-z0-9+/]+={0,2}$/.test(imageBase64)) {
+        return res.status(400).json({ error: 'Dữ liệu hình ảnh base64 không hợp lệ.' })
+      }
+      const imageBytes = Buffer.from(imageBase64, 'base64')
+      if (imageBytes.length === 0 || imageBytes.length > 8 * 1024 * 1024) {
+        return res.status(400).json({ error: 'Kích thước hình ảnh không hợp lệ hoặc vượt quá 8MB.' })
+      }
+      const detectedMime =
+        imageBytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ? 'image/png'
+          : imageBytes[0] === 0xff && imageBytes[1] === 0xd8 && imageBytes[2] === 0xff ? 'image/jpeg'
+            : ['GIF87a', 'GIF89a'].includes(imageBytes.subarray(0, 6).toString('ascii')) ? 'image/gif'
+              : imageBytes.subarray(0, 4).toString('ascii') === 'RIFF' &&
+                imageBytes.subarray(8, 12).toString('ascii') === 'WEBP' ? 'image/webp'
+                : null
+      if (!detectedMime || (mimeType && detectedMime !== mimeType.toLowerCase())) {
+        return res.status(400).json({ error: 'Nội dung tệp không khớp với định dạng hình ảnh.' })
+      }
       try {
-        parsed = await parseImageMatches(imageBase64)
+        const dimensions = imageSize(imageBytes)
+        const pixels = (dimensions.width || 0) * (dimensions.height || 0)
+        if (!pixels || dimensions.width > 10000 || dimensions.height > 10000 || pixels > 40_000_000) {
+          return res.status(400).json({ error: 'Kích thước điểm ảnh vượt quá giới hạn 40 megapixel.' })
+        }
+      } catch {
+        return res.status(400).json({ error: 'Không thể đọc cấu trúc hình ảnh.' })
+      }
+
+      let parsed
+      const abortController = new AbortController()
+      const abortProviderRequest = () => abortController.abort()
+      req.once('aborted', abortProviderRequest)
+      res.once('close', abortProviderRequest)
+      try {
+        parsed = await parseImageMatches(imageBase64, { signal: abortController.signal })
       } catch (error) {
         console.error('[parse-image] AI parsing failed:', error.message)
         res.status(502).json({
           error: `Phân tích hình ảnh thất bại: ${error.message}`
         })
         return
+      } finally {
+        req.off('aborted', abortProviderRequest)
+        res.off('close', abortProviderRequest)
       }
 
       // Guard: parseImageMatches can return objects without .matches

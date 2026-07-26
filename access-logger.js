@@ -11,6 +11,17 @@ import { dirname } from 'path'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
+const LOG_RETENTION_DAYS = Math.min(30, Math.max(1, parseInt(process.env.LOG_RETENTION_DAYS, 10) || 14))
+const SENSITIVE_QUERY_KEYS = /^(token|access_token|refresh_token|password|secret|key|api_key|authorization|csrf|_csrf)$/i
+
+function redactQuery(query = {}) {
+  return Object.fromEntries(Object.entries(query).map(([key, value]) => [
+    key,
+    SENSITIVE_QUERY_KEYS.test(key)
+      ? '[REDACTED]'
+      : String(value).slice(0, 256)
+  ]))
+}
 
 // Enhanced IP detection utility
 // SECURITY: Prioritizes req.ip which respects Express's 'trust proxy' setting.
@@ -107,23 +118,26 @@ function isValidIP(ip) {
 // Create logs directory if it doesn't exist
 const logsDir = path.join(__dirname, 'logs')
 if (!fs.existsSync(logsDir)) {
-  fs.mkdirSync(logsDir, { recursive: true })
+  fs.mkdirSync(logsDir, { recursive: true, mode: 0o750 })
 }
+try { fs.chmodSync(logsDir, 0o750) } catch { /* managed mounts may reject chmod */ }
 
 // Create rotating file stream for access logs
 const accessLogStream = createStream('access.log', {
   interval: '1d',        // Rotate daily
   path: logsDir,
-  maxFiles: 30,          // Keep 30 days of logs
-  compress: 'gzip'       // Compress old logs
+  maxFiles: LOG_RETENTION_DAYS,
+  compress: 'gzip',
+  mode: 0o640
 })
 
 // Create rotating file stream for error logs
 const errorLogStream = createStream('error.log', {
   interval: '1d',        // Rotate daily
   path: logsDir,
-  maxFiles: 30,          // Keep 30 days of logs
-  compress: 'gzip'       // Compress old logs
+  maxFiles: LOG_RETENTION_DAYS,
+  compress: 'gzip',
+  mode: 0o640
 })
 
 // Winston logger configuration
@@ -215,34 +229,22 @@ export function createAccessLogEntry(req, res, responseTime, user = null) {
     
     // Request information
     method: req.method,
-    url: req.originalUrl || req.url,
+    url: req.path,
     path: req.path,
-    query: Object.keys(req.query).length > 0 ? req.query : undefined,
+    query: Object.keys(req.query).length > 0 ? redactQuery(req.query) : undefined,
     
     // IP and network information
     clientIP: realIP,
     clientIPFormatted: formatIPForDisplay(realIP),
-    ipDetectionSources: {
-      cfConnectingIP: req.get('CF-Connecting-IP') || null,
-      xRealIP: req.get('X-Real-IP') || null,
-      xForwardedFor: req.get('X-Forwarded-For') || null,
-      expressIP: req.ip || null,
-      connectionRemoteAddress: req.connection?.remoteAddress || null,
-      socketRemoteAddress: req.socket?.remoteAddress || null
-    },
-    // Legacy fields for backward compatibility
-    forwardedFor: req.get('X-Forwarded-For'),
-    realIP: req.get('X-Real-IP'),
-    cfConnectingIP: req.get('CF-Connecting-IP'),
+    expressIP: req.ip || null,
     
     // User information
     // SECURITY: PII (email) is gated behind LOG_PII env flag to prevent
     // accidental PII leakage in rotated log files retained for 30 days.
     user: user ? {
-      username: user.username,
       role: user.role,
-      ...(process.env.LOG_PII === 'true' && user.email
-        ? { email: user.email }
+      ...(process.env.LOG_PII === 'true'
+        ? { username: user.username, email: user.email }
         : {})
     } : null,
     
@@ -251,7 +253,7 @@ export function createAccessLogEntry(req, res, responseTime, user = null) {
     isAuthenticated: !!user,
     
     // Browser and device information
-    userAgent: userAgent,
+    userAgent: userAgent.slice(0, 512),
     browser: parsedUA?.browser ? {
       name: parsedUA.browser.name,
       version: parsedUA.browser.version
@@ -266,8 +268,8 @@ export function createAccessLogEntry(req, res, responseTime, user = null) {
     } : undefined,
     
     // Request metadata
-    referer: req.get('Referer'),
-    acceptLanguage: req.get('Accept-Language'),
+    referer: req.get('Referer')?.split('?')[0]?.slice(0, 512),
+    acceptLanguage: req.get('Accept-Language')?.slice(0, 128),
     contentType: req.get('Content-Type'),
     
     // Response information
@@ -275,14 +277,7 @@ export function createAccessLogEntry(req, res, responseTime, user = null) {
     responseTime: responseTime,
     contentLength: res.get('Content-Length'),
     
-    // Proxy information (for debugging)
-    proxyHeaders: {
-      xForwardedProto: req.get('X-Forwarded-Proto'),
-      xForwardedHost: req.get('X-Forwarded-Host'),
-      xForwardedPort: req.get('X-Forwarded-Port'),
-      host: req.get('Host'),
-      origin: req.get('Origin')
-    },
+    origin: req.get('Origin')?.slice(0, 256),
     
     // Security flags
     isBot: isBot(userAgent),
@@ -407,7 +402,6 @@ export function logAccess(req, res, responseTime, user = null) {
     if (crypto.randomInt(100) < 10) {
       console.log(`🔍 IP Detection Details:`, {
         detected: logEntry.clientIP,
-        sources: logEntry.ipDetectionSources,
         formatted: logEntry.clientIPFormatted
       })
     }
@@ -427,15 +421,15 @@ export function logError(error, req = null, user = null) {
     // Request context if available
     request: req ? {
       method: req.method,
-      url: req.originalUrl || req.url,
+      url: req.path,
       clientIP: getRealClientIP(req),
       userAgent: req.get('User-Agent')
     } : null,
     
     // User context if available
     user: user ? {
-      username: user.username,
-      role: user.role
+      role: user.role,
+      ...(process.env.LOG_PII === 'true' ? { username: user.username } : {})
     } : null
   }
   
@@ -499,7 +493,7 @@ export async function getLogStats(hours = 24) {
       if (path) pathCount[path] = (pathCount[path] || 0) + 1
       if (status) statusCodes[status] = (statusCodes[status] || 0) + 1
 
-      if (entry.user && entry.user.username) {
+      if (entry.isAuthenticated || entry.user) {
         userRequests++
       } else {
         anonymousRequests++

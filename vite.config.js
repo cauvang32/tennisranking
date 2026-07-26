@@ -7,6 +7,10 @@ export default defineConfig(({ mode }) => {
   const basePath = rawBasePath.endsWith('/') ? rawBasePath : `${rawBasePath}/`
 
   return {
+    // Backend secrets live in the repository-root .env. The browser build does
+    // not consume that file; BASE_PATH is supplied explicitly by the build job.
+    envDir: 'config/vite-env',
+
     // Set base path for subpath deployment - use environment variable
     base: mode === 'production' ? basePath : '/',
 

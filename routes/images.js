@@ -7,42 +7,28 @@ import fs from 'fs'
 import fsPromises from 'fs/promises'
 import config from '../config/env.js'
 import { asyncHandler } from '../utils/async-handler.js'
-import { validateFilePath } from '../lib/security-helpers.js'
+import {
+  createUploadFilename,
+  ensureUploadDirectory,
+  resolveUploadPath,
+  toStoredUploadPath,
+  validateUploadedImage
+} from '../lib/upload-storage.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 // Upload directory
-const UPLOAD_DIR = join(__dirname, '..', 'data', 'uploads', 'images')
-const SEASON_UPLOAD_DIR = join(__dirname, '..', 'data', 'uploads', 'seasons')
-
-// Ensure upload directories exist
-for (const dir of [UPLOAD_DIR, SEASON_UPLOAD_DIR]) {
-  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true })
-}
+const UPLOAD_DIR = await ensureUploadDirectory('images')
+await ensureUploadDirectory('seasons')
 
 // Multer config for image uploads
 const imageStorage = multer.diskStorage({
-  destination: (req, _file, cb) => {
-    // Support season-specific uploads via query or body
-    const seasonId = req.body?.seasonId || req.query?.seasonId
-    if (seasonId) {
-      const seasonDir = join(SEASON_UPLOAD_DIR, String(seasonId))
-      if (!fs.existsSync(seasonDir)) fs.mkdirSync(seasonDir, { recursive: true })
-      cb(null, seasonDir)
-    } else {
-      cb(null, UPLOAD_DIR)
-    }
-  },
-  filename: (req, file, cb) => {
-    // Sanitize filename: keep extension, use timestamp + random prefix
-    const ext = file.mimetype.split('/')[1] || 'png'
-    const prefix = `${Date.now()}-${Math.random().toString(36).substring(2, 8)}`
-    cb(null, `${prefix}.${ext}`)
-  }
+  destination: UPLOAD_DIR,
+  filename: (_req, file, cb) => cb(null, createUploadFilename(file.mimetype))
 })
 
-const imageUpload = multer({
+const imageUploadOptions = {
   storage: imageStorage,
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB max
   fileFilter: (_req, file, cb) => {
@@ -57,10 +43,27 @@ const imageUpload = multer({
       cb(new Error('Invalid image type. Only PNG, JPEG, WebP, GIF allowed.'))
     }
   }
+}
+const imageUpload = multer(imageUploadOptions)
+const seasonImageUpload = multer({
+  ...imageUploadOptions,
+  storage: multer.diskStorage({
+    destination: (req, _file, cb) => {
+      ensureUploadDirectory('seasons', String(req.params.seasonId)).then(
+        directory => cb(null, directory),
+        error => cb(error)
+      )
+    },
+    filename: (_req, file, cb) => cb(null, createUploadFilename(file.mimetype))
+  })
 })
 
 // Allowed image keys for site_images
 const IMAGE_KEYS = ['hero_banner', 'logo', 'favicon', 'background']
+const safeImageContentType = value =>
+  ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(value)
+    ? value
+    : 'application/octet-stream'
 
 export const createImageRouter = ({
   db,
@@ -116,7 +119,7 @@ export const createImageRouter = ({
       return
     }
     // CWE-22: Validate that the storage path stays within the project root
-    const filePath = validateFilePath(join(__dirname, '..'), image.storage_path)
+    const filePath = resolveUploadPath(image.storage_path)
     if (!filePath || !fs.existsSync(filePath)) {
       // Fallback for hero_banner
       if (key === 'hero_banner') {
@@ -127,7 +130,7 @@ export const createImageRouter = ({
       return
     }
     res.set({
-      'Content-Type': image.content_type || 'image/png',
+      'Content-Type': safeImageContentType(image.content_type),
       'Cache-Control': 'public, max-age=31536000, immutable',
       'X-Content-Type-Options': 'nosniff'
     })
@@ -143,6 +146,7 @@ export const createImageRouter = ({
     [param('key').isIn(IMAGE_KEYS).withMessage('Invalid image key')],
     handleValidationErrors,
     imageUpload.single('image'),
+    validateUploadedImage,
     asyncHandler(async (req, res) => {
       const { key } = req.params
 
@@ -153,16 +157,8 @@ export const createImageRouter = ({
 
       const { altText = '' } = req.body || {}
 
-      // Delete old file if replacing (P6: async to avoid blocking event loop)
       const existing = await db.getSiteImageByKey(key)
-      if (existing && existing.storage_path) {
-        const oldPath = join(__dirname, '..', existing.storage_path)
-        try { await fsPromises.unlink(oldPath) } catch { /* file may already be gone */ }
-      }
-
-      const storagePath = req.file.path.replace(
-        join(__dirname, '..'), ''
-      ).replace(/\\/g, '/') // Normalize for Windows
+      const storagePath = toStoredUploadPath(req.file.path)
 
       await db.upsertSiteImage({
         key,
@@ -173,6 +169,14 @@ export const createImageRouter = ({
         alt_text: altText,
         uploaded_by: req.user?.username || 'admin'
       })
+      // Delete the previous file only after the database safely references the
+      // replacement. A failed DB write must not destroy the working image.
+      if (existing?.storage_path && existing.storage_path !== storagePath) {
+        const oldPath = resolveUploadPath(existing.storage_path)
+        if (oldPath) {
+          try { await fsPromises.unlink(oldPath) } catch { /* file may already be gone */ }
+        }
+      }
 
       await rankingsCache.invalidateOnImageChange()
       res.json({
@@ -227,8 +231,10 @@ export const createImageRouter = ({
       }
       // Delete old file (P6: async to avoid blocking event loop)
       if (image.storage_path) {
-        const oldPath = join(__dirname, '..', image.storage_path)
-        try { await fsPromises.unlink(oldPath) } catch { /* file may already be gone */ }
+        const oldPath = resolveUploadPath(image.storage_path)
+        if (oldPath) {
+          try { await fsPromises.unlink(oldPath) } catch { /* file may already be gone */ }
+        }
       }
       // Set is_active to false AND clear storage_path so the placeholder is shown
       await db.query(`UPDATE site_images SET is_active = false, storage_path = NULL, updated_at = NOW() WHERE key = $1`, [key])
@@ -245,7 +251,10 @@ export const createImageRouter = ({
     '/season/:seasonId/conclusion',
     authenticateToken,
     requireAdmin,
-    imageUpload.single('image'),
+    [param('seasonId').isInt({ min: 1 }).withMessage('Invalid season ID')],
+    handleValidationErrors,
+    seasonImageUpload.single('image'),
+    validateUploadedImage,
     asyncHandler(async (req, res) => {
       const seasonId = parseInt(req.params.seasonId)
 
@@ -253,10 +262,13 @@ export const createImageRouter = ({
         res.status(400).json({ error: 'No image file provided' })
         return
       }
+      const existingSeason = await db.getSeasonById(seasonId)
+      if (!existingSeason) {
+        await fsPromises.unlink(req.file.path).catch(() => {})
+        return res.status(404).json({ error: 'Season not found' })
+      }
 
-      const storagePath = req.file.path.replace(
-        join(__dirname, '..'), ''
-      ).replace(/\\/g, '/')
+      const storagePath = toStoredUploadPath(req.file.path)
 
       await db.uploadSeasonConclusionImage(seasonId, {
         filename: req.file.originalname,
@@ -264,6 +276,11 @@ export const createImageRouter = ({
         content_type: req.file.mimetype,
         file_size: req.file.size
       })
+      if (existingSeason.conclusion_image_path &&
+          existingSeason.conclusion_image_path !== storagePath) {
+        const oldPath = resolveUploadPath(existingSeason.conclusion_image_path)
+        if (oldPath) await fsPromises.unlink(oldPath).catch(() => {})
+      }
 
       await rankingsCache.invalidateOnSeasonChange()
       res.json({
@@ -289,14 +306,14 @@ export const createImageRouter = ({
       }
 
       // CWE-22: Validate that the conclusion image path stays within the project root
-      const filePath = validateFilePath(join(__dirname, '..'), season.conclusion_image_path)
+      const filePath = resolveUploadPath(season.conclusion_image_path)
       if (!filePath || !fs.existsSync(filePath)) {
         res.status(404).json({ error: 'Image file not found on disk' })
         return
       }
 
       res.set({
-        'Content-Type': season.conclusion_image_content_type || 'image/png',
+        'Content-Type': safeImageContentType(season.conclusion_image_content_type),
         'Cache-Control': 'public, max-age=31536000, immutable',
         'X-Content-Type-Options': 'nosniff'
       })
@@ -323,8 +340,10 @@ export const createImageRouter = ({
 
       // Delete old file (P6: async to avoid blocking event loop)
       if (season.conclusion_image_path) {
-        const oldPath = join(__dirname, '..', season.conclusion_image_path)
-        try { await fsPromises.unlink(oldPath) } catch { /* file may already be gone */ }
+        const oldPath = resolveUploadPath(season.conclusion_image_path)
+        if (oldPath) {
+          try { await fsPromises.unlink(oldPath) } catch { /* file may already be gone */ }
+        }
       }
 
       await db.deleteSeasonConclusionImage(seasonId)
@@ -350,7 +369,7 @@ export const createImageRouter = ({
       fs.copyFileSync(srcPath, destPath)
 
       const stat = fs.statSync(destPath)
-      const storagePath = destPath.replace(join(__dirname, '..'), '').replace(/\\/g, '/')
+      const storagePath = toStoredUploadPath(destPath)
 
       await db.upsertSiteImage({
         key: 'hero_banner',

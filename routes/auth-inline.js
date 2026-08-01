@@ -77,12 +77,13 @@ export const createInlineAuthRouter = ({
         // Clear the one-time cookie after successful validation
         res.clearCookie('loginCsrf')
 
-        let user = null, isDbUser = false
+        let user = null, isDbUser = false, didBcryptCompare = false
 
         // Check database users first
         try {
           const dbUser = await db.getUserByUsername(username)
           if (dbUser && dbUser.is_active) {
+            didBcryptCompare = true
             if (await bcrypt.compare(password, dbUser.password_hash)) {
               user = {
                 id: dbUser.id, username: dbUser.username, email: dbUser.email,
@@ -98,21 +99,31 @@ export const createInlineAuthRouter = ({
         // Fallback to env-based admin/editor
         // H3: Skip if the respective env account is disabled via DISABLE_ENV_ADMIN/DISABLE_ENV_EDITOR
         if (!user) {
-          if (!config.disableEnvAdmin &&
-              username === config.admin.username &&
-              await bcrypt.compare(password, hashedAdminPassword)) {
-            user = {
-              username: config.admin.username, email: config.admin.email,
-              role: 'admin', displayName: 'System Admin'
+          if (!config.disableEnvAdmin && username === config.admin.username) {
+            didBcryptCompare = true
+            if (await bcrypt.compare(password, hashedAdminPassword)) {
+              user = {
+                username: config.admin.username, email: config.admin.email,
+                role: 'admin', displayName: 'System Admin'
+              }
             }
-          } else if (!config.disableEnvEditor &&
-                     username === config.editor.username &&
-                     await bcrypt.compare(password, hashedEditorPassword)) {
-            user = {
-              username: config.editor.username, email: config.editor.email,
-              role: 'editor', displayName: 'System Editor'
+          } else if (!config.disableEnvEditor && username === config.editor.username) {
+            didBcryptCompare = true
+            if (await bcrypt.compare(password, hashedEditorPassword)) {
+              user = {
+                username: config.editor.username, email: config.editor.email,
+                role: 'editor', displayName: 'System Editor'
+              }
             }
           }
+        }
+
+        // CWE-208: Timing normalization — always perform at least one bcrypt
+        // compare to prevent username enumeration via response time analysis.
+        // Without this, non-existent usernames return in ~8ms while valid ones
+        // take ~850ms due to bcrypt cost, revealing which usernames exist.
+        if (!didBcryptCompare) {
+          await bcrypt.compare(password, hashedAdminPassword)
         }
 
         if (!user) return res.status(401).json({ error: 'Invalid credentials' })

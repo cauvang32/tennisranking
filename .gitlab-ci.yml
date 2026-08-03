@@ -124,6 +124,7 @@ tests:
   needs: [setup-dependencies]
   script:
     - echo "🧪 Running tests..."
+    - npm ci --prefer-offline --cache "$NPM_CACHE_DIR" --include=dev
     - npm test
 
 snyk:

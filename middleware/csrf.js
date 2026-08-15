@@ -33,13 +33,19 @@ export function verifyReusableToken(secret, token) {
 /**
  * Derive a CSRF secret from a user object.
  * Same user ID always produces the same secret (deterministic).
- * @param {object} user - User object with id property, or null/undefined
+ *
+ * SECURITY (S-5): env-based accounts (admin/editor) have id:null. Falling back
+ * to 'anonymous' for them gave the two most privileged accounts the SAME CSRF
+ * secret as any anonymous visitor — the token layer provided no per-user
+ * binding exactly where it mattered. Fall back to the username so every
+ * account (DB or env) derives a distinct, stable secret.
+ * @param {object} user - User object with id (and username) property, or null/undefined
  * @returns {string} Base64-encoded HMAC secret
  */
 export function deriveCSRFSecretFromUser(user) {
-  const userId = user?.id ?? 'anonymous'
+  const identity = user?.id ?? user?.username ?? 'anonymous'
   return crypto.createHmac('sha256', config.csrfSecret)
-    .update(userId.toString())
+    .update(identity.toString())
     .digest('base64')
 }
 
@@ -67,6 +73,13 @@ export const globalCSRFProtection = (req, res, next) => {
 
   // Skip CSRF for login endpoint (needs to issue CSRF token)
   if (matchesApiRoute(req, '/api/auth/login')) return next()
+
+  // Skip CSRF for token refresh: the httpOnly SameSite=strict refreshToken
+  // cookie IS the CSRF boundary here (cross-site requests never carry it),
+  // and the endpoint only rotates the caller's own session — no state or
+  // privilege change. Requiring a CSRF token would break the SPA's
+  // auto-refresh (it has no token to send once the access token expired).
+  if (matchesApiRoute(req, '/api/auth/refresh')) return next()
 
   // Skip CSRF for public CSRF token endpoint
   if (matchesApiRoute(req, '/api/csrf-token')) return next()

@@ -7,7 +7,7 @@ process.env.EDITOR_PASSWORD = 'test_password'
 process.env.JWT_SECRET = 'test_jwt_secret_at_least_32_characters_long_xyz'
 process.env.CSRF_SECRET = 'test_csrf_secret_at_least_32_characters_long_xyz'
 
-const { deriveCSRFSecretFromUser, tokens } = await import('../../middleware/csrf.js')
+const { deriveCSRFSecretFromUser, tokens, globalCSRFProtection } = await import('../../middleware/csrf.js')
 
 describe('CSRF consolidation', () => {
   it('deriveCSRFSecretFromUser({ id: 1 }) produces consistent output across calls', () => {
@@ -45,5 +45,45 @@ describe('CSRF consolidation', () => {
     const s2 = deriveCSRFSecretFromUser({ id: 2 })
     const token = tokens.create(s1)
     expect(tokens.verify(s2, token)).toBe(false)
+  })
+})
+
+describe('globalCSRFProtection route skips', () => {
+  function mockReq(method, url, { headers = {}, cookies = {} } = {}) {
+    return {
+      method,
+      path: url,
+      originalUrl: url,
+      cookies,
+      headers,
+      get: (name) => headers[name.toLowerCase()] ?? null,
+      body: {}
+    }
+  }
+
+  function mockRes() {
+    return {
+      statusCode: 200,
+      status(code) { this.statusCode = code; return this },
+      json(payload) { this.body = payload; return this }
+    }
+  }
+
+  it('skips CSRF for POST /api/auth/refresh (refresh-token cookie is the boundary)', () => {
+    const req = mockReq('POST', '/api/auth/refresh', { cookies: { refreshToken: 'x' } })
+    const res = mockRes()
+    let nextCalled = false
+    globalCSRFProtection(req, res, () => { nextCalled = true })
+    expect(nextCalled).toBe(true)
+    expect(res.statusCode).toBe(200)
+  })
+
+  it('still requires CSRF on other state-changing routes without a token', () => {
+    const req = mockReq('POST', '/api/matches', {})
+    const res = mockRes()
+    let nextCalled = false
+    globalCSRFProtection(req, res, () => { nextCalled = true })
+    expect(nextCalled).toBe(false)
+    expect(res.statusCode).toBe(403)
   })
 })

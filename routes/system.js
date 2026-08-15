@@ -1,4 +1,3 @@
-import express from 'express'
 import { Router } from 'express'
 import config from '../config/env.js'
 import { deriveCSRFSecretFromUser, createReusableToken } from '../middleware/csrf.js'
@@ -177,9 +176,10 @@ export const createSystemRouter = ({
   })
 
   // R4: CSP violation report endpoint — rate limited to prevent log flooding.
-  // Accepts CSP violation reports from browsers. Body is limited to 1KB to
-  // prevent log flooding. Only logs valid JSON objects (not raw strings).
-  router.post('/api/csp-report', cspReportLimiter, express.json({ limit: '1kb' }), (req, res) => {
+  // Accepts CSP violation reports from browsers. Body is limited to 1KB
+  // (enforced app-level in server.js BEFORE the global parser — a parser here
+  // would be a no-op) to prevent log flooding. Only logs valid JSON objects.
+  router.post('/api/csp-report', cspReportLimiter, (req, res) => {
     const report = req.body?.['csp-report'] || req.body
     if (report && typeof report === 'object') {
       console.warn('⚠️ CSP Violation:', JSON.stringify(report, null, 2))

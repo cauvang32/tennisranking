@@ -53,10 +53,13 @@ export function getRealClientIP(req) {
     if (ip && ip !== 'unknown') {
       // Handle X-Forwarded-For which can contain multiple IPs
       if (ip.includes(',')) {
-        // Take the first IP (original client)
-        const firstIP = ip.split(',')[0].trim()
-        if (isValidIP(firstIP)) {
-          return firstIP
+        // SECURITY (S-2): Take the RIGHTMOST IP (closest to the edge proxy).
+        // The leftmost value is the most attacker-controllable (a client can
+        // prepend arbitrary IPs); the rightmost was added by the nearest,
+        // most trusted proxy. This only matters when req.ip is unavailable.
+        const edgeIP = ip.split(',').pop().trim()
+        if (isValidIP(edgeIP)) {
+          return edgeIP
         }
       } else if (isValidIP(ip)) {
         return ip

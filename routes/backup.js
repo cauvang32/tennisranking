@@ -6,6 +6,7 @@ import { body } from 'express-validator'
 import config from '../config/env.js'
 
 import { asyncHandler } from '../utils/async-handler.js'
+import { buildBulkInsert } from '../utils/bulk-insert.js'
 
 /**
  * Backup and restore routes (admin-only).
@@ -150,7 +151,25 @@ export const createBackupRouter = ({
         }
         console.log(`✅ Restored ${backupData.seasons.length} seasons`)
 
-        // Restore matches
+        // Restore matches (PERF-1: batched multi-row inserts, 500 rows/chunk,
+        // with a per-row fallback if a chunk fails so partial data still restores)
+        const MATCH_COLUMNS = [
+          { name: 'season_id' },
+          { name: 'play_date' },
+          { name: 'player1_id' },
+          { name: 'player2_id' },
+          { name: 'player3_id' },
+          { name: 'player4_id' },
+          { name: 'team1_score' },
+          { name: 'team2_score' },
+          { name: 'winning_team' },
+          { name: 'match_type' },
+          { name: 'created_at', expr: (p) => `COALESCE(${p}, now())` }
+        ]
+        const SINGLE_ROW_MATCH_INSERT =
+          `INSERT INTO matches (season_id, play_date, player1_id, player2_id, player3_id, player4_id, team1_score, team2_score, winning_team, match_type, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, now()))`
+        const matchRows = []
         for (const match of backupData.matches) {
           const newSeasonId = seasonIdMap.get(Number(match.season_id))
           const newP1 = playerIdMap.get(Number(match.player1_id))
@@ -158,25 +177,32 @@ export const createBackupRouter = ({
           const newP3 = playerIdMap.get(Number(match.player3_id))
           const newP4 = match.player4_id ? playerIdMap.get(Number(match.player4_id)) : null
           if (newSeasonId && newP1 && newP3) {
-            try {
-              // Validate match_type against whitelist to prevent SQL injection via backup files
-              const matchType = (match.match_type === 'solo' || match.match_type === 'duo') ? match.match_type : 'duo'
-              if (match.created_at) {
-                await client.query(
-                  `INSERT INTO matches (season_id, play_date, player1_id, player2_id, player3_id, player4_id, team1_score, team2_score, winning_team, match_type, created_at)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-                  [newSeasonId, match.play_date, newP1, newP2, newP3, newP4, match.team1_score, match.team2_score, match.winning_team, matchType, match.created_at]
-                )
-              } else {
-                await client.query(
-                  `INSERT INTO matches (season_id, play_date, player1_id, player2_id, player3_id, player4_id, team1_score, team2_score, winning_team, match_type)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-                  [newSeasonId, match.play_date, newP1, newP2, newP3, newP4, match.team1_score, match.team2_score, match.winning_team, matchType]
-                )
-              }
-              matchesRestored++
-            } catch (e) { console.error('❌ Error restoring match:', e.message); matchesSkipped++ }
+            // Validate match_type against whitelist to prevent SQL injection via backup files
+            const matchType = (match.match_type === 'solo' || match.match_type === 'duo') ? match.match_type : 'duo'
+            matchRows.push([
+              newSeasonId, match.play_date, newP1, newP2, newP3, newP4,
+              match.team1_score, match.team2_score, match.winning_team, matchType,
+              match.created_at || null
+            ])
           } else { matchesSkipped++ }
+        }
+
+        const BULK_INSERT_CHUNK = 500
+        for (let i = 0; i < matchRows.length; i += BULK_INSERT_CHUNK) {
+          const chunk = matchRows.slice(i, i + BULK_INSERT_CHUNK)
+          const { text, params } = buildBulkInsert('matches', MATCH_COLUMNS, chunk)
+          try {
+            await client.query(text, params)
+            matchesRestored += chunk.length
+          } catch (e) {
+            console.error('❌ Bulk match insert failed, falling back to row-by-row:', e.message)
+            for (const row of chunk) {
+              try {
+                await client.query(SINGLE_ROW_MATCH_INSERT, row)
+                matchesRestored++
+              } catch (err) { console.error('❌ Error restoring match:', err.message); matchesSkipped++ }
+            }
+          }
         }
         console.log(`✅ Restored ${matchesRestored} matches (${matchesSkipped} skipped)`)
 
@@ -504,9 +530,18 @@ export const createBackupRouter = ({
 
 
   // ── Clear all data ────────────────────────────────────────────────────────
+  // H-CONFIRM: destructive operation requires explicit confirmation, same as
+  // /restore (confirmRestore) — prevents accidental wipes from a stray request.
   router.delete('/clear-all-data',
     authenticateToken, requireAdmin, conditionalRateLimit(criticalLimiter),
     asyncHandler(async (req, res) => {
+      if (req.body?.confirmClear !== true) {
+        return res.status(400).json({
+          error: 'Xác nhận cần thiết để xóa toàn bộ dữ liệu',
+          requiresConfirmation: true,
+          message: 'Hành động này sẽ xóa toàn bộ dữ liệu không thể khôi phục. Gửi lại với body { "confirmClear": true } để xác nhận.'
+        })
+      }
       console.log(`⚠️ CLEAR ALL DATA requested by user: ${req.user.username}`)
       await db.clearAllData()
       await rankingsCache.clear()

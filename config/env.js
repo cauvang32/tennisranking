@@ -38,10 +38,30 @@ for (const key of required) {
     process.exit(1)
   }
 }
+
+// SECURITY (S-1): Reject known-weak / guessable secrets in production.
+// A leaked or guessable JWT_SECRET allows offline token forgery → full account
+// takeover (verified red-team PoC). Block documented dev values and catch
+// low-entropy secrets (e.g. repeated characters) that slip past the length check.
+const KNOWN_WEAK_SECRETS = new Set([
+  'dev_jwt_secret_32_characters_long_12345',
+  'dev_csrf_secret_32_characters_long_123',
+  'your_jwt_secret_at_least_32_characters_long',
+  'your_csrf_secret_at_least_32_characters_long'
+])
+const isWeakSecret = (value) => {
+  if (KNOWN_WEAK_SECRETS.has(value)) return true
+  // Fewer than 10 distinct characters in a 32+ char secret is not random.
+  return new Set(value.split('')).size < 10
+}
 if (process.env.NODE_ENV === 'production') {
   for (const key of ['JWT_SECRET', 'CSRF_SECRET']) {
     if (process.env[key].length < 32) {
       console.error(`❌ ${key} must contain at least 32 characters in production`)
+      process.exit(1)
+    }
+    if (isWeakSecret(process.env[key])) {
+      console.error(`❌ ${key} looks weak/guessable. Use a long random value (e.g. \`openssl rand -hex 32\`).`)
       process.exit(1)
     }
   }

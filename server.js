@@ -344,6 +344,10 @@ app.use('/api', (req, res, next) => {
 // cannot increase the limit after the request stream has been consumed.
 app.use('/api/restore', express.json({ limit: '50mb' }))
 app.use('/api/matches/parse-image', express.json({ limit: '12mb' }))
+// SECURITY (S-3): the CSP report endpoint is anonymous + CSRF-exempt, so its
+// 1kb limit must be enforced here — a route-level parser after the global 1mb
+// parser is a no-op and allowed log-flooding the console with up to 1MB bodies.
+app.use('/api/csp-report', express.json({ limit: '1kb' }))
 
 // Body parsing
 app.use(express.json({ limit: '1mb' }))
@@ -590,7 +594,23 @@ if (!isDevelopment) {
 }
 
 // Global error handler
+// SECURITY (S-4): map client-caused errors to 4xx. Malformed JSON bodies and
+// multer rejections (e.g. invalid upload type) were previously reported as
+// 500, masking client errors and polluting server-error monitoring.
 app.use((err, _req, res, _next) => {
+  if (err?.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+    console.warn('Request parse error:', err.message)
+    if (!res.headersSent) return res.status(400).json({ error: 'Invalid request body' })
+  }
+  // body-parser limit exceeded (per-route or global) — client error, not a crash
+  if (err?.type === 'entity.too.large') {
+    console.warn('Request body too large:', err.message)
+    if (!res.headersSent) return res.status(413).json({ error: 'Request body too large' })
+  }
+  if (err?.name === 'MulterError' || /Invalid image type|content does not match an allowed image/i.test(err?.message || '')) {
+    console.warn('Upload rejected:', err.message)
+    if (!res.headersSent) return res.status(400).json({ error: err.message || 'Invalid upload' })
+  }
   console.error('Unhandled error:', err)
   if (!res.headersSent) res.status(500).json({ error: 'Internal server error' })
 })

@@ -311,6 +311,26 @@ export function logRateLimitConfig() {
 }
 
 /**
+ * Best-effort: enforce `maxmemory-policy noeviction` on the rate-limit Redis
+ * so per-IP rate-limit counters are never evicted under memory pressure.
+ *
+ * This is a no-op if the policy is already noeviction. If the operator has
+ * deliberately configured an eviction policy and we lack CONFIG permissions,
+ * we log a warning with the manual command instead of failing startup.
+ */
+async function ensureNoEvictionPolicy(client) {
+  try {
+    const res = await client.call('CONFIG', 'GET', 'maxmemory-policy')
+    const current = Array.isArray(res) ? res[1] : res
+    if (current === 'noeviction') return
+    await client.call('CONFIG', 'SET', 'maxmemory-policy', 'noeviction')
+    console.warn(`🛡️  Rate-limit Redis: maxmemory-policy was "${current}" — set to "noeviction" so per-IP rate-limit counters cannot be evicted under memory pressure.`)
+  } catch (error) {
+    console.warn(`⚠️  Could not enforce noeviction on rate-limit Redis (${error.message}). Set it manually: redis-cli CONFIG SET maxmemory-policy noeviction`)
+  }
+}
+
+/**
  * Start the rate-limit Redis client.
  * Call this from server.js after the cache client connects so both
  * Redis clients start at roughly the same time, avoiding the startup race.
@@ -359,6 +379,15 @@ export async function initRateLimitRedis() {
     // Probe PING to verify the store will work on first request.
     await client.call('PING')
     console.log('✅ Rate limiter Redis client initialized successfully')
+
+    // SECURITY: rate-limit counters are security-critical. If Redis evicts
+    // them under memory pressure (e.g. during a DDoS), every per-IP counter
+    // silently resets to zero — the limiter fails open exactly when it is
+    // most needed. Enforce `noeviction` best-effort. The cache layer
+    // (lib/redis-cache.js) catches SET errors and falls back to Postgres, so
+    // noeviction degrades the cache to "no new writes under OOM" rather than
+    // dropping limiter state.
+    await ensureNoEvictionPolicy(client)
   } catch (error) {
     console.warn('⚠️  Rate limiter Redis not ready at startup:', error.message,
       '— rate limiting will engage on first request (may add ~3s delay)')

@@ -2458,10 +2458,16 @@ class TennisDatabasePostgreSQL {
       SELECT to_match_id, winner_slot FROM cup_advancements WHERE from_match_id = $1
     `, [matchId])
 
+    // SECURITY: winner_slot is interpolated into a column name. Whitelist it
+    // to the two known values so a tampered row (e.g. from a malicious
+    // restored backup) can never inject SQL into the column identifier.
+    const slotColumn = { team1: 'team1_participant_id', team2: 'team2_participant_id' }
     for (const adv of advancements.rows) {
+      const col = slotColumn[adv.winner_slot]
+      if (!col) continue
       await client.query(`
         UPDATE cup_matches
-        SET ${adv.winner_slot}_participant_id = NULL, updated_at = NOW()
+        SET ${col} = NULL, updated_at = NOW()
         WHERE id = $1
       `, [adv.to_match_id])
     }

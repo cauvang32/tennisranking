@@ -9,6 +9,7 @@ import { asyncHandler } from '../utils/async-handler.js'
 import {
   createUploadFilename,
   ensureUploadDirectory,
+  resolveAbsoluteUploadPath,
   resolveUploadPath,
   toStoredUploadPath,
   validateUploadedImage
@@ -600,9 +601,22 @@ export const createCupRouter = ({
     validateUploadedImage,
     asyncHandler(async (req, res) => {
       const cupId = parseInt(req.params.id)
+
+      // CWE-22: validate the uploaded file's path before any filesystem
+      // operation. Multer sets req.file.path from a controlled destination and
+      // a random filename, but a path is never trusted without a containment
+      // check.
+      let uploadedPath = null
+      if (req.file) {
+        uploadedPath = resolveAbsoluteUploadPath(req.file.path)
+        if (!uploadedPath) {
+          return res.status(400).json({ error: 'Invalid upload path' })
+        }
+      }
+
       const cup = await db.getCupById(cupId)
       if (!cup) {
-        if (req.file) await fs.promises.unlink(req.file.path).catch(() => {})
+        if (uploadedPath) await fs.promises.unlink(uploadedPath).catch(() => {})
         return res.status(404).json({ error: 'Cup not found' })
       }
 
@@ -611,7 +625,7 @@ export const createCupRouter = ({
         return
       }
 
-      const storagePath = toStoredUploadPath(req.file.path)
+      const storagePath = toStoredUploadPath(uploadedPath)
 
       await db.query(`
         UPDATE cups SET conclusion_image_path = $1, conclusion_image_filename = $2,

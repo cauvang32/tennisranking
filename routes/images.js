@@ -10,6 +10,7 @@ import { asyncHandler } from '../utils/async-handler.js'
 import {
   createUploadFilename,
   ensureUploadDirectory,
+  resolveAbsoluteUploadPath,
   resolveUploadPath,
   toStoredUploadPath,
   validateUploadedImage
@@ -262,13 +263,20 @@ export const createImageRouter = ({
         res.status(400).json({ error: 'No image file provided' })
         return
       }
+
+      // CWE-22: validate the uploaded file's path before deleting it.
+      const uploadedPath = resolveAbsoluteUploadPath(req.file.path)
+      if (!uploadedPath) {
+        return res.status(400).json({ error: 'Invalid upload path' })
+      }
+
       const existingSeason = await db.getSeasonById(seasonId)
       if (!existingSeason) {
-        await fsPromises.unlink(req.file.path).catch(() => {})
+        await fsPromises.unlink(uploadedPath).catch(() => {})
         return res.status(404).json({ error: 'Season not found' })
       }
 
-      const storagePath = toStoredUploadPath(req.file.path)
+      const storagePath = toStoredUploadPath(uploadedPath)
 
       await db.uploadSeasonConclusionImage(seasonId, {
         filename: req.file.originalname,

@@ -2,7 +2,7 @@ import crypto from 'crypto'
 import { Router, json as expressJson } from 'express'
 import { body, param, query } from 'express-validator'
 import config from '../config/env.js'
-import { imageSize } from 'image-size'
+import { readImageDimensions } from '../lib/image-dimensions.js'
 import { asyncHandler } from '../utils/async-handler.js'
 import { parseImageMatches } from '../lib/ai-parser.js'
 
@@ -536,9 +536,11 @@ export const createMatchRouter = ({
         return res.status(400).json({ error: 'Nội dung tệp không khớp với định dạng hình ảnh.' })
       }
       try {
-        const dimensions = imageSize(imageBytes)
-        const pixels = (dimensions.width || 0) * (dimensions.height || 0)
-        if (!pixels || dimensions.width > 10000 || dimensions.height > 10000 || pixels > 40_000_000) {
+        const dimensions = readImageDimensions(imageBytes)
+        const width = dimensions?.width || 0
+        const height = dimensions?.height || 0
+        const pixels = width * height
+        if (!pixels || width > 10000 || height > 10000 || pixels > 40_000_000) {
           return res.status(400).json({ error: 'Kích thước điểm ảnh vượt quá giới hạn 40 megapixel.' })
         }
       } catch {

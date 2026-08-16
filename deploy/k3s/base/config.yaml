@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tennis-config
+  namespace: tennis-prod
+data:
+  NODE_ENV: production
+  PORT: "3001"
+  BASE_PATH: /tennis/
+  UPLOAD_ROOT: /data/uploads
+  DB_HOST: tennis-postgres-rw
+  DB_PORT: "5432"
+  DB_NAME: tennis
+  DB_USER: tennis
+  DB_AUTO_SCHEMA: "false"
+  DB_POOL_MAX: "8"
+  DB_CONNECTION_TIMEOUT_MS: "5000"
+  DB_STATEMENT_TIMEOUT_MS: "30000"
+  TRUST_PROXY: "true"
+  TRUST_PROXY_HOPS: "1"
+  COOKIE_SECURE: "true"
+  COOKIE_SAMESITE: strict
+  ALLOW_DEV_ORIGINS: "false"
+  ALLOWED_ORIGINS: https://hungsanity.com
+  PUBLIC_DOMAIN: hungsanity.com
+  FIREBASE_SERVICE_ACCOUNT_PATH: /var/run/secrets/firebase/service-account.json

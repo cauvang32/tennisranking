@@ -1,0 +1,21 @@
+# Copy to /etc/rancher/k3s/config.yaml on every server node and replace the
+# placeholders. Keep the same token on all servers. Never commit the token.
+token: REPLACE_WITH_CLUSTER_TOKEN
+write-kubeconfig-mode: "0640"
+secrets-encryption: true
+disable:
+  - traefik
+  - servicelb
+tls-san:
+  - REPLACE_WITH_CONTROL_PLANE_DNS_OR_VIP
+flannel-backend: vxlan
+etcd-expose-metrics: false
+etcd-snapshot-schedule-cron: "0 */6 * * *"
+etcd-snapshot-retention: 10
+# Production: configure the documented etcd S3 settings with a separate,
+# restricted bucket. Do not place the access/secret keys in this repository.
+# etcd-s3: true
+# etcd-s3-endpoint: REPLACE_WITH_S3_ENDPOINT
+# etcd-s3-bucket: REPLACE_WITH_ETCD_BUCKET
+# etcd-s3-folder: tennis-k3s-etcd
+protect-kernel-defaults: true

@@ -17,6 +17,7 @@
     "preview": "vite preview",
     "server": "node server.js",
     "migrate": "node scripts/migrate.js",
+    "migrate:k3s": "node scripts/migrate-k3s.js",
     "start": "npm run build && npm run server",
     "dev-full": "concurrently \"npm run dev\" \"npm run server\"",
     "build:subpath": "BASE_PATH=/tennis/ vite build",

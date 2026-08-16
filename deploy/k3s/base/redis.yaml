@@ -1,0 +1,198 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-cache-config
+  namespace: tennis-prod
+data:
+  redis-additional.conf: |-
+    appendonly no
+    save ""
+    maxmemory-policy allkeys-lfu
+    lazyfree-lazy-eviction yes
+    lazyfree-lazy-expire yes
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redis-queue-config
+  namespace: tennis-prod
+data:
+  redis-additional.conf: |-
+    appendonly yes
+    appendfsync everysec
+    no-appendfsync-on-rewrite yes
+    maxmemory-policy noeviction
+---
+apiVersion: redis.redis.opstreelabs.in/v1beta2
+kind: RedisReplication
+metadata:
+  name: redis-cache
+  namespace: tennis-prod
+  labels:
+    app.kubernetes.io/name: redis-cache
+    app.kubernetes.io/part-of: tennis-ranking
+spec:
+  clusterSize: 3
+  redisConfig:
+    additionalRedisConfig: redis-cache-config
+    maxMemoryPercentOfLimit: 75
+  kubernetesConfig:
+    image: quay.io/opstree/redis:v7.0.15
+    imagePullPolicy: IfNotPresent
+    redisSecret:
+      name: tennis-redis
+      key: password
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 750m
+        memory: 768Mi
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app: redis-cache
+          topologyKey: kubernetes.io/hostname
+  storage:
+    volumeClaimTemplate:
+      spec:
+        storageClassName: longhorn
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi
+  redisExporter:
+    enabled: false
+    image: quay.io/opstree/redis-exporter:v1.44.0
+---
+apiVersion: redis.redis.opstreelabs.in/v1beta2
+kind: RedisSentinel
+metadata:
+  name: redis-cache-ha
+  namespace: tennis-prod
+spec:
+  clusterSize: 3
+  redisSentinelConfig:
+    redisReplicationName: redis-cache
+    redisReplicationPassword:
+      secretKeyRef:
+        name: tennis-redis
+        key: password
+  kubernetesConfig:
+    image: quay.io/opstree/redis-sentinel:v7.0.15
+    imagePullPolicy: IfNotPresent
+    redisSecret:
+      name: tennis-redis
+      key: password
+    resources:
+      requests:
+        cpu: 50m
+        memory: 96Mi
+      limits:
+        cpu: 300m
+        memory: 256Mi
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app: redis-cache-ha-sentinel
+          topologyKey: kubernetes.io/hostname
+---
+apiVersion: redis.redis.opstreelabs.in/v1beta2
+kind: RedisReplication
+metadata:
+  name: redis-queue
+  namespace: tennis-prod
+  labels:
+    app.kubernetes.io/name: redis-queue
+    app.kubernetes.io/part-of: tennis-ranking
+spec:
+  clusterSize: 3
+  redisConfig:
+    additionalRedisConfig: redis-queue-config
+    maxMemoryPercentOfLimit: 75
+  kubernetesConfig:
+    image: quay.io/opstree/redis:v7.0.15
+    imagePullPolicy: IfNotPresent
+    redisSecret:
+      name: tennis-redis
+      key: password
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 750m
+        memory: 768Mi
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app: redis-queue
+          topologyKey: kubernetes.io/hostname
+  storage:
+    volumeClaimTemplate:
+      spec:
+        storageClassName: longhorn
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
+  redisExporter:
+    enabled: false
+    image: quay.io/opstree/redis-exporter:v1.44.0
+---
+apiVersion: redis.redis.opstreelabs.in/v1beta2
+kind: RedisSentinel
+metadata:
+  name: redis-queue-ha
+  namespace: tennis-prod
+spec:
+  clusterSize: 3
+  redisSentinelConfig:
+    redisReplicationName: redis-queue
+    redisReplicationPassword:
+      secretKeyRef:
+        name: tennis-redis
+        key: password
+  kubernetesConfig:
+    image: quay.io/opstree/redis-sentinel:v7.0.15
+    imagePullPolicy: IfNotPresent
+    redisSecret:
+      name: tennis-redis
+      key: password
+    resources:
+      requests:
+        cpu: 50m
+        memory: 96Mi
+      limits:
+        cpu: 300m
+        memory: 256Mi
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchLabels:
+              app: redis-queue-ha-sentinel
+          topologyKey: kubernetes.io/hostname

@@ -1,0 +1,53 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: tennis-postgres
+  namespace: tennis-prod
+  labels:
+    app.kubernetes.io/name: tennis-postgres
+    app.kubernetes.io/part-of: tennis-ranking
+spec:
+  instances: 3
+  imageName: ghcr.io/cloudnative-pg/postgresql:15-minimal-trixie
+  primaryUpdateStrategy: unsupervised
+  primaryUpdateMethod: switchover
+  enableSuperuserAccess: false
+  minSyncReplicas: 1
+  maxSyncReplicas: 1
+  bootstrap:
+    initdb:
+      database: tennis
+      owner: tennis
+      secret:
+        name: tennis-db-app
+  storage:
+    size: 30Gi
+    storageClass: longhorn
+  walStorage:
+    size: 10Gi
+    storageClass: longhorn
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: "2"
+      memory: 3Gi
+  affinity:
+    enablePodAntiAffinity: true
+    podAntiAffinityType: required
+    topologyKey: kubernetes.io/hostname
+  monitoring:
+    enablePodMonitor: false
+  postgresql:
+    parameters:
+      max_connections: "150"
+      shared_buffers: 256MB
+      effective_cache_size: 1GB
+      log_min_duration_statement: "500"
+      log_checkpoints: "on"
+      log_connections: "on"
+      log_disconnections: "on"
+  probes:
+    startup:
+      type: streaming

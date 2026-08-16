@@ -1,0 +1,21 @@
+# Add at NPMplus's global http{} level, then reload/test Nginx.
+# Replace the three RFC 5737 documentation addresses with the private IPs of
+# your K3s nodes. The NodePort is deliberately fixed at 30001.
+upstream tennis_k3s {
+    zone tennis_k3s 64k;
+    least_conn;
+    server 192.0.2.11:30001 max_fails=3 fail_timeout=10s;
+    server 192.0.2.12:30001 max_fails=3 fail_timeout=10s;
+    server 192.0.2.13:30001 max_fails=3 fail_timeout=10s;
+    keepalive 32;
+}
+
+# In nginx_custom_config.conf change ONLY the upstream host portion on every
+# proxy_pass line:
+#   http://localhost:3001
+# to:
+#   http://tennis_k3s
+# Keep any URI suffix (for example /api/rankings/) exactly as it is.
+#
+# Preserve all existing cache, Anubis, rate-limit, forwarded-header, and SSE
+# directives. SSE locations must continue to use proxy_buffering off.

@@ -57,7 +57,7 @@ fi
 
 echo -e "${CYAN}Creating site_images table...${NC}"
 docker exec -i "${DB_CONTAINER:-tennis-postgres}" psql -U "$DB_USER" -d "$DB_NAME" <<'SQL'
-CREATE TABLE site_images (
+CREATE TABLE IF NOT EXISTS site_images (
   id            SERIAL PRIMARY KEY,
   key           VARCHAR(64) UNIQUE NOT NULL,
   filename      VARCHAR(255) NOT NULL,
@@ -71,7 +71,7 @@ CREATE TABLE site_images (
   updated_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_site_images_key_active ON site_images(key, is_active);
+CREATE INDEX IF NOT EXISTS idx_site_images_key_active ON site_images(key, is_active);
 
 -- Seed default image keys with placeholder values
 INSERT INTO site_images (key, filename, storage_path, content_type, file_size, alt_text, is_active)

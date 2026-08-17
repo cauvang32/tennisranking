@@ -1,9 +1,9 @@
-# Production K3s deployment guide
+# K3s deployment guide: single-node learning to production HA
 
 This is an **opt-in deployment path** for the tennis-ranking application. It
 does not replace or remove the existing PM2, Docker Compose, or normal GitLab
-jobs. All work lives on `feat/k3s-production-deployment` until it is reviewed
-and merged.
+jobs. It supports a one-node learning deployment first and an explicit later
+promotion to three-node HA.
 
 The design deliberately does not install or use K3s Traefik. NPMplus remains
 the public TLS terminator, CDN/cache, Anubis gate, rate limiter, and reverse
@@ -33,13 +33,16 @@ CloudNativePG exposes `tennis-postgres-rw`; the Redis operator exposes
 service names, so leader changes do not require application configuration
 changes. Cache Redis is disposable; queue Redis uses AOF and `noeviction`.
 
-**Three pods on one physical machine are not HA.** Production mode requires at
-least three independent K3s server nodes, an odd etcd quorum, separate failure
-domains, and replicated storage. One server is suitable for learning and
-manifest validation only; it cannot survive server, disk, kernel, power, or
-network failure. The manifests intentionally use required anti-affinity and
-three storage replicas, so they are production-oriented rather than pretending
-a one-node system is highly available.
+**One physical machine is not HA.** Set `K3S_MODE=single` to run one API, one
+FCM worker, one PostgreSQL instance, one instance of each Redis role, and one
+Longhorn copy. Kubernetes can restart a failed process, but it cannot survive
+loss of that server, disk, kernel, power, or network. Set `K3S_MODE=ha` only
+after three independent server nodes and replicated storage are ready.
+
+| Mode | Nodes | API / FCM | PostgreSQL | Each Redis + Sentinel | Longhorn copies |
+|---|---:|---:|---:|---:|---:|
+| `single` | 1 | 1 / 1 | 1 | 1 + 1 | 1 |
+| `ha` | 3+ | 3 / 2 | 3 | 3 + 3 | 3 |
 
 NPMplus itself remains outside this cluster. Its availability is a separate
 concern: if it is only on one server, it is still a public single point of
@@ -51,9 +54,10 @@ failure even when the application cluster is healthy.
   migration Job. The existing worker `Dockerfile` is unchanged.
 - `deploy/k3s/platform/`: pinned K3s Helm Controller resources for Longhorn,
   cert-manager, CloudNativePG, and the OpsTree Redis operator.
-- `deploy/k3s/base/`: three API replicas, two FCM replicas, NodePort service,
-  PostgreSQL, two Redis replication groups with Sentinel, RWX uploads, probes,
-  resources, disruption budgets, and network policy.
+- `deploy/k3s/base/`: HA declarations for the API, FCM, PostgreSQL, two Redis
+  replication groups with Sentinel, RWX uploads, probes, resources, disruption
+  budgets, and network policy. The guarded renderer reduces replicas when
+  `K3S_MODE=single`.
 - `scripts/k3s/`: context-guarded platform bootstrap, secret creation,
   data import, migration, backup, deploy, and image rollback scripts.
 - GitLab jobs that build a GitLab Registry image by digest and manually deploy
@@ -67,7 +71,11 @@ chart `0.25.0`, and Longhorn `v1.12.0`.
 
 ## Phase 0: required decisions and capacity
 
-Do not start a production migration until all of these are true:
+For `K3S_MODE=single`, start with one Linux server with at least 4 vCPU, 8 GiB
+RAM, adequate SSD space, and an off-server backup destination. This is suitable
+for learning or accepting a known single-server availability risk.
+
+Do not claim HA until all of these are true:
 
 - Three Linux servers are available in distinct failure domains. Use static
   private IPs and reliable low-latency links.
@@ -120,14 +128,16 @@ ServiceLB from being installed. Configuration-critical flags must match on all
 server nodes.
 
 Choose and pin a reviewed K3s patch version; never install an unreviewed moving
-channel directly into production. Example for the first server:
+channel directly into production. If installing the first server now and you
+intend to add HA servers later, initialize embedded etcd immediately:
 
 ```bash
 export INSTALL_K3S_VERSION='v1.36.2+k3s1'  # example pin; verify support first
 curl -sfL https://get.k3s.io | sh -s - server --cluster-init
 ```
 
-For server 2 and server 3, add this to their `config.yaml`:
+For single-node learning, stop after the first server. When promoting to HA,
+server 2 and server 3 add this to their `config.yaml`:
 
 ```yaml
 server: https://CONTROL_PLANE_PRIVATE_DNS:6443
@@ -140,7 +150,7 @@ export INSTALL_K3S_VERSION='v1.36.2+k3s1'
 curl -sfL https://get.k3s.io | sh -s - server
 ```
 
-Validate quorum and confirm Traefik is absent:
+Validate the node and confirm Traefik is absent:
 
 ```bash
 sudo k3s kubectl get nodes -o wide
@@ -161,6 +171,7 @@ From a protected administration host or the protected GitLab shell runner:
 export KUBECONFIG=/secure/path/tennis-k3s.yaml
 export K3S_CONTEXT=tennis-production-k3s
 export K3S_CONFIRM_CLUSTER="$K3S_CONTEXT"
+export K3S_MODE=single
 bash scripts/k3s/bootstrap-platform.sh
 ```
 
@@ -174,10 +185,11 @@ kubectl -n cnpg-system get pods
 kubectl -n redis-operator get pods
 ```
 
-In the Longhorn UI or CRs, confirm all three nodes and disks are schedulable,
-replica count is three, degraded volume creation is not accepted for cutover,
-and an off-site backup target is configured. Apply the recurring job and assign
-the resulting uploads volume to group `tennis-uploads`:
+In single mode, confirm the one node/disk is schedulable and new Longhorn
+volumes use one replica. In HA mode, confirm three nodes are schedulable and
+volumes use three replicas. In both modes, configure an off-site backup target.
+Apply the recurring job and assign the uploads volume to group
+`tennis-uploads`:
 
 ```bash
 kubectl apply -f deploy/k3s/backup/longhorn-recurring-job.yaml
@@ -194,6 +206,7 @@ Do not add any of these to GitHub.
 | Variable | Form | Meaning |
 |---|---|---|
 | `K3S_CONTEXT` | text | exact protected runner kubectl context |
+| `K3S_MODE` | text | defaults to `single` in CI; override with `ha` only after adding nodes |
 | `K3S_DB_PASSWORD` | masked text | strong PostgreSQL application password |
 | `K3S_REDIS_PASSWORD` | masked text | 24+ URL-safe random characters |
 | `K3S_REGISTRY_USER` | masked text | read-only GitLab deploy-token username |
@@ -241,15 +254,16 @@ file. `K3S_IMAGE` must be the GitLab digest artifact.
 
 ```bash
 export K3S_CONFIRM_CLUSTER="$K3S_CONTEXT"
+export K3S_MODE=single
 export K3S_PREPARE_ONLY=true
-export K3S_IMAGE='registry.example/owner/project/k3s@sha256:...'
+export K3S_IMAGE='registry.quocanh.tech/owner/project/k3s@sha256:...'
 export K3S_FIREBASE_SERVICE_ACCOUNT_FILE=/secure/firebase.json
 bash scripts/k3s/deploy.sh
 ```
 
 This creates secrets, PVCs, CloudNativePG, and both Redis systems. It does not
-run schema migrations and does not start API or FCM pods. Check that every
-volume has three healthy Longhorn replicas and PostgreSQL reports ready:
+run schema migrations and does not start API or FCM pods. In single mode,
+expect one PostgreSQL pod and one pod for each Redis/Sentinel role:
 
 ```bash
 kubectl -n tennis-prod get cluster,pods,pvc,svc,endpoints
@@ -357,8 +371,9 @@ Also verify:
 ## Phase 9: switch NPMplus
 
 Add [`npmplus-http-upstream.conf.example`](npmplus-http-upstream.conf.example)
-to NPMplus's global `http {}` configuration, replacing the example addresses
-with the three private node IPs. Test and reload Nginx. In the existing
+to NPMplus's global `http {}` configuration. In single mode, keep only the
+first server line and use the learning node's private IP. In HA mode, use all
+three private node IPs. Test and reload Nginx. In the existing
 `nginx_custom_config.conf`, change only each upstream target from
 `http://localhost:3001` to `http://tennis_k3s`.
 
@@ -380,6 +395,9 @@ For later releases, approve the manual `deploy-k3s` job. It serializes changes
 with `resource_group: production-k3s`, receives the exact image digest from the
 build job, applies secrets/config safely, runs the migration Job, performs a
 zero-unavailable rolling update, and waits for both deployments.
+
+Keep the protected GitLab variable `K3S_MODE=single` until the HA promotion is
+complete. The deploy job uses the same mode-aware renderer as manual deploys.
 
 Do not approve the old PM2 `deploy` job while K3s is the active production
 writer. Both paths are intentionally retained, but running both against the
@@ -430,6 +448,53 @@ At least monthly:
 - confirm etcd snapshots are copied off-cluster and test control-plane restore.
 
 Never perform the first restore drill during a real outage.
+
+## Promote the learning node to HA later
+
+Do not change `K3S_MODE` merely because a second node was added. Embedded etcd
+and the stateful services need a three-node quorum, so promote only after three
+independent server nodes are `Ready`.
+
+1. Take and verify PostgreSQL, uploads, Longhorn, and etcd backups.
+2. If the original K3s installation uses SQLite, follow the official K3s
+   conversion procedure to initialize embedded etcd on the first server before
+   joining other server nodes. If the first node was installed with
+   `--cluster-init`, it already uses embedded etcd.
+3. Join server 2 and server 3 with the same K3s token and configuration-critical
+   flags. Confirm all three nodes are `Ready` and etcd has quorum.
+4. Reapply the platform in HA mode so future Longhorn volumes request three
+   copies:
+
+```bash
+export K3S_MODE=ha
+export K3S_CONFIRM_CLUSTER="$K3S_CONTEXT"
+bash scripts/k3s/bootstrap-platform.sh
+```
+
+5. In Longhorn, change every existing tennis volume from one replica to three.
+   Wait until all rebuilds are healthy before scaling databases. Changing the
+   default only affects new volumes; it does not rewrite existing volumes.
+6. Expand PostgreSQL and both Redis systems first without changing application
+   pods:
+
+```bash
+export K3S_PREPARE_ONLY=true
+bash scripts/k3s/deploy.sh
+kubectl -n tennis-prod wait --for=condition=Ready cluster/tennis-postgres --timeout=30m
+kubectl -n tennis-prod get pods -o wide
+```
+
+7. Confirm PostgreSQL has three healthy instances and each Redis/Sentinel role
+   has three pods spread across the nodes. Then scale the application layer:
+
+```bash
+unset K3S_PREPARE_ONLY
+bash scripts/k3s/deploy.sh
+```
+
+8. Change the protected GitLab variable to `K3S_MODE=ha`, configure NPMplus
+   with all three NodePort endpoints, test node loss, and only then describe the
+   deployment as HA.
 
 ## Upgrades and maintenance
 

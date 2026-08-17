@@ -5,6 +5,11 @@ namespace="${K3S_NAMESPACE:-tennis-prod}"
 expected_context="${K3S_CONTEXT:?Set K3S_CONTEXT to the exact kubectl context name}"
 mode="${K3S_MODE:-ha}"
 
+if [[ "${mode}" != "ha" && "${mode}" != "single" ]]; then
+  echo "K3S_MODE must be 'single' or 'ha', got: ${mode}" >&2
+  exit 1
+fi
+
 for command in kubectl sed; do
   command -v "${command}" >/dev/null || { echo "Missing command: ${command}" >&2; exit 1; }
 done
@@ -23,6 +28,10 @@ kubectl cluster-info >/dev/null
 ready_nodes="$(kubectl get nodes --no-headers | awk '$2 ~ /^Ready/ {count++} END {print count+0}')"
 if [[ "${mode}" == "ha" && "${ready_nodes}" -lt 3 ]]; then
   echo "HA mode requires at least 3 Ready nodes; found ${ready_nodes}." >&2
+  exit 1
+fi
+if [[ "${mode}" == "single" && "${ready_nodes}" -lt 1 ]]; then
+  echo "Single-node mode requires one Ready node; found ${ready_nodes}." >&2
   exit 1
 fi
 if kubectl -n kube-system get deployment traefik >/dev/null 2>&1; then

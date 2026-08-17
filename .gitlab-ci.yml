@@ -21,6 +21,9 @@ stages:
 variables:
   DEPLOY_PATH: /home/vps/tennisranking
   PERSISTENT_DATA_PATH: /home/vps/tennisranking-data
+  # Current cluster is intentionally one-node while learning. Override with a
+  # protected K3S_MODE=ha variable only after three server nodes are ready.
+  K3S_MODE: single
   PRODUCTION_ORIGIN: https://hungsanity.com
   PRODUCTION_DOMAIN: hungsanity.com
   GIT_ORIGIN: https://git.quocanh.tech/cauvang32/tennisranking

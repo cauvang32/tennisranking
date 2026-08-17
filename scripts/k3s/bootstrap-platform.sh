@@ -4,7 +4,16 @@ set -Eeuo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 "${repo_root}/scripts/k3s/preflight.sh"
 
-kubectl apply -k "${repo_root}/deploy/k3s/platform"
+if [[ "${K3S_MODE:-ha}" == "single" ]]; then
+  # New volumes use one Longhorn replica while learning on one physical node.
+  # The count must be raised for both the default and existing volumes during
+  # a later HA promotion.
+  kubectl kustomize "${repo_root}/deploy/k3s/platform" | \
+    sed 's/defaultClassReplicaCount: 3/defaultClassReplicaCount: 1/' | \
+    kubectl apply -f -
+else
+  kubectl apply -k "${repo_root}/deploy/k3s/platform"
+fi
 
 echo "Waiting for platform CRDs..."
 for crd in clusters.postgresql.cnpg.io redisreplications.redis.redis.opstreelabs.in redissentinels.redis.redis.opstreelabs.in; do

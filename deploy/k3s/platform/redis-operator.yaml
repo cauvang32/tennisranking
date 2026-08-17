@@ -1,0 +1,15 @@
+apiVersion: helm.cattle.io/v1
+kind: HelmChart
+metadata:
+  name: redis-operator
+  namespace: kube-system
+spec:
+  chart: redis-operator
+  repo: https://ot-container-kit.github.io/helm-charts
+  version: 0.25.0
+  targetNamespace: redis-operator
+  createNamespace: true
+  failurePolicy: abort
+  valuesContent: |-
+    redisOperator:
+      watchNamespace: ""

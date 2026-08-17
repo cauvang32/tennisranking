@@ -1,0 +1,62 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: tennis-prod
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-app-traffic
+  namespace: tennis-prod
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Kubelet probes and NodePort traffic can be SNATed to a node address.
+    # Restrict TCP/30001 at the host firewall to the NPMplus host. The other
+    # ports below are only exposed by ClusterIP/headless services.
+    - ports:
+        - protocol: TCP
+          port: 3001
+        - protocol: TCP
+          port: 3002
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 6379
+        - protocol: TCP
+          port: 26379
+        - protocol: TCP
+          port: 8000
+    - from:
+        - podSelector: {}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cnpg-system
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: redis-operator
+  egress:
+    - to:
+        - podSelector: {}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Firebase, registry checks, and optional AI integrations use HTTPS.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443

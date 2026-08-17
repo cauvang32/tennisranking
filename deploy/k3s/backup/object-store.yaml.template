@@ -1,0 +1,43 @@
+apiVersion: barmancloud.cnpg.io/v1
+kind: ObjectStore
+metadata:
+  name: tennis-postgres-backup
+  namespace: tennis-prod
+spec:
+  retentionPolicy: 30d
+  configuration:
+    destinationPath: __DESTINATION_PATH__
+    endpointURL: __ENDPOINT_URL__
+    s3Credentials:
+      accessKeyId:
+        name: tennis-s3-backup
+        key: ACCESS_KEY_ID
+      secretAccessKey:
+        name: tennis-s3-backup
+        key: ACCESS_SECRET_KEY
+    wal:
+      compression: gzip
+  instanceSidecarConfiguration:
+    retentionPolicyIntervalSeconds: 1800
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: tennis-postgres-daily
+  namespace: tennis-prod
+spec:
+  schedule: "0 15 2 * * *"
+  backupOwnerReference: self
+  immediate: true
+  cluster:
+    name: tennis-postgres
+  method: plugin
+  pluginConfiguration:
+    name: barman-cloud.cloudnative-pg.io

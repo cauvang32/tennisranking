@@ -1,0 +1,51 @@
+# syntax=docker/dockerfile:1.7
+
+# Shared immutable image for the K3s API, FCM worker, and migration Job.
+# The existing Dockerfile remains the minimal worker image used by Compose.
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS build
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+
+COPY index.html vite.config.js ./
+COPY public/ ./public/
+COPY src/ ./src/
+
+ARG BASE_PATH=/tennis/
+ENV BASE_PATH=${BASE_PATH}
+RUN npm run build
+
+FROM node:22-alpine@sha256:16e22a550f3863206a3f701448c45f7912c6896a62de43add43bb9c86130c3e2 AS runtime
+
+RUN apk add --no-cache dumb-init && \
+    addgroup -g 1001 -S nodejs && \
+    adduser -S tennisapp -u 1001 -G nodejs
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev && \
+    npm cache clean --force && \
+    rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
+COPY server.js worker.js database-postgresql.js access-logger.js ./
+COPY config/ ./config/
+COPY lib/ ./lib/
+COPY middleware/ ./middleware/
+COPY routes/ ./routes/
+COPY utils/ ./utils/
+COPY scripts/migrate.js scripts/migrate-k3s.js scripts/migration-utils.js ./scripts/
+COPY migrations/ ./migrations/
+COPY --from=build /app/dist ./dist
+
+RUN mkdir -p /data/uploads /app/logs /tmp/tennis && \
+    chown -R tennisapp:nodejs /data /app/logs /tmp/tennis
+
+ENV NODE_ENV=production \
+    PORT=3001 \
+    UPLOAD_ROOT=/data/uploads
+
+USER tennisapp
+EXPOSE 3001 3002
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "server.js"]

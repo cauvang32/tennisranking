@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: tennis-upload-import
+  namespace: tennis-prod
+  labels:
+    app.kubernetes.io/name: tennis-upload-import
+spec:
+  restartPolicy: Never
+  serviceAccountName: tennis-app
+  automountServiceAccountToken: false
+  imagePullSecrets:
+    - name: gitlab-registry
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1001
+    runAsGroup: 1001
+    fsGroup: 1001
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: importer
+      image: __IMAGE__
+      command: ["/bin/sh", "-c", "sleep 3600"]
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      volumeMounts:
+        - name: uploads
+          mountPath: /data/uploads
+        - name: tmp
+          mountPath: /tmp
+  volumes:
+    - name: uploads
+      persistentVolumeClaim:
+        claimName: tennis-uploads
+    - name: tmp
+      emptyDir: {}

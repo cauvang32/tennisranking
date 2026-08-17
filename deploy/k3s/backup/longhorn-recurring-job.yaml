@@ -1,0 +1,12 @@
+apiVersion: longhorn.io/v1beta2
+kind: RecurringJob
+metadata:
+  name: tennis-uploads-daily
+  namespace: longhorn-system
+spec:
+  cron: "30 2 * * *"
+  task: backup
+  groups:
+    - tennis-uploads
+  retain: 14
+  concurrency: 1

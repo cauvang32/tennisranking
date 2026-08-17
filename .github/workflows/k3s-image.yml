@@ -1,0 +1,56 @@
+name: K3s image build only
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test-and-build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Test and lint
+        run: |
+          npm ci
+          npm test
+          npm run lint
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build image (push only for main/tags)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.k3s
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            ghcr.io/${{ github.repository }}/k3s:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Deliberately no deployment job, environment, kubeconfig, kubectl, or K3s
+  # credentials. GitLab is the sole deployment authority.

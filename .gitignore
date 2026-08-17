@@ -14,6 +14,9 @@ dist
 dist-ssr
 *.local
 .github
+!.github/
+!.github/workflows/
+!.github/workflows/k3s-image.yml
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -36,6 +39,8 @@ data/uploads/
 backend.md
 docker-compose.yml
 firebase-service-account.json
+*.kubeconfig
+deploy/k3s/secrets/
 logs.txt
 .db-credentials
 keys/

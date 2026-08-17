@@ -125,8 +125,12 @@ class TennisDatabasePostgreSQL {
       console.log('✅ PostgreSQL connection established successfully')
       client.release()
 
-      // Create tables
-      await this.createTables()
+      // Preserve self-bootstrapping for the existing PM2/Compose deployment.
+      // K3s application pods disable this and rely on the release migration Job
+      // so multiple replicas never perform DDL during a rollout.
+      if (config.dbAutoSchema) {
+        await this.createTables()
+      }
       
       this.isConnected = true
       this.retryAttempt = 0

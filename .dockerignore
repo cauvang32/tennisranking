@@ -74,9 +74,8 @@ Dockerfile
 
 # Scripts handled by setup.sh and npm scripts
 
-# Migration scripts (not needed in production image)
-migrations/*.sh
-migrations/*.sql
+# K3s uses the same immutable image for its migration Job. Individual
+# Dockerfiles still decide whether to COPY these files.
 
 # Environment files (secrets)
 .env

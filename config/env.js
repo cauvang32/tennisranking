@@ -195,6 +195,13 @@ const config = {
   dbConnectionTimeoutMs: parseInt(process.env.DB_CONNECTION_TIMEOUT_MS) || 2000,
   dbStatementTimeoutMs: parseInt(process.env.DB_STATEMENT_TIMEOUT_MS) || 30000,
   dbSlowQueryMs: parseInt(process.env.DB_SLOW_QUERY_MS) || 500,
+  // Legacy PM2/Compose deployments historically bootstrap idempotent tables
+  // from database-postgresql.js. Kubernetes runs a dedicated migration Job,
+  // so its application pods set DB_AUTO_SCHEMA=false to keep schema ownership
+  // out of horizontally scaled processes.
+  dbAutoSchema: process.env.DB_AUTO_SCHEMA === undefined
+    ? true
+    : envFlagTrue(process.env.DB_AUTO_SCHEMA),
 
   // Redis
   redisUrl: process.env.REDIS_URL || 'redis://localhost:6379',

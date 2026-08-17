@@ -632,9 +632,14 @@ function gracefulShutdown(signal) {
   isShuttingDown = true
   console.log(`\n📴 Received ${signal}, shutting down gracefully...`)
 
+  // End long-lived SSE responses before server.close(). Otherwise Node waits
+  // for those connections while Kubernetes eventually has to SIGKILL the pod.
+  for (const client of sseClients) {
+    try { client.end() } catch { /* already disconnected */ }
+  }
+  sseClients.clear()
+
   server.close(async () => {
-    for (const client of sseClients) { client.end() }
-    sseClients.clear()
     clearInterval(cacheCheckInterval)
     clearInterval(deviceCleanupInterval)
     if (systemRouter?.sseCleanupInterval) clearInterval(systemRouter.sseCleanupInterval)

@@ -1,0 +1,62 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: __JOB_NAME__
+  namespace: tennis-prod
+  labels:
+    app.kubernetes.io/name: tennis-migration
+    app.kubernetes.io/part-of: tennis-ranking
+spec:
+  backoffLimit: 1
+  activeDeadlineSeconds: 1800
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tennis-migration
+        app.kubernetes.io/part-of: tennis-ranking
+    spec:
+      restartPolicy: Never
+      serviceAccountName: tennis-app
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: gitlab-registry
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          command: ["node", "scripts/migrate-k3s.js"]
+          envFrom:
+            - configMapRef:
+                name: tennis-config
+            - secretRef:
+                name: tennis-runtime
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: logs
+              mountPath: /app/logs
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: logs
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

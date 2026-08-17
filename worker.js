@@ -14,18 +14,25 @@ let pushSender = null
 const healthServer = http.createServer(async (req, res) => {
   if (req.url === '/health') {
     let dbStatus = 'disconnected'
+    let queueStatus = 'disconnected'
     try {
       if (db?.isConnected) {
         await db.query('SELECT 1')
         dbStatus = 'connected'
       }
     } catch { /* unhealthy response below */ }
+    try {
+      if (pushSender?.getStatus && await pushSender.getStatus()) {
+        queueStatus = 'connected'
+      }
+    } catch { /* unhealthy response below */ }
     const fcmStatus = pushSender?.enabled ? 'active' : 'disabled'
-    const isReady = dbStatus === 'connected'
+    const isReady = dbStatus === 'connected' && queueStatus === 'connected'
     res.writeHead(isReady ? 200 : 503, { 'Content-Type': 'application/json' })
     res.end(JSON.stringify({
       status: isReady ? 'healthy' : 'starting',
       db: dbStatus,
+      queue: queueStatus,
       fcm: fcmStatus,
       uptime: process.uptime()
     }))
@@ -69,7 +76,10 @@ async function start() {
   })
 
   // Graceful shutdown handling
+  let isShuttingDown = false
   const shutdown = async (signal) => {
+    if (isShuttingDown) return
+    isShuttingDown = true
     console.log(`\nStopping FCM worker gracefully on ${signal}...`)
     try {
       healthServer.close()

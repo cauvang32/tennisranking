@@ -289,6 +289,20 @@ sha256sum /secure/tennis-precutover.dump
 pg_restore --list /secure/tennis-precutover.dump >/dev/null
 ```
 
+Use `pg_dump` from the same PostgreSQL major version as the target (currently
+PostgreSQL 15). PostgreSQL does not guarantee that a dump created by a newer
+major client can be restored into an older server. When the current source is
+the repository's PostgreSQL 15 Compose container, create the dump with its
+matching client:
+
+```bash
+docker exec -e PGPASSWORD="${DB_PASSWORD}" tennis-postgres \
+  pg_dump -U "${DB_USER}" -d "${DB_NAME}" \
+  --format=custom --no-owner --no-privileges \
+  > /secure/tennis-precutover.dump
+chmod 600 /secure/tennis-precutover.dump
+```
+
 Never pass a database password inside a URL argument in shared shell history.
 
 ## Phase 7: production maintenance window and data copy

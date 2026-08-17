@@ -26,14 +26,21 @@ if [[ -z "${primary}" ]]; then
   exit 1
 fi
 
+echo "Checking that the target PostgreSQL tools can read the dump before changing the target database..."
+if ! kubectl -n "${namespace}" exec -i "${primary}" -c postgres -- \
+  pg_restore --list < "${dump_file}" >/dev/null; then
+  echo "The target pg_restore cannot read this dump. Create it with pg_dump from the same PostgreSQL major version as the target." >&2
+  exit 1
+fi
+
 echo "Recreating only the TARGET database 'tennis' in pod ${primary}. The source is never modified."
-kubectl -n "${namespace}" exec "${primary}" -- psql -v ON_ERROR_STOP=1 -U postgres -d postgres -c \
+kubectl -n "${namespace}" exec "${primary}" -c postgres -- psql -v ON_ERROR_STOP=1 -U postgres -d postgres -c \
   "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'tennis' AND pid <> pg_backend_pid();"
-kubectl -n "${namespace}" exec "${primary}" -- dropdb --if-exists -U postgres tennis
-kubectl -n "${namespace}" exec "${primary}" -- createdb -U postgres -O tennis tennis
-kubectl -n "${namespace}" exec -i "${primary}" -- pg_restore \
+kubectl -n "${namespace}" exec "${primary}" -c postgres -- dropdb --if-exists -U postgres tennis
+kubectl -n "${namespace}" exec "${primary}" -c postgres -- createdb -U postgres -O tennis tennis
+kubectl -n "${namespace}" exec -i "${primary}" -c postgres -- pg_restore \
   -U postgres -d tennis --no-owner --no-privileges --role=tennis --exit-on-error < "${dump_file}"
 
-kubectl -n "${namespace}" exec "${primary}" -- psql -U postgres -d tennis -Atc \
+kubectl -n "${namespace}" exec "${primary}" -c postgres -- psql -U postgres -d tennis -Atc \
   "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'public';"
 echo "Database import finished. Run the K3s migration Job next; do not start app pods yet."

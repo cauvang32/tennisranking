@@ -217,9 +217,11 @@ registration.
 ## Phase 4: build an immutable image
 
 Merge or push the reviewed branch to the GitLab default branch. GitLab runs
-tests/lint and pushes `$CI_REGISTRY_IMAGE/k3s:$CI_COMMIT_SHA`, recording the
-repository digest as a dotenv artifact. Deployment accepts only
-`image@sha256:...`, never a mutable tag.
+tests/lint and pushes
+`registry.quocanh.tech/$CI_PROJECT_PATH/k3s:$CI_COMMIT_SHA`, recording the
+repository digest as a dotenv artifact. The registry host is intentionally
+pinned without the obsolete public `:5005` port because NPMplus terminates TLS
+on port 443. Deployment accepts only `image@sha256:...`, never a mutable tag.
 
 GitHub independently builds the same Dockerfile and may publish the result to
 GHCR. It is not the source used by `deploy-k3s` and cannot reach the cluster.

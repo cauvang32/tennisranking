@@ -8,7 +8,7 @@ required=(
   K3S_DB_PASSWORD K3S_REDIS_PASSWORD
   ADMIN_USERNAME ADMIN_PASSWORD EDITOR_USERNAME EDITOR_PASSWORD
   JWT_SECRET CSRF_SECRET
-  CI_REGISTRY K3S_REGISTRY_USER K3S_REGISTRY_PASSWORD
+  K3S_REGISTRY_USER K3S_REGISTRY_PASSWORD
 )
 for name in "${required[@]}"; do
   if [[ -z "${!name:-}" ]]; then
@@ -59,7 +59,7 @@ kubectl -n "${namespace}" create secret generic tennis-firebase \
   --from-file=service-account.json="${firebase_file}" \
   --dry-run=client -o yaml | kubectl apply -f -
 kubectl -n "${namespace}" create secret docker-registry gitlab-registry \
-  --docker-server="${CI_REGISTRY}" \
+  --docker-server=registry.quocanh.tech \
   --docker-username="${K3S_REGISTRY_USER}" \
   --docker-password="${K3S_REGISTRY_PASSWORD}" \
   --dry-run=client -o yaml | kubectl apply -f -

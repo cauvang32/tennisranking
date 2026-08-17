@@ -216,14 +216,15 @@ build-k3s-image:
     - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   before_script:
     - set -e
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - printf '%s' "$CI_REGISTRY_PASSWORD" | docker login registry.quocanh.tech --username "$CI_REGISTRY_USER" --password-stdin
   script:
-    - export IMAGE_TAG="$CI_REGISTRY_IMAGE/k3s:$CI_COMMIT_SHA"
+    - export IMAGE_REPOSITORY="registry.quocanh.tech/$CI_PROJECT_PATH/k3s"
+    - export IMAGE_TAG="$IMAGE_REPOSITORY:$CI_COMMIT_SHA"
     - docker buildx create --use
     - docker buildx build --platform linux/amd64 --file Dockerfile.k3s --tag "$IMAGE_TAG" --metadata-file image-metadata.json --push .
     - export IMAGE_DIGEST="$(sed -n 's/.*"containerimage.digest"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' image-metadata.json)"
     - test -n "$IMAGE_DIGEST"
-    - printf 'K3S_IMAGE=%s@%s\n' "$CI_REGISTRY_IMAGE/k3s" "$IMAGE_DIGEST" > k3s-image.env
+    - printf 'K3S_IMAGE=%s@%s\n' "$IMAGE_REPOSITORY" "$IMAGE_DIGEST" > k3s-image.env
   artifacts:
     reports:
       dotenv: k3s-image.env

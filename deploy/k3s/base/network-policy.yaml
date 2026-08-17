@@ -60,3 +60,25 @@ spec:
       ports:
         - protocol: TCP
           port: 443
+---
+# CloudNativePG's instance manager and bootstrap jobs must watch their Cluster
+# resource through the Kubernetes API. Depending on where the CNI evaluates
+# NetworkPolicy relative to Service DNAT, it can see either the kubernetes
+# Service port (443) or the K3s API backend port (6443). Limit this exception to
+# pods belonging to this PostgreSQL cluster rather than opening 6443 namespace-wide.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-cnpg-kubernetes-api
+  namespace: tennis-prod
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: tennis-postgres
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443

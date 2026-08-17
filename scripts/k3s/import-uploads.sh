@@ -25,5 +25,7 @@ sed "s|__IMAGE__|${image}|g" "${repo_root}/deploy/k3s/jobs/upload-import-pod.yam
 trap 'kubectl -n "${namespace}" delete pod tennis-upload-import --ignore-not-found --wait=false >/dev/null 2>&1 || true' EXIT
 kubectl -n "${namespace}" wait --for=condition=Ready pod/tennis-upload-import --timeout=5m
 tar -C "${source_dir}" -cf - . | kubectl -n "${namespace}" exec -i tennis-upload-import -- tar -C /data/uploads -xf -
-kubectl -n "${namespace}" exec tennis-upload-import -- find /data/uploads -type f | wc -l
+echo -n "Target upload files: "
+kubectl -n "${namespace}" exec tennis-upload-import -- \
+  find /data/uploads -path /data/uploads/lost+found -prune -o -type f -print | wc -l
 echo "Upload copy finished. Run a final copy while the PM2 app is stopped before cutover."

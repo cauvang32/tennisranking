@@ -233,6 +233,7 @@ build-k3s-image:
       dotenv: k3s-image.env
     paths:
       - image-metadata.json
+      - k3s-image.env
     expire_in: 30 days
 
 trivy-k3s-image:

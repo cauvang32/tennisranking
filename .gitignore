@@ -33,6 +33,8 @@ data/tennis.db
 tennis.db
 data/postgres/
 data/postgres-data/
+data/dbdump/
+data/redis-data/
 data/postgres-init/01-init.sql
 data/redis-data/dump.rdb
 data/uploads/
@@ -40,6 +42,8 @@ backend.md
 docker-compose.yml
 firebase-service-account.json
 *.kubeconfig
+*.dump
+.gitlab-ci.yml.k3s-backup
 deploy/k3s/secrets/
 logs.txt
 .db-credentials

@@ -15,15 +15,11 @@ stages:
   - security
   - test
   - build
-  - image-scan
   - deploy
 
 variables:
   DEPLOY_PATH: /home/vps/tennisranking
   PERSISTENT_DATA_PATH: /home/vps/tennisranking-data
-  # Current cluster is intentionally one-node while learning. Override with a
-  # protected K3S_MODE=ha variable only after three server nodes are ready.
-  K3S_MODE: single
   PRODUCTION_ORIGIN: https://hungsanity.com
   PRODUCTION_DOMAIN: hungsanity.com
   GIT_ORIGIN: https://git.quocanh.tech/cauvang32/tennisranking
@@ -94,9 +90,6 @@ eslint:
   needs: [setup-dependencies]
   script:
     - echo "📋 Running ESLint..."
-    # A GitLab cache is an optimization, not a dependency hand-off. Docker
-    # runners may have no shared cache, so install deterministically here.
-    - npm ci --prefer-offline --cache "$NPM_CACHE_DIR" --include=dev
     - npm run lint -- --format json --output-file eslint-report.json
   artifacts:
     paths:
@@ -200,98 +193,6 @@ build:
       - dist/
     expire_in: 1 day
     when: on_success
-
-# This is the authoritative production image. GitLab deploys this digest to
-# K3s; the independent GitHub workflow never receives kubeconfig or deploys.
-build-k3s-image:
-  stage: build
-  image: docker:27.5.1-cli
-  services:
-    - name: docker:27.5.1-dind
-      alias: docker
-  variables:
-    DOCKER_HOST: tcp://docker:2375
-    DOCKER_TLS_CERTDIR: ""
-  needs:
-    - job: tests
-    - job: eslint
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  before_script:
-    - set -e
-    - printf '%s' "$CI_REGISTRY_PASSWORD" | docker login registry.quocanh.tech --username "$CI_REGISTRY_USER" --password-stdin
-  script:
-    - export IMAGE_REPOSITORY="registry.quocanh.tech/$CI_PROJECT_PATH/k3s"
-    - export IMAGE_TAG="$IMAGE_REPOSITORY:$CI_COMMIT_SHA"
-    - docker buildx create --use
-    - docker buildx build --platform linux/amd64 --file Dockerfile.k3s --tag "$IMAGE_TAG" --metadata-file image-metadata.json --push .
-    - export IMAGE_DIGEST="$(sed -n 's/.*"containerimage.digest"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' image-metadata.json)"
-    - test -n "$IMAGE_DIGEST"
-    - printf 'K3S_IMAGE=%s@%s\n' "$IMAGE_REPOSITORY" "$IMAGE_DIGEST" > k3s-image.env
-  artifacts:
-    reports:
-      dotenv: k3s-image.env
-    paths:
-      - image-metadata.json
-      - k3s-image.env
-    expire_in: 30 days
-
-trivy-k3s-image:
-  stage: image-scan
-  image:
-    name: ghcr.io/aquasecurity/trivy:0.69.3@sha256:bcc376de8d77cfe086a917230e818dc9f8528e3c852f7b1aff648949b6258d1c
-    entrypoint: [""]
-  needs:
-    - job: build-k3s-image
-      artifacts: true
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-  script:
-    - trivy image --username "$CI_REGISTRY_USER" --password "$CI_REGISTRY_PASSWORD" --severity HIGH,CRITICAL --ignore-unfixed --skip-version-check --format json --output trivy-k3s-image.json --exit-code 1 "$K3S_IMAGE"
-  artifacts:
-    paths:
-      - trivy-k3s-image.json
-    expire_in: 30 days
-    when: always
-
-deploy-k3s:
-  stage: deploy
-  tags:
-    - ubuntu-latest-shell
-  resource_group: production-k3s
-  needs:
-    - job: build-k3s-image
-      artifacts: true
-    - job: trivy-k3s-image
-  rules:
-    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: manual
-  before_script:
-    - set -e
-    - test -n "$K3S_CONTEXT"
-    - test -n "$K3S_IMAGE"
-  script:
-    - export K3S_CONFIRM_CLUSTER="$K3S_CONTEXT"
-    - export K3S_FIREBASE_SERVICE_ACCOUNT_FILE="$FIREBASE_SERVICE_ACCOUNT_FILE"
-    - bash scripts/k3s/deploy.sh
-  environment:
-    name: production-k3s
-    url: https://hungsanity.com/tennis
-
-rollback-k3s-image:
-  stage: deploy
-  tags:
-    - ubuntu-latest-shell
-  resource_group: production-k3s
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: manual
-      allow_failure: true
-  script:
-    - export K3S_CONFIRM_CLUSTER="$K3S_CONTEXT"
-    - bash scripts/k3s/rollback-image.sh
-  environment:
-    name: production-k3s
 
 # =========================
 # 🚀 DEPLOY TO SERVER (giữ nguyên)

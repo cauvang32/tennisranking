@@ -32,7 +32,7 @@ spec:
         - name: migrate
           image: __IMAGE__
           imagePullPolicy: IfNotPresent
-          command: ["node", "scripts/migrate-k3s.js"]
+          command: ["node", "build/scripts/migrate-k3s.js"]
           envFrom:
             - configMapRef:
                 name: tennis-config

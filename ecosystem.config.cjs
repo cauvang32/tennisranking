@@ -9,7 +9,8 @@ module.exports = {
   apps: [
     {
       name: 'tennis',
-      script: 'server.js',
+      cwd: __dirname,
+      script: 'build/server.js',
       exec_mode: 'cluster_mode',
       instances: 2,
       max_memory_restart: '200M',

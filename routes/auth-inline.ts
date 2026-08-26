@@ -1,0 +1,263 @@
+/**
+ * Inline auth routes (login / logout / refresh / status).
+ * Extracted from server.ts for modularity and testability.
+ * Follows the same factory pattern as other route modules.
+ */
+import { Router } from 'express'
+import { body } from 'express-validator'
+import bcrypt from 'bcrypt'
+import crypto from 'crypto'
+import config from '../config/env.js'
+import { asyncHandler } from '../utils/async-handler.js'
+import { verifyToken } from '../lib/jwt-encryption.js'
+
+export const createInlineAuthRouter = ({
+  db,
+  checkAuth,
+  hashedAdminPassword,
+  hashedEditorPassword,
+  generateToken,
+  generateRefreshToken,
+  readToken,
+  withCookieDefaults,
+  clearCookieAllPaths,
+  deriveCSRFSecretFromUser,
+  createReusableToken,
+  verifyReusableToken,
+  refreshLimiter,
+  loginLimiter,
+  handleValidationErrors,
+  invalidateTokenVersionCache
+}) => {
+  const router = Router()
+  const hashRefreshToken = token => crypto.createHash('sha256').update(token).digest('hex')
+  const refreshExpiry = token => new Date((verifyToken(token)?.exp || 0) * 1000)
+
+  // ── Login ──────────────────────────────────────────────────────────────
+  // R1: Double-submit CSRF cookie for login.
+  // The login endpoint skips global CSRF middleware (can't require a token
+  // before issuing one). We use a double-submit cookie pattern instead:
+  //  1. A GET /api/auth/login sets a short-lived loginCsrf cookie.
+  //  2. The POST must echo that value in the body as _loginCsrf.
+  //  3. After login the cookie is cleared.
+  // SameSite=Strict on the auth cookies is the primary CSRF defense;
+  // this is a defense-in-depth layer.
+
+  // GET: issue a one-time login CSRF cookie (also serves as a login probe)
+  router.get('/api/auth/login', (req, res) => {
+    const loginToken = crypto.randomUUID()
+    res.cookie('loginCsrf', loginToken, withCookieDefaults({
+      maxAge: 5 * 60 * 1000  // 5 minutes
+    }))
+    res.json({ loginCsrf: loginToken })
+  })
+
+  router.post('/api/auth/login',
+    loginLimiter,
+    [
+      body('username').trim().isLength({ min: 1, max: 50 }),
+      body('password').trim().isLength({ min: 1, max: 100 })
+    ],
+    handleValidationErrors,
+    asyncHandler(async (req, res) => {
+      try {
+        const { username, password } = req.body
+
+        // R1: Validate either the login bootstrap cookie or the anonymous CSRF token.
+        // The token fallback covers browsers/proxies that do not persist the cookie as expected.
+        const loginCsrfCookie = req.cookies?.loginCsrf
+        const loginCsrfBody = req.body._loginCsrf
+        const anonymousCsrfToken = req.get('X-CSRF-Token') || req.body._csrf
+        const anonymousCsrfSecret = deriveCSRFSecretFromUser({ id: 'anonymous' })
+        const hasValidAnonymousCsrf = anonymousCsrfToken && verifyReusableToken(anonymousCsrfSecret, anonymousCsrfToken)
+
+        if ((!loginCsrfCookie || !loginCsrfBody || loginCsrfBody !== loginCsrfCookie) && !hasValidAnonymousCsrf) {
+          return res.status(403).json({ error: 'Invalid login CSRF token' })
+        }
+        // Clear the one-time cookie after successful validation
+        res.clearCookie('loginCsrf')
+
+        let user = null, isDbUser = false, didBcryptCompare = false
+
+        // Check database users first
+        try {
+          const dbUser = await db.getUserByUsername(username)
+          if (dbUser && dbUser.is_active) {
+            didBcryptCompare = true
+            if (await bcrypt.compare(password, dbUser.password_hash)) {
+              user = {
+                id: dbUser.id, username: dbUser.username, email: dbUser.email,
+                role: dbUser.role, displayName: dbUser.display_name,
+                tokenVersion: dbUser.token_version || 0
+              }
+              isDbUser = true
+              await db.updateUserLastLogin(dbUser.id)
+            }
+          }
+        } catch { /* continue to env-based check */ }
+
+        // Fallback to env-based admin/editor
+        // H3: Skip if the respective env account is disabled via DISABLE_ENV_ADMIN/DISABLE_ENV_EDITOR
+        if (!user) {
+          if (!config.disableEnvAdmin && username === config.admin.username) {
+            didBcryptCompare = true
+            if (await bcrypt.compare(password, hashedAdminPassword)) {
+              user = {
+                username: config.admin.username, email: config.admin.email,
+                role: 'admin', displayName: 'System Admin'
+              }
+            }
+          } else if (!config.disableEnvEditor && username === config.editor.username) {
+            didBcryptCompare = true
+            if (await bcrypt.compare(password, hashedEditorPassword)) {
+              user = {
+                username: config.editor.username, email: config.editor.email,
+                role: 'editor', displayName: 'System Editor'
+              }
+            }
+          }
+        }
+
+        // CWE-208: Timing normalization — always perform at least one bcrypt
+        // compare to prevent username enumeration via response time analysis.
+        // Without this, non-existent usernames return in ~8ms while valid ones
+        // take ~850ms due to bcrypt cost, revealing which usernames exist.
+        if (!didBcryptCompare) {
+          await bcrypt.compare(password, hashedAdminPassword)
+        }
+
+        if (!user) return res.status(401).json({ error: 'Invalid credentials' })
+
+        const token = generateToken(user)
+        const refreshToken = generateRefreshToken(user)
+        await db.createRefreshSession({
+          tokenHash: hashRefreshToken(refreshToken),
+          userId: user.id || null,
+          username: user.username,
+          expiresAt: refreshExpiry(refreshToken)
+        })
+
+        res.cookie('authToken', token, withCookieDefaults({ httpOnly: true, maxAge: 15 * 60 * 1000 }))
+        res.cookie('refreshToken', refreshToken, withCookieDefaults({ httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 }))
+
+        const csrfToken = createReusableToken(deriveCSRFSecretFromUser(user))
+
+        const response: Record<string, any> = {
+          success: true, message: 'Login successful', csrfToken,
+          user: {
+            id: user.id, username: user.username, email: user.email,
+            role: user.role, displayName: user.displayName, isSystemUser: !isDbUser
+          }
+        }
+        response.authMethod = 'httponly_cookie'
+
+        res.json(response)
+      } catch (error) {
+        console.error('Login error:', error)
+        res.status(500).json({ error: 'Login failed' })
+      }
+    })
+  )
+
+  // ── Logout ─────────────────────────────────────────────────────────────
+  router.post('/api/auth/logout', checkAuth, asyncHandler(async (req, res) => {
+    try {
+      if (res.headersSent) return
+      if (req.isAuthenticated) {
+        const token = req.get('X-CSRF-Token') || req.body._csrf
+        if (!token || !verifyReusableToken(req.csrfSecret, token)) {
+          return res.status(403).json({ error: 'Invalid CSRF token', csrfRequired: true })
+        }
+        // Increment token_version for DB users to revoke all existing tokens
+        if (req.user?.id && typeof db.incrementTokenVersion === 'function') {
+          try { await db.incrementTokenVersion(req.user.id) } catch { /* best-effort */ }
+          // S5: Invalidate token version cache so next auth check sees the new version
+          if (invalidateTokenVersionCache) invalidateTokenVersionCache(req.user.id)
+        }
+      }
+      const refreshToken = req.cookies?.refreshToken
+      if (refreshToken) {
+        await db.revokeRefreshSession(hashRefreshToken(readToken(refreshToken) || refreshToken)).catch(() => {})
+      }
+      // Nuclear option: force browser to destroy all cookies for this site
+      res.setHeader('Clear-Site-Data', '"cookies"')
+      clearCookieAllPaths(res, 'authToken')
+      clearCookieAllPaths(res, 'refreshToken')
+      return res.json({ success: true, message: 'Logged out successfully' })
+    } catch (error) {
+      console.error('Logout error:', error)
+      if (!res.headersSent) return res.status(500).json({ success: false, error: 'Logout failed' })
+    }
+  }))
+
+  // ── Auth status ────────────────────────────────────────────────────────
+  router.get('/api/auth/status', checkAuth, (req, res) => {
+    if (req.isAuthenticated) {
+      res.json({ authenticated: true, user: req.user, csrfToken: createReusableToken(req.csrfSecret) })
+    } else {
+      res.json({ authenticated: false })
+    }
+  })
+
+  // ── Refresh token ──────────────────────────────────────────────────────
+  router.post('/api/auth/refresh', refreshLimiter, asyncHandler(async (req, res) => {
+    try {
+      const enc = req.cookies?.refreshToken
+      if (!enc) return res.status(401).json({ error: 'No refresh token provided' })
+
+      let decoded
+      let rawToken
+      try {
+        rawToken = readToken(enc) || enc
+        decoded = verifyToken(rawToken)
+        if (!decoded) return res.status(401).json({ error: 'Invalid refresh token' })
+        if (decoded.type !== 'refresh') return res.status(401).json({ error: 'Invalid token type' })
+      } catch { return res.status(401).json({ error: 'Invalid refresh token' }) }
+
+      // Server-side token revocation check for database users
+      if (decoded.id && db && typeof db.getTokenVersion === 'function') {
+        const currentVersion = await db.getTokenVersion(decoded.id)
+        if (currentVersion === null) {
+          clearCookieAllPaths(res, 'authToken')
+          clearCookieAllPaths(res, 'refreshToken')
+          return res.status(401).json({ error: 'User no longer exists' })
+        }
+        if (typeof decoded.tokenVersion === 'number' && decoded.tokenVersion !== currentVersion) {
+          clearCookieAllPaths(res, 'authToken')
+          clearCookieAllPaths(res, 'refreshToken')
+          return res.status(401).json({ error: 'Token has been revoked' })
+        }
+      }
+
+      const user = {
+        id: decoded.id, username: decoded.username,
+        role: decoded.role, tokenVersion: decoded.tokenVersion
+      }
+      const nextRefreshToken = generateRefreshToken(user)
+      const rotated = await db.rotateRefreshSession({
+        oldTokenHash: hashRefreshToken(rawToken),
+        newTokenHash: hashRefreshToken(nextRefreshToken),
+        userId: user.id || null,
+        username: user.username,
+        expiresAt: refreshExpiry(nextRefreshToken)
+      })
+      if (!rotated) {
+        clearCookieAllPaths(res, 'authToken')
+        clearCookieAllPaths(res, 'refreshToken')
+        return res.status(401).json({ error: 'Refresh token was already used or revoked' })
+      }
+      res.cookie('authToken', generateToken(user), withCookieDefaults({ httpOnly: true, maxAge: 15 * 60 * 1000 }))
+      res.cookie('refreshToken', nextRefreshToken, withCookieDefaults({ httpOnly: true, maxAge: 7 * 24 * 60 * 60 * 1000 }))
+      res.json({
+        success: true,
+        csrfToken: createReusableToken(deriveCSRFSecretFromUser(user)),
+        user
+      })
+    } catch (error) {
+      console.error('Token refresh error:', error)
+      res.status(500).json({ error: 'Token refresh failed' })
+    }
+  }))
+
+  return router
+}

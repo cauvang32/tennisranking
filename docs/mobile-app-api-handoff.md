@@ -11,8 +11,8 @@
 
 This application is a tennis ranking and match-tracking system built as:
 
-- **Frontend:** Vanilla JavaScript SPA built with Vite
-- **Backend:** Node.js + Express
+- **Frontend:** React 19 + TypeScript SPA built with Vite
+- **Backend:** TypeScript + Node.js + Express
 - **Database:** PostgreSQL
 - **Cache / messaging:** Redis + PostgreSQL NOTIFY/LISTEN + SSE
 - **Authentication:** JWT access/refresh tokens, stored in encrypted cookies, with optional bearer-token support for API clients
@@ -803,17 +803,6 @@ Auth: admin only
 CSRF: required
 Large JSON body allowed
 
-### `GET /api/backup-data`
-Simple backup excluding users.
-
-Auth: admin only
-
-### `POST /api/restore-data`
-Simple restore.
-
-Auth: admin only
-CSRF: required
-
 ### `DELETE /api/clear-all-data`
 Deletes all tennis data.
 
@@ -1289,16 +1278,16 @@ That will give the team the cleanest path to a native app that behaves like the 
 
 This document was generated from live code inspection of the project files in `/home/vps/tennisranking`, including:
 
-- `server.js`
-- `middleware/auth.js`
-- `middleware/csrf.js`
-- `config/env.js`
-- `config/cookie.js`
-- `lib/jwt-encryption.js`
-- `lib/redis-cache.js`
-- `database-postgresql.js`
-- `routes/*.js`
-- `src/main.js`
+- `server.ts`
+- `middleware/auth.ts`
+- `middleware/csrf.ts`
+- `config/env.ts`
+- `config/cookie.ts`
+- `lib/jwt-encryption.ts`
+- `lib/redis-cache.ts`
+- `database-postgresql.ts`
+- `routes/*.ts`
+- `src/api/client.ts` and `src/app/app-context.tsx`
 - migration scripts
 
 If you want, I can also turn this into:

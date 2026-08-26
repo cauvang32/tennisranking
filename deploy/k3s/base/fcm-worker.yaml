@@ -46,7 +46,7 @@ spec:
         - name: worker
           image: registry.example.invalid/tennis-ranking:replace-me
           imagePullPolicy: IfNotPresent
-          command: ["node", "worker.js"]
+          command: ["node", "build/worker.js"]
           ports:
             - name: health
               containerPort: 3002

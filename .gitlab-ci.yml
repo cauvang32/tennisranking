@@ -97,6 +97,14 @@ eslint:
     expire_in: 30 days
     when: always
 
+typecheck:
+  stage: test
+  needs: [setup-dependencies]
+  script:
+    - echo "🔷 Running TypeScript project checks..."
+    - npm ci --prefer-offline --cache "$NPM_CACHE_DIR" --include=dev
+    - npm run typecheck
+
 # v0.69.3 is an immutable, known-safe Trivy release. Keep the multi-arch
 # manifest digest pinned; do not replace it with a mutable latest tag.
 trivy-fs:
@@ -122,6 +130,11 @@ trivy-fs:
 tests:
   stage: test
   needs: [setup-dependencies]
+  variables:
+    # Isolate the suite from any ambient NODE_ENV; keeps React on its
+    # development build so @testing-library/react's act() works (see
+    # vitest.config.ts).
+    NODE_ENV: test
   script:
     - echo "🧪 Running tests..."
     - npm ci --prefer-offline --cache "$NPM_CACHE_DIR" --include=dev
@@ -191,6 +204,7 @@ build:
   artifacts:
     paths:
       - dist/
+      - build/
     expire_in: 1 day
     when: on_success
 
@@ -222,9 +236,11 @@ deploy:
     - git remote set-url origin "$GIT_ORIGIN" || git remote add origin "$GIT_ORIGIN"
     - |
       previous_sha="$(git rev-parse HEAD 2>/dev/null || true)"
-      if [ -n "$previous_sha" ] && [ -d dist ]; then
+      if [ -n "$previous_sha" ] && [ -d dist ] && [ -d build ]; then
         install -d -m 750 "$PERSISTENT_DATA_PATH/releases/$previous_sha/dist"
+        install -d -m 750 "$PERSISTENT_DATA_PATH/releases/$previous_sha/build"
         cp -a dist/. "$PERSISTENT_DATA_PATH/releases/$previous_sha/dist/"
+        cp -a build/. "$PERSISTENT_DATA_PATH/releases/$previous_sha/build/"
       fi
     - git fetch origin
     - git reset --hard origin/$CI_DEFAULT_BRANCH
@@ -255,8 +271,10 @@ deploy:
     - pm2 stop tennis || true
     - docker compose up -d postgres redis redis-queue
 
-    # ── Install runtime and migrate before starting new processes ──
+    # ── Install tested runtime artifacts and migrate before starting ──
     - npm ci --omit=dev
+    - install -d -m 755 "$DEPLOY_PATH/build"
+    - cp -a "$CI_PROJECT_DIR/build/." "$DEPLOY_PATH/build/"
     - npm run migrate
 
     # ── Rebuild & restart Docker FCM worker ───────────────────────
@@ -267,7 +285,9 @@ deploy:
     - install -d -m 755 "$DEPLOY_PATH/dist"
     - cp -a "$CI_PROJECT_DIR/dist/." "$DEPLOY_PATH/dist/"
     - install -d -m 750 "$PERSISTENT_DATA_PATH/releases/$CI_COMMIT_SHA/dist"
+    - install -d -m 750 "$PERSISTENT_DATA_PATH/releases/$CI_COMMIT_SHA/build"
     - cp -a "$CI_PROJECT_DIR/dist/." "$PERSISTENT_DATA_PATH/releases/$CI_COMMIT_SHA/dist/"
+    - cp -a "$CI_PROJECT_DIR/build/." "$PERSISTENT_DATA_PATH/releases/$CI_COMMIT_SHA/build/"
     - export UPLOAD_ROOT="$PERSISTENT_DATA_PATH/uploads"
     - export QUEUE_REDIS_URL="redis://127.0.0.1:6381/0"
     - export RATE_LIMIT_REDIS_URL="redis://127.0.0.1:6381/1"
@@ -320,6 +340,9 @@ rollback:
 
     # ── Rebuild & restart Docker FCM worker ───────────────────────
     - npm ci --omit=dev
+    - test -f "$PERSISTENT_DATA_PATH/releases/$ROLLBACK_SHA/build/server.js"
+    - install -d -m 755 "$DEPLOY_PATH/build"
+    - cp -a "$PERSISTENT_DATA_PATH/releases/$ROLLBACK_SHA/build/." "$DEPLOY_PATH/build/"
     - npm run migrate
     - export UPLOAD_ROOT="$PERSISTENT_DATA_PATH/uploads"
     - export QUEUE_REDIS_URL="redis://127.0.0.1:6381/0"

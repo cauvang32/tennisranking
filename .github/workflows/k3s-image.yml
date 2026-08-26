@@ -23,11 +23,17 @@ jobs:
           node-version: 22
           cache: npm
 
-      - name: Test and lint
+      - name: Validate application
+        env:
+          # Keep React on its dev build in the test step (see vitest.config.ts)
+          NODE_ENV: test
         run: |
           npm ci
-          npm test
           npm run lint
+          npm run typecheck
+          NODE_ENV=test npm test
+          npm run build:client
+          npm run build:server
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3

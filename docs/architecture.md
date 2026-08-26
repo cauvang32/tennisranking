@@ -1,181 +1,117 @@
 # Tennis Ranking System — Architecture
 
-## System Overview
-
-```mermaid
-graph TB
-    subgraph "Client"
-        Browser["Browser (Vite SPA)"]
-    end
-
-    subgraph "Server (Node.js / Express)"
-        direction TB
-        MW["Middleware Stack<br/>Helmet · CORS · CSRF · Compression · Auth"]
-        Routes["API Routes<br/>players · seasons · matches · rankings<br/>export · auth · admin · backup · system"]
-        SSE["SSE Push<br/>(real-time updates)"]
-    end
-
-    subgraph "Data Layer"
-        PG["PostgreSQL<br/>Players · Seasons · Matches"]
-        Redis["Redis<br/>Cache · Rate Limiting"]
-    end
-
-    Browser -->|"HTTP/JSON"| MW
-    MW --> Routes
-    Routes --> PG
-    Routes --> Redis
-    SSE -->|"EventSource"| Browser
-    PG -->|"LISTEN/NOTIFY"| Redis
-```
-
-## Directory Structure
-
-```
-ranking/
-├── config/                  # Environment & cookie config
-│   ├── env.js               # Validates env vars, exports typed config
-│   └── cookie.js            # Cookie defaults, path-clearing helpers
-├── lib/                     # Core libraries
-│   ├── jwt-encryption.js    # JWT signing and verification
-│   ├── redis-cache.js       # Redis caching with stampede protection
-│   └── security-helpers.js  # CSRF derivation, timing-safe compare
-├── middleware/              # Express middleware
-│   ├── auth.js              # authenticateToken, checkAuth, requireRole
-│   ├── compression.js       # Brotli + gzip compression
-│   ├── csrf.js              # Global CSRF protection
-│   └── rate-limiter.js      # Dynamic rate limiting (Redis-backed)
-├── routes/                  # API route modules
-│   ├── admin.js             # Admin analytics
-│   ├── backup.js            # Backup/restore
-│   ├── export.js            # Excel export
-│   ├── health.js            # Health checks (public + authenticated)
-│   ├── matches.js           # Match CRUD
-│   ├── players.js           # Player CRUD
-│   ├── rankings.js          # Ranking queries
-│   ├── seasons.js           # Season management
-│   ├── system.js            # SSE, CSRF tokens, init, debug
-│   └── users.js             # User account management
-├── migrations/              # SQL migrations
-├── tests/                   # Test suite (Vitest)
-│   └── unit/                # Unit tests
-├── src/                     # Frontend (Vite)
-│   ├── main.js              # SPA entry point
-│   └── style.css            # Design system
-├── server.js                # Express app bootstrap (~340 lines)
-├── database-postgresql.js   # Database schema + queries
-├── ecosystem.config.cjs     # PM2 cluster configuration
-├── Dockerfile               # Multi-stage Docker build
-├── docker-compose.yml       # Full-stack Docker deployment
-└── docker-compose.override.yml  # Dev overrides (expose PG/Redis ports)
-```
-
-## Deployment Modes
-
-### 1. Docker (Recommended for Production)
-
-```bash
-# Full containerized stack (app + PostgreSQL + Redis)
-docker compose up -d
-
-# View logs
-docker compose logs -f app
-```
-
-The app container runs PM2 inside Docker using `dumb-init` for proper PID 1 signal handling.
-
-### 2. PM2 Bare Metal
-
-```bash
-# Prerequisites: PostgreSQL and Redis running on host
-npm run build
-pm2 start ecosystem.config.cjs --env production
-pm2 save && pm2 startup
-```
-
-### 3. Direct Node.js
-
-```bash
-# Prerequisites: PostgreSQL and Redis running on host
-npm run build
-NODE_ENV=production node server.js
-```
-
-### 4. Development (Hybrid)
-
-```bash
-# Start PostgreSQL + Redis in Docker, app on host
-docker compose up -d postgres redis
-npm run dev-full    # starts Vite + Express concurrently
-```
-
-## Authentication Flow
-
-```mermaid
-sequenceDiagram
-    participant C as Browser
-    participant S as Server
-    participant DB as PostgreSQL
-
-    C->>S: POST /api/auth/login (username, password)
-    S->>DB: getUserByUsername()
-    DB-->>S: user record (with bcrypt hash)
-    S->>S: bcrypt.compare(password, hash)
-    S->>S: Generate JWT (HS256)
-    S->>S: Sign access and refresh JWTs
-    S-->>C: Set httpOnly cookies (authToken, refreshToken)
-    Note over C,S: All subsequent requests include cookies automatically
-
-    C->>S: GET /api/rankings (with cookie)
-    S->>S: Decrypt cookie → verify JWT → req.user
-    S-->>C: Rankings data
-```
-
-## Cache Strategy
+## System overview
 
 ```mermaid
 graph LR
-    subgraph "Cache Flow"
-        A[API Request] --> B{Redis Cache?}
-        B -->|HIT| C[Return Cached]
-        B -->|MISS| D[Acquire Lock]
-        D -->|Got Lock| E[Query PostgreSQL]
-        E --> F[Store in Redis]
-        F --> C
-        D -->|Lock Held| G[Wait & Retry]
-        G -->|Eventually HIT| C
-        G -->|Exhausted| E
-    end
-
-    subgraph "Invalidation"
-        H[Data Mutation] --> I[PostgreSQL Trigger]
-        I -->|NOTIFY| J[Redis Cache]
-        J -->|Delete Keys| K[SSE Push]
-        K -->|version change| L[All Browsers]
-    end
+    Browser[React 19 + Vite SPA] -->|HTTP/JSON, cookies, CSRF| API[Express 5 API]
+    API --> PG[(PostgreSQL 15)]
+    API --> Redis[(Redis 7 cache and limits)]
+    PG -->|LISTEN/NOTIFY| Cache[Cache invalidation]
+    Cache -->|SSE version event| Browser
+    API --> Queue[BullMQ]
+    Queue --> Worker[FCM worker]
+    Worker --> Firebase[Firebase Cloud Messaging]
 ```
 
-Key design decisions:
-- **Startup cache**: Rankings, players, seasons are pre-loaded at boot (permanent, no TTL)
-- **Stampede protection**: Distributed locks prevent multiple workers from rebuilding the same cache key
-- **Auto-invalidation**: PostgreSQL triggers fire `NOTIFY cache_invalidation` on every INSERT/UPDATE/DELETE
-- **Real-time sync**: SSE pushes version changes to all connected clients immediately
+All application source is TypeScript. Vite emits browser assets to `dist/`; TypeScript emits the Express server, database adapter, migration runners, and FCM worker to `build/`. Production executes only compiled Node.js files.
 
-## Rate Limiting
+## Source layout
 
-- **Redis-backed**: Works across PM2 cluster workers
-- **Dynamic scaling**: Limits reduce automatically when CPU > 80% or RAM > 85%
-- **User-aware**: Authenticated users get 2–4x higher limits than anonymous users
-- **Graceful degradation**: If Redis is down, rate limiting is bypassed (passOnStoreError)
+```text
+ranking/
+├── config/                  # Validated environment and cookie configuration
+├── lib/                     # Cache, JWT, uploads, queue, AI parser, security helpers
+├── middleware/              # Auth, CSRF, compression, and rate limiting
+├── routes/                  # Injected Express router factories
+├── migrations/              # Ordered, idempotent database migrations
+├── scripts/                 # TypeScript migration runners and deployment helpers
+├── shared/domain.ts         # Browser/server domain and API contracts
+├── src/
+│   ├── api/client.ts        # Typed fetch client, refresh rotation, CSRF, uploads
+│   ├── app/                 # React shell and application context
+│   ├── components/          # Shared React UI
+│   ├── features/            # Domain feature components
+│   ├── main.tsx             # Browser entry point
+│   ├── react.css            # React layout additions
+│   └── style.css            # Global design system
+├── tests/unit/              # Backend unit tests
+├── tests/frontend/          # jsdom/Testing Library React tests
+├── types/express.d.ts       # Express request/response augmentation
+├── database-postgresql.ts   # Production database adapter
+├── server.ts                # HTTP application composition root
+├── worker.ts                # BullMQ FCM worker
+├── dist/                    # Generated browser artifact
+└── build/                   # Generated Node.js artifact
+```
 
-## Security Layers
+Backend relative imports use `.js` extensions intentionally. TypeScript's NodeNext mode resolves those imports to `.ts` during development and preserves valid `.js` specifiers in compiled ESM.
+
+## Frontend
+
+`AppProvider` loads `/api/init`, stores the authenticated user and shared ranking data, and derives `canEdit`/`isAdmin` capabilities. Feature components own their local forms and detail queries. All HTTP access goes through `src/api/client.ts`, which:
+
+- sends cookies on every request;
+- obtains and sends `X-CSRF-Token` for mutations;
+- performs one access-token refresh and retry on an expired session;
+- normalizes root and `/tennis/` deployments from Vite's base path;
+- provides typed JSON, upload, and download helpers.
+
+The client listens to `/api/events`. A changed server data version reloads `/api/init`; if SSE disconnects, a 15-second `/api/data-version` poll takes over. This keeps auth state and domain data synchronized without duplicating the former browser cache layer.
+
+## API composition
+
+`server.ts` initializes configuration, PostgreSQL, Redis, security middleware, cache synchronization, static files, and router factories. Domain logic remains in injected route/service modules:
+
+```typescript
+export const createPlayerRouter = ({ db, checkAuth, rankingsCache }) => {
+  const router = Router()
+  router.get('/', checkAuth, asyncHandler(async (_req, res) => {
+    const { data } = await rankingsCache.getOrSet('players', () => db.getPlayers())
+    res.json(sanitizeResponse(data))
+  }))
+  return router
+}
+```
+
+All SQL is parameterized through `database-postgresql.ts`. Mutations invalidate the relevant Redis keys, while PostgreSQL triggers provide cross-process `NOTIFY` invalidation.
+
+## Security boundaries
 
 | Layer | Implementation |
-|-------|---------------|
-| Transport | HSTS (2 years), upgrade-insecure-requests |
-| Headers | Helmet (CSP, X-Frame-Options, Permissions-Policy) |
-| Authentication | Signed JWTs in Secure HttpOnly cookies with rotating refresh sessions |
-| CSRF | HMAC-derived secrets + double-submit token pattern |
-| Passwords | bcrypt with 14 rounds |
-| Rate Limiting | Redis-backed, dynamic, user-aware |
-| Input | express-validator on all endpoints |
-| XSS | CSP, X-XSS-Protection, sanitizeResponse() |
+|---|---|
+| Authentication | Signed access JWT plus rotating, one-time refresh sessions in Secure HttpOnly cookies |
+| Authorization | `admin`, `editor`, and `viewer` role checks in Express middleware and matching UI capability gates |
+| CSRF | HMAC-derived per-user secret and `X-CSRF-Token` on every non-safe request |
+| Input | `express-validator`, sanitized responses, parameterized PostgreSQL queries |
+| Headers | Helmet CSP, HSTS, Permissions-Policy, frame denial |
+| Abuse controls | Redis-backed, user-aware, dynamically scaled rate limits |
+| Revocation | Server-side token versions and refresh-session reuse rejection |
+
+The React migration does not move any security decision into the browser. UI role checks control visibility only; Express remains authoritative.
+
+## Build and execution
+
+```bash
+npm run dev-full       # Vite HMR + server.ts via tsx watch
+npm run typecheck      # All TypeScript projects
+npm test               # Backend and frontend Vitest suites
+npm run build          # dist/ + build/
+npm run server         # node build/server.js
+```
+
+The TypeScript projects are split by runtime:
+
+- `tsconfig.app.json`: strict browser and shared-contract checks with React JSX.
+- `tsconfig.server.json`: NodeNext compilation to `build/`; compatibility flags allow incremental tightening of the legacy database/router internals.
+- `tsconfig.tools.json`: Vite and Vitest configuration/tests.
+
+## Deployment
+
+- PM2 executes `build/server.js` and serves the immutable `dist/` assets.
+- Compose builds a minimal, non-root worker image and executes `build/worker.js`.
+- The K3s multi-stage image builds both artifacts and is shared by the API, worker, and migration Job.
+- GitHub Actions validates lint, types, tests, and both builds before building the K3s image.
+- GitLab CI stores `dist/` and `build/` together, deploys both, and snapshots both for rollback.
+
+See [TypeScript and React migration](typescript-react-migration.md) for the migration procedure and operational checklist.

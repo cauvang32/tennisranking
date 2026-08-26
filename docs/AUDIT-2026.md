@@ -21,7 +21,7 @@ The July hardening pass addressed the identified high-priority findings:
 
 ## Operational Requirements
 
-Set `UPLOAD_ROOT`, exact HTTPS `ALLOWED_ORIGINS`, `TRUST_PROXY`/`TRUST_PROXY_HOPS`, and separate Redis URLs according to `.env.example`. Run `npm run migrate` before starting new application processes. Configure the Redis host with `vm.overcommit_memory=1`, monitor queue AOF disk use, and verify `/ready` before routing traffic.
+Set `UPLOAD_ROOT`, exact HTTPS `ALLOWED_ORIGINS`, `TRUST_PROXY`/`TRUST_PROXY_HOPS`, and separate Redis URLs according to `.env.example`. Build the server artifact and run `npm run migrate` before starting new application processes. Configure the Redis host with `vm.overcommit_memory=1`, monitor queue AOF disk use, and verify `/ready` before routing traffic.
 
 ## Residual Risk
 

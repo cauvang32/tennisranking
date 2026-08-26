@@ -1,0 +1,31 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rootDir": ".",
+    "outDir": "build",
+    "sourceMap": true,
+    "declaration": false,
+    "types": ["node"],
+    "noEmit": false,
+    "strict": false,
+    "noUncheckedIndexedAccess": false,
+    "useUnknownInCatchVariables": false
+  },
+  "include": [
+    "server.ts",
+    "worker.ts",
+    "access-logger.ts",
+    "database-postgresql.ts",
+    "config/**/*.ts",
+    "lib/**/*.ts",
+    "middleware/**/*.ts",
+    "routes/**/*.ts",
+    "scripts/**/*.ts",
+    "utils/**/*.ts",
+    "shared/**/*.ts",
+    "types/**/*.d.ts"
+  ],
+  "exclude": ["src", "tests", "dist", "build", "node_modules", "vite.config.ts"]
+}

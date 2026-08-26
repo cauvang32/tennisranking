@@ -1,6 +1,8 @@
 # Tennis Ranking System
 
-Full-stack web application for managing tennis doubles and singles matches, rankings, cup tournaments, and seasons. Built with Express 5, PostgreSQL 15, Redis 7, and a vanilla-JS Vite SPA.
+Full-stack web application for managing tennis doubles and singles matches, rankings, cup tournaments, and seasons. Built with TypeScript, React 19, Vite 8, Express 5, PostgreSQL 15, and Redis 7.
+
+See [the TypeScript and React migration guide](docs/typescript-react-migration.md) for the architecture changes, build/deployment flow, and rollback notes.
 
 ## Features
 
@@ -37,7 +39,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ### 2. Start database services
 
 ```bash
-docker compose up -d postgres redis
+docker compose up -d postgres redis redis-queue
 ```
 
 ### 3. Install dependencies & run
@@ -54,7 +56,7 @@ Frontend: `http://localhost:5173` | API: `http://localhost:3001`
 The FCM background worker runs in Docker alongside PostgreSQL and Redis:
 
 ```bash
-docker compose up -d       # starts postgres, redis, and tennis-worker
+docker compose up -d --build  # rebuilds/starts PostgreSQL, Redis, and tennis-worker
 ```
 
 The main app runs on the host via PM2 (see [Deployment](#deployment)).
@@ -65,7 +67,7 @@ The main app runs on the host via PM2 (see [Deployment](#deployment)).
 |------|---------|-------|
 | **PM2 cluster** | `npm run build && pm2 start ecosystem.config.cjs --env production` | 2 workers. Requires external PG + Redis. Use `./scripts/start-with-redis.sh` when Redis is in Docker. |
 | **Docker (worker)** | `docker compose up -d` | PostgreSQL + Redis + FCM worker. App runs on host via PM2. |
-| **Bare node** | `NODE_ENV=production node server.js` | Single process. |
+| **Bare node** | `npm run build && NODE_ENV=production npm run server` | Runs `build/server.js` as a single process. |
 | **Dev** | `npm run dev-full` | Vite HMR + Express via concurrently. |
 
 ### Subpath Deployment
@@ -81,55 +83,60 @@ npm run deploy:subdomain   # BASE_PATH=/
 
 ```
 ├── config/
-│   ├── env.js               # Typed config, validates required secrets at boot
-│   └── cookie.js            # Cookie helpers (clearCookieAllPaths)
+│   ├── env.ts               # Validated runtime configuration
+│   └── cookie.ts            # Cookie helpers (clearCookieAllPaths)
 ├── lib/
-│   ├── redis-cache.js       # Redis cache (24h TTL, stampede protection, LISTEN/NOTIFY)
-│   ├── jwt-encryption.js    # JWT signing/verification and legacy-token migration
-│   ├── push-sender.js       # FCM push sender (topic-based)
-│   ├── notification-queue.js # BullMQ-based FCM notification queue
-│   ├── security-helpers.js  # Timing-safe compare, CSRF derivation
-│   └── ai-parser.js         # OpenAI vision API for match screenshot parsing
+│   ├── redis-cache.ts       # Redis cache (24h TTL, stampede protection, LISTEN/NOTIFY)
+│   ├── jwt-encryption.ts    # JWT signing/verification and legacy-token migration
+│   ├── push-sender.ts       # FCM push sender (topic-based)
+│   ├── notification-queue.ts # BullMQ-based FCM notification queue
+│   ├── security-helpers.ts  # Timing-safe compare, CSRF derivation
+│   └── ai-parser.ts         # OpenAI vision API for match screenshot parsing
 ├── middleware/
-│   ├── auth.js              # JWT auth, role-based access
-│   ├── csrf.js              # Global CSRF protection (HMAC-derived)
-│   ├── compression.js       # Brotli + gzip compression
-│   └── rate-limiter.js      # Redis-backed dynamic rate limiting
+│   ├── auth.ts              # JWT auth, role-based access
+│   ├── csrf.ts              # Global CSRF protection (HMAC-derived)
+│   ├── compression.ts       # Brotli + gzip compression
+│   └── rate-limiter.ts      # Redis-backed dynamic rate limiting
 ├── routes/
-│   ├── players.js           # Player CRUD
-│   ├── seasons.js           # Season CRUD, end/reactivate, final results
-│   ├── matches.js           # Match CRUD, bulk-create, image parsing, play dates
-│   ├── rankings.js          # Lifetime, season, date rankings
-│   ├── cups.js              # Cup tournament CRUD, brackets, scores, participants
-│   ├── images.js            # Site image upload/preview/metadata, season conclusion images
-│   ├── export.js            # Excel export (rankings, matches, seasons)
-│   ├── admin.js             # Admin: access stats, logs, IP analysis, security dashboard, FCM
-│   ├── backup.js            # JSON backup/restore, clear all data
-│   ├── health.js            # Health checks, performance, cache stats
-│   ├── system.js            # CSRF token, data version, SSE events, config debug
-│   ├── users.js             # User CRUD, password change
-│   ├── auth-inline.js       # Login, logout, refresh, status inline routes
-│   ├── devices.js           # FCM token registration
+│   ├── players.ts           # Player CRUD
+│   ├── seasons.ts           # Season CRUD, end/reactivate, final results
+│   ├── matches.ts           # Match CRUD, bulk-create, image parsing, play dates
+│   ├── rankings.ts          # Lifetime, season, date rankings
+│   ├── cups.ts              # Cup tournament CRUD, brackets, scores, participants
+│   ├── images.ts            # Site image upload/preview/metadata, season conclusion images
+│   ├── export.ts            # Excel export (rankings, matches, seasons)
+│   ├── admin.ts             # Admin: access stats, logs, IP analysis, security dashboard, FCM
+│   ├── backup.ts            # JSON backup/restore, clear all data
+│   ├── health.ts            # Health checks, performance, cache stats
+│   ├── system.ts            # CSRF token, data version, SSE events, config debug
+│   ├── users.ts             # User CRUD, password change
+│   ├── auth-inline.ts       # Login, logout, refresh, status inline routes
+│   ├── devices.ts           # FCM token registration
 │   └── ...
 ├── utils/
-│   ├── async-handler.js     # Async route wrapper, error codes, timeout middleware
-│   ├── excel-helper.js      # Excel export (write-excel-file)
-│   └── stream-helper.js     # JSON/Excel streaming via pg-cursor
+│   ├── async-handler.ts     # Async route wrapper, error codes, timeout middleware
+│   ├── excel-helper.ts      # Excel export (write-excel-file)
+│   └── stream-helper.ts     # JSON/Excel streaming via pg-cursor
 ├── migrations/              # Database migrations (idempotent, apply in order)
-├── src/                     # Frontend (Vite SPA, modular vanilla JS)
-│   ├── main.js              # App bootstrap
-│   ├── style.css            # Global styles
-│   ├── modules/             # Cross-cutting modules (api-client, auth, cache, SSE, CSRF, ...)
-│   ├── features/            # Feature modules (accounts, cups, export, images, matches, ...)
-│   └── lib/                 # Shared frontend utilities
+├── shared/domain.ts         # Contracts shared by browser and server
+├── src/                     # React/Vite TypeScript SPA
+│   ├── main.tsx             # React bootstrap
+│   ├── app/                 # App shell and global context/SSE sync
+│   ├── api/                 # Typed cookie/CSRF-aware API client
+│   ├── components/          # Reusable UI components
+│   ├── features/            # Feature components (accounts, cups, images, matches, ...)
+│   ├── react.css            # React-specific layout additions
+│   └── style.css            # Existing design system
 ├── public/                  # Static assets
-├── server.js                # Express app entry (thin orchestration layer)
-├── database-postgresql.js   # PostgreSQL adapter (all queries)
-├── worker.js                # FCM background worker (BullMQ)
+├── server.ts                # Express app source (thin orchestration layer)
+├── database-postgresql.ts   # PostgreSQL adapter (all queries)
+├── worker.ts                # FCM background worker (BullMQ)
+├── build/                   # Compiled server/worker output (generated)
+├── dist/                    # Production browser assets (generated)
 ├── docker-compose.yml       # PostgreSQL + Redis + FCM worker
 ├── Dockerfile               # Node 22 Alpine (FCM worker image)
 ├── ecosystem.config.cjs     # PM2 cluster configuration (2 workers)
-├── vite.config.js           # Vite 8 config (Rolldown, subpath deployment)
+├── vite.config.ts           # Vite 8 + React config (subpath deployment)
 └── package.json
 ```
 
@@ -200,7 +207,7 @@ npm run deploy:subdomain   # BASE_PATH=/
 | `PUT` | `/api/cups/:id` | Admin | Update cup |
 | `DELETE` | `/api/cups/:id` | Admin | Delete cup |
 | `POST` | `/api/cups/:id/participants` | Admin | Add participants |
-| `PUT` | `/api/cups/:id/seeds/reorder` | Admin | Reorder seeds |
+| `PUT` | `/api/cups/:id/participants/reorder` | Admin | Reorder seeds |
 | `POST` | `/api/cups/:id/generate-bracket` | Admin | Generate knockout bracket |
 | `PUT` | `/api/cups/:id/matches/:mid` | Admin | Update match score |
 | `PUT` | `/api/cups/:id/status` | Admin | Transition cup status |
@@ -266,11 +273,11 @@ npm run deploy:subdomain   # BASE_PATH=/
 
 | Method | Endpoint | Auth | Description |
 |--------|----------|------|-------------|
-| `GET` | `/api/users` | Admin | List all users |
-| `POST` | `/api/users` | Admin | Create user |
-| `PUT` | `/api/users/:id` | Admin | Update user |
-| `PUT` | `/api/users/:id/password` | Admin | Change user password |
-| `DELETE` | `/api/users/:id` | Admin | Delete user |
+| `GET` | `/api/auth/users` | Admin | List all users |
+| `POST` | `/api/auth/users` | Admin | Create user |
+| `PUT` | `/api/auth/users/:id` | Admin | Update user |
+| `PUT` | `/api/auth/users/:id/password` | Admin | Change user password |
+| `DELETE` | `/api/auth/users/:id` | Admin | Delete user |
 
 ### Devices (FCM)
 
@@ -285,7 +292,7 @@ npm run deploy:subdomain   # BASE_PATH=/
 ```
 ┌──────────┐     ┌─────────────┐     ┌──────────┐     ┌──────────┐
 │  Browser  │◄──►│  Express    │◄──►│PostgreSQL│◄──►│  Redis   │
-│  (Vite)  │ SSE │  (server.js)│     │  (PG15)  │     │  (R7)    │
+│(React/Vite)│SSE│(build/server.js)│   │  (PG15)  │     │  (R7)    │
 └──────────┘     └──────┬──────┘     └──────────┘     └─────┬────┘
                          │                                    │
                          ▼                                    ▼
@@ -304,7 +311,7 @@ npm run deploy:subdomain   # BASE_PATH=/
 
 1. **PostgreSQL** — source of truth, with `NOTIFY` triggers on data mutations
 2. **Redis** — 24h TTL, stampede protection via distributed locks, preloads startup keys on boot. Subscribes to PG `LISTEN/NOTIFY` for invalidation
-3. **Client** — type-specific TTLs (rankings 2m, matches 1m, players 10m). Polls SSE + data version to invalidate
+3. **Client** — React context holds bootstrap/auth state. SSE version events trigger a fresh `/api/init`; a 15-second data-version poll is used only if SSE disconnects.
 
 ### Cache Invalidation Flow
 
@@ -316,9 +323,9 @@ DB mutation → PG trigger → pg_notify('cache_invalidation')
 
 ### Router Factory Pattern
 
-Every route module exports a factory; dependencies are injected, not imported. This keeps `server.js` as the single wiring point.
+Every route module exports a factory; dependencies are injected, not imported. This keeps `server.ts` as the single wiring point.
 
-```javascript
+```typescript
 export const createPlayerRouter = ({ db, checkAuth, rankingsCache }) => {
   const router = Router()
   router.get('/', checkAuth, asyncHandler(async (req, res) => {
@@ -340,10 +347,13 @@ export const createPlayerRouter = ({ db, checkAuth, rankingsCache }) => {
 
 ### Frontend Architecture
 
-Modular vanilla-JS SPA organized into:
+React TypeScript SPA organized into:
 
-- **`src/modules/`** — cross-cutting concerns: API client, app state, auth manager, cache manager, CSRF handler, SSE manager, tab manager, UI helpers
-- **`src/features/`** — domain modules: accounts, cups, export, images, matches, players, rankings, seasons
+- **`src/app/`** — application shell, authentication state, notifications, SSE synchronization, and navigation
+- **`src/api/`** — typed API client with cookies, CSRF headers, refresh rotation, uploads, and downloads
+- **`src/components/`** — reusable loading, modal, confirmation, and formatting UI
+- **`src/features/`** — domain components: accounts, cups, data, images, matches, players, rankings, seasons
+- **`shared/domain.ts`** — API/domain contracts shared across the client and server projects
 
 ## Configuration
 
@@ -361,6 +371,8 @@ See [`.env.example`](.env.example) for the full list of all variables (database,
 npm test              # Run all tests (vitest)
 npm run test:unit     # Unit tests only
 npm run test:watch    # Watch mode
+npm run typecheck     # Check client, server, shared contracts, and tests
+npm run check         # Lint + typecheck + tests + both production builds
 npm run test:cors     # Quick CORS check via curl
 ```
 
@@ -368,10 +380,12 @@ npm run test:cors     # Quick CORS check via curl
 
 ```bash
 npm install                       # Install dependencies
-docker compose up -d postgres redis  # Start DB services
+docker compose up -d postgres redis redis-queue  # Start backing services
 npm run dev-full                  # Dev: Vite + Express
-npm run build                     # Build frontend to dist/
-npm run server                    # Run Express server
+npm run build                     # Typecheck, build dist/, compile build/
+npm run build:client              # Build only React assets to dist/
+npm run build:server              # Compile only Node.js code to build/
+npm run server                    # Run compiled Express server
 npm start                         # Build + server
 npm run deploy:production         # Production build + server
 npm run health-check              # GET /health
@@ -381,7 +395,7 @@ npm run health-check              # GET /health
 
 Key tables: `players`, `seasons`, `season_players`, `matches`, `users`, `devices`, `cups`, `cup_matches`, `cup_advancements`, `site_images`, `player_lifetime_stats`, `player_season_stats`.
 
-Migrations are idempotent shell scripts in `migrations/`. Apply in numerical order. Pre-computed stats tables are auto-updated via PostgreSQL triggers on match CRUD.
+Migrations are ordered and idempotent in `migrations/`. `npm run migrate` applies numbered SQL migrations; the K3s migration Job also imports the legacy shell-script migrations. Pre-computed stats tables are auto-updated via PostgreSQL triggers on match CRUD.
 
 ## Troubleshooting
 

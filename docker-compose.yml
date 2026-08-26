@@ -4,7 +4,7 @@ services:
   tennis-worker:
     build: .
     container_name: tennis-worker
-    command: ["node", "worker.js"]
+    command: ["node", "build/worker.js"]
     restart: unless-stopped
     # Worker exposes a health endpoint on port 3002.
     # curl is installed in the image for reliable health probes.

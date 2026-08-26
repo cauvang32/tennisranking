@@ -1,0 +1,543 @@
+/* React UI contract. Shared color and typography tokens are defined in style.css. */
+.react-app {
+  min-height: 100vh;
+  color: var(--text);
+  --ui-control: 40px;
+  --ui-panel-padding: 1rem;
+  --ui-gap: 1rem;
+}
+
+.react-app svg { flex: 0 0 auto; }
+.react-app button, .react-app input, .react-app select, .react-app textarea { font: inherit; }
+.react-app button { color: inherit; }
+
+/* Shell */
+.react-app .app-header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 97%, transparent);
+  box-shadow: 0 6px 22px rgb(15 23 42 / 10%);
+  backdrop-filter: blur(16px);
+}
+
+.react-app .header-content {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  width: 100%;
+  max-width: 1520px;
+  min-height: 72px;
+  margin: 0 auto;
+  padding: 0.65rem 1.5rem;
+  align-items: center;
+  gap: 1.25rem;
+}
+
+.react-app .logo-section { gap: 0.75rem; white-space: nowrap; }
+.react-app .logo-icon {
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.react-app .logo-text h1 { font-size: 1rem; line-height: 1.25; }
+.react-app .logo-text .tagline { display: block; font-size: 0.68rem; }
+
+.react-app .main-nav {
+  display: flex;
+  min-width: 0;
+  justify-content: center;
+  gap: 0.2rem;
+  flex-wrap: nowrap;
+}
+
+.react-app .nav-btn {
+  min-height: 38px;
+  padding: 0.5rem 0.7rem;
+  gap: 0.4rem;
+  border-radius: 10px;
+  font-size: 0.78rem;
+  white-space: nowrap;
+}
+
+.react-app .nav-icon { display: inline-flex; font-size: inherit; }
+.react-app .nav-btn.active {
+  background: linear-gradient(135deg, var(--primary-light), var(--primary));
+  color: white;
+  box-shadow: 0 6px 18px rgb(37 99 235 / 22%);
+}
+
+.react-app .admin-subnav {
+  display: flex;
+  align-items: center;
+  gap: .35rem;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 1rem;
+  padding: .32rem;
+  overflow-x: auto;
+  border: 1px solid var(--border-color);
+  border-radius: .65rem;
+  background: var(--card-bg);
+}
+
+.react-app .admin-subnav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: .4rem;
+  min-height: 2.1rem;
+  padding: .35rem .62rem;
+  border: 0;
+  border-radius: .42rem;
+  color: var(--text-secondary);
+  background: transparent;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.react-app .admin-subnav-btn:hover,
+.react-app .admin-subnav-btn.active {
+  color: var(--text-primary);
+  background: var(--primary-color);
+}
+
+.react-app .auth-section { gap: 0.6rem; white-space: nowrap; }
+.react-app .user-info { gap: 0.4rem; }
+
+.react-app .main-content {
+  width: 100%;
+  max-width: var(--container-max);
+  min-height: 68vh;
+  margin: 0 auto;
+  padding: 1.75rem 1.5rem 2.5rem;
+}
+
+.react-app .tab-content { animation: reactFadeIn 180ms ease; }
+@keyframes reactFadeIn { from { opacity: 0; transform: translateY(4px); } }
+
+.react-app .app-footer {
+  padding: 0.85rem 1.5rem;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+}
+
+/* Page and panel primitives */
+.page-header {
+  display: flex;
+  min-height: 58px;
+  margin-bottom: 1.25rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.page-heading { display: flex; min-width: 0; align-items: center; gap: 0.75rem; }
+.page-heading-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--primary) 13%, var(--surface));
+  color: var(--primary-light);
+}
+
+.page-heading h2 {
+  margin: 0;
+  outline: none;
+  color: var(--text-inverse);
+  font-family: var(--font-display);
+  font-size: clamp(1.35rem, 2.3vw, 1.75rem);
+  line-height: 1.2;
+}
+
+.page-heading p { margin: 0.2rem 0 0; color: color-mix(in srgb, var(--text-inverse) 72%, transparent); font-size: 0.82rem; }
+.page-actions { display: flex; align-items: center; gap: 0.5rem; }
+.back-button { margin-bottom: 0.5rem; color: color-mix(in srgb, var(--text-inverse) 75%, transparent) !important; }
+
+.ui-panel {
+  margin-bottom: 1rem;
+  overflow: visible;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 10px 30px rgb(15 23 42 / 10%);
+}
+
+.ui-panel-header {
+  display: flex;
+  min-height: 52px;
+  padding: 0.75rem var(--ui-panel-padding);
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.ui-panel-header h3 { margin: 0; color: var(--text); font-size: 1rem; }
+.ui-panel-body { padding: var(--ui-panel-padding); }
+.panel-title-with-icon { display: inline-flex; align-items: center; gap: 0.5rem; }
+
+.react-card,
+.match-card,
+.season-card,
+.cup-card,
+.image-editor-card {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 8px 24px rgb(15 23 42 / 8%);
+}
+
+.react-card { margin-bottom: 1rem; padding: 1rem; border-radius: 14px; }
+.react-card:hover { transform: none; box-shadow: 0 8px 24px rgb(15 23 42 / 8%); }
+.react-card h3 { display: flex; margin: 0 0 0.45rem; align-items: center; gap: 0.5rem; color: var(--text); font-size: 1rem; }
+.react-card p { color: var(--text-secondary); }
+.react-app .react-card .section-header, .react-app .ui-panel .section-header { margin-bottom: 0.75rem; align-items: center; }
+.react-app .react-card .section-header h3, .react-app .ui-panel .section-header h3 { margin: 0; }
+
+/* Buttons, controls, filters */
+.react-app .btn { min-height: 36px; padding: 0.45rem 0.8rem; font-size: 0.8rem; }
+.react-app .btn-sm { min-height: 30px; padding: 0.3rem 0.55rem; font-size: 0.72rem; }
+.react-app .btn-ghost { color: var(--text-secondary); }
+.react-app .btn svg { pointer-events: none; }
+
+.form-group { display: grid; gap: 0.35rem; margin: 0; color: var(--text-secondary); font-size: 0.76rem; font-weight: 650; }
+.form-group input,
+.form-group select,
+.form-group textarea,
+.inline-form input,
+.inline-form select,
+.compact-select select,
+.compact-filter select,
+.entity-toolbar input,
+.participant-form input,
+.participant-form select,
+.react-app textarea {
+  width: 100%;
+  min-height: var(--ui-control);
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  outline: none;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 0.82rem;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.form-group textarea { min-height: 88px; resize: vertical; }
+.form-group input:focus, .form-group select:focus, .form-group textarea:focus,
+.inline-form input:focus, .inline-form select:focus, .compact-select select:focus,
+.compact-filter select:focus, .entity-toolbar input:focus {
+  border-color: var(--primary-light);
+  box-shadow: 0 0 0 3px rgb(59 130 246 / 16%);
+}
+
+.inline-form { display: flex; align-items: center; gap: 0.5rem; }
+.inline-form input { min-width: min(18rem, 45vw); }
+.checkbox-label { display: flex; align-items: center; gap: 0.5rem; }
+.checkbox-label input, .player-checklist input { width: auto; min-height: auto; accent-color: var(--primary); }
+
+.entity-toolbar {
+  display: flex;
+  margin-bottom: 1rem;
+  padding: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.search-field { position: relative; display: flex; flex: 1; max-width: 30rem; align-items: center; }
+.search-field > svg { position: absolute; left: 0.75rem; z-index: 1; color: var(--text-muted); }
+.search-field input { padding-left: 2.3rem; }
+
+.compact-select, .compact-filter label { display: flex; align-items: center; gap: 0.5rem; color: var(--text-secondary); font-size: 0.76rem; font-weight: 650; white-space: nowrap; }
+.compact-select select, .compact-filter select { min-width: 9.5rem; }
+
+.filter-chips, .view-mode-selector {
+  display: inline-flex;
+  max-width: 100%;
+  gap: 0.2rem;
+  margin-bottom: 1rem;
+  padding: 0.25rem;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.filter-chips button, .view-mode-btn {
+  min-height: 34px;
+  padding: 0.45rem 0.8rem;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.filter-chips button:hover, .view-mode-btn:hover { background: var(--surface-hover); color: var(--text); }
+.filter-chips button.active, .view-mode-btn.active { background: var(--primary); color: white; box-shadow: 0 4px 12px rgb(37 99 235 / 20%); }
+
+.ranking-toolbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.75rem; }
+.ranking-toolbar .view-mode-selector { flex: 0 0 auto; }
+.compact-filter { display: flex; }
+
+.card-actions, .react-form-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 0.45rem; }
+.react-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.85rem; }
+.react-form-grid .full-width { grid-column: 1 / -1; }
+.react-form-actions { margin-top: 1rem; }
+
+/* Status and feedback */
+.status-badge {
+  display: inline-flex;
+  min-height: 24px;
+  padding: 0.2rem 0.55rem;
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 750;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.tone-neutral { background: var(--surface-hover); color: var(--text-secondary); border-color: var(--border); }
+.tone-info { background: rgb(37 99 235 / 12%); color: #1d4ed8; border-color: rgb(37 99 235 / 22%); }
+.tone-success { background: rgb(5 150 105 / 12%); color: #047857; border-color: rgb(5 150 105 / 22%); }
+.tone-warning { background: rgb(217 119 6 / 12%); color: #b45309; border-color: rgb(217 119 6 / 22%); }
+.tone-danger { background: rgb(220 38 38 / 12%); color: #b91c1c; border-color: rgb(220 38 38 / 22%); }
+
+.react-loading { display: flex; min-height: 9rem; align-items: center; justify-content: center; gap: 0.65rem; color: var(--text-secondary); }
+.empty-state { display: grid; min-height: 8rem; place-items: center; padding: 1.5rem; border: 1px dashed var(--border); border-radius: 12px; background: color-mix(in srgb, var(--surface) 75%, transparent); }
+.empty-state p { color: var(--text-secondary); }
+.count-badge { display: inline-grid; min-width: 1.5rem; height: 1.5rem; place-items: center; border-radius: 999px; background: var(--primary); color: white; font-size: 0.7rem; font-weight: 700; }
+
+/* Tables */
+.react-app .table-container {
+  width: 100%;
+  margin-bottom: 1rem;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgb(15 23 42 / 8%);
+}
+
+.react-app table { width: 100%; border-collapse: collapse; color: var(--text); font-size: 0.8rem; }
+.react-app th, .react-app td { padding: 0.72rem 0.85rem; border-bottom: 1px solid var(--border); text-align: left; vertical-align: middle; }
+.react-app th { position: sticky; top: 0; z-index: 1; background: var(--surface-hover); color: var(--text-secondary); font-size: 0.66rem; font-weight: 750; letter-spacing: 0.06em; text-transform: uppercase; white-space: nowrap; }
+.react-app tbody tr:hover { background: color-mix(in srgb, var(--primary) 6%, var(--surface)); }
+.react-app tbody tr:last-child td { border-bottom: 0; }
+.col-actions { width: 1%; }
+.player-cell { display: flex; align-items: center; gap: 0.65rem; }
+.player-avatar { display: inline-grid; width: 32px; height: 32px; flex: 0 0 auto; place-items: center; border-radius: 10px; background: linear-gradient(135deg, var(--primary-light), var(--primary)); color: white; font-size: 0.78rem; font-weight: 750; }
+.id-badge { display: inline-flex; padding: 0.18rem 0.42rem; border-radius: 6px; background: var(--surface-hover); color: var(--text-secondary); font: 0.7rem var(--font-mono); }
+.accounts-table small { color: var(--text-secondary); }
+
+.rankings-table td:not(:nth-child(2)) { font-variant-numeric: tabular-nums; }
+.rankings-table .rank-1 { background: color-mix(in srgb, #f59e0b 8%, var(--surface)); }
+.rankings-table .rank-2 { background: color-mix(in srgb, #94a3b8 7%, var(--surface)); }
+.rankings-table .rank-3 { background: color-mix(in srgb, #c26f32 7%, var(--surface)); }
+.rank-badge { display: inline-grid; min-width: 1.75rem; height: 1.75rem; place-items: center; border-radius: 8px; background: var(--surface-hover); font-weight: 800; }
+.form-indicator { display: flex; gap: 0.25rem; }
+.form-dot { display: inline-grid; width: 1.3rem; height: 1.3rem; place-items: center; border-radius: 999px; color: white; font-size: 0.58rem; font-weight: 800; }
+.form-dot.win { background: var(--success); }
+.form-dot.loss { background: var(--error); }
+
+/* Match entry and history */
+.match-meta-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 0.85rem; }
+.match-teams-editor { display: grid; grid-template-columns: minmax(0, 1fr) minmax(190px, 0.62fr) minmax(0, 1fr); gap: 0.75rem; }
+.team-editor, .score-editor { min-width: 0; padding: 0.75rem; border: 1px solid var(--border); border-radius: 11px; background: var(--bg); }
+.team-editor { display: grid; align-content: start; gap: 0.65rem; }
+.team-editor legend, .score-editor legend { padding: 0 0.4rem; color: var(--text); font-size: 0.78rem; font-weight: 750; }
+.team-one { border-left: 3px solid var(--primary-light); }
+.team-two { border-left: 3px solid var(--cta); }
+.score-editor { display: grid; align-content: center; gap: 0.65rem; }
+.score-inputs { display: grid; grid-template-columns: 1fr auto 1fr; align-items: end; gap: 0.45rem; }
+.score-inputs > span { padding-bottom: 0.55rem; color: var(--text-secondary); font-weight: 800; }
+.score-inputs input { text-align: center; font-size: 1rem; font-weight: 750; }
+.match-entry-form > .react-form-actions { padding-top: 0.85rem; border-top: 1px solid var(--border); }
+.batch-panel { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--border); }
+.subsection-heading { display: flex; margin-bottom: 0.5rem; align-items: center; gap: 0.5rem; }
+.subsection-heading h4 { margin: 0; }
+.batch-row, .parsed-row, .participant-row { display: flex; min-height: 42px; padding: 0.45rem 0; align-items: center; gap: 0.65rem; border-bottom: 1px solid var(--border); }
+.parsed-row strong, .participant-row strong { flex: 1; }
+.image-import { margin-top: 1rem; border-top: 1px solid var(--border); }
+.image-import summary, .technical-details summary { display: flex; padding: 0.8rem 0 0; align-items: center; gap: 0.45rem; color: var(--text-secondary); font-size: 0.78rem; font-weight: 700; cursor: pointer; }
+.image-import-body { display: grid; gap: 0.65rem; padding-top: 0.75rem; }
+.image-import-body p { color: var(--text-secondary); font-size: 0.78rem; }
+.matches-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(310px, 100%), 1fr)); gap: 0.75rem; }
+.match-card { overflow: hidden; border-radius: 11px; }
+.match-card-header { display: flex; padding: 0.45rem 0.65rem; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); background: var(--surface-hover); color: var(--text-secondary); font-size: 0.7rem; }
+.match-type-badge { padding: 0.15rem 0.45rem; border-radius: 999px; background: var(--primary); color: white; font-size: 0.62rem; font-weight: 750; }
+.match-result { display: grid; min-height: 78px; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 0.55rem; padding: 0.75rem; text-align: center; }
+.match-side { display: flex; align-items: center; justify-content: center; gap: 0.25rem; font-size: 0.78rem; line-height: 1.35; }
+.match-side.winner { color: var(--success); }
+.match-score { padding: 0.28rem 0.5rem; border-radius: 8px; background: var(--bg); font-size: 1rem; white-space: nowrap; }
+.match-card-actions { display: flex; padding: 0.5rem 0.65rem; justify-content: flex-end; gap: 0.4rem; border-top: 1px solid var(--border); }
+
+/* Seasons and cups */
+.seasons-grid, .cups-grid, .image-editor-grid, .data-actions-grid, .admin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 0.85rem; align-items: start; }
+.season-card, .cup-card, .image-editor-card { padding: 1rem; border-radius: 13px; }
+.season-card.active-season { border-color: rgb(16 185 129 / 45%); box-shadow: inset 3px 0 #10b981, 0 8px 24px rgb(15 23 42 / 8%); }
+.season-header, .cup-card-header, .image-editor-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.7rem; }
+.season-header h3, .cup-card-header h3, .image-editor-header h3 { margin: 0; color: var(--text); font-size: 0.92rem; line-height: 1.35; }
+.season-card > p { margin: 0.75rem 0; color: var(--text-secondary); font-size: 0.78rem; }
+.season-meta, .cup-card-meta { display: grid; gap: 0.35rem; color: var(--text-secondary); font-size: 0.74rem; }
+.season-meta span, .cup-card-meta span { display: flex; align-items: center; gap: 0.4rem; }
+.season-actions { position: relative; display: flex; margin-top: 0.8rem; padding-top: 0.7rem; align-items: center; gap: 0.4rem; border-top: 1px solid var(--border); }
+.action-menu { position: relative; margin-left: auto; }
+.action-menu summary { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid var(--border); border-radius: 7px; cursor: pointer; list-style: none; }
+.action-menu summary::-webkit-details-marker, .maintenance-menu summary::-webkit-details-marker { display: none; }
+.action-menu-popover, .maintenance-popover { position: absolute; right: 0; bottom: calc(100% + 0.35rem); z-index: 5; display: grid; min-width: 10rem; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow-xl); }
+.action-menu-popover button, .maintenance-popover button { display: flex; min-height: 36px; padding: 0.5rem 0.7rem; align-items: center; gap: 0.45rem; border: 0; background: transparent; color: var(--text); font-size: 0.75rem; text-align: left; cursor: pointer; }
+.action-menu-popover button:hover, .maintenance-popover button:hover { background: var(--surface-hover); }
+.action-menu-popover .action-danger { color: #f87171; border-radius: 0; justify-content: flex-start; }
+.cup-card { display: flex; min-height: 180px; flex-direction: column; transition: border-color 150ms ease, transform 150ms ease; }
+.cup-card.clickable:hover { border-color: var(--primary-light); transform: translateY(-2px); }
+.cup-card-meta { margin-top: 0.8rem; }
+.cup-card-actions { display: flex; margin-top: auto; padding-top: 0.7rem; align-items: center; gap: 0.35rem; border-top: 1px solid var(--border); }
+.cup-card-actions .btn-ghost { margin-left: auto; }
+.seed { min-width: 2.5rem; color: var(--text-secondary); }
+
+.player-checklist { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: 0.5rem; padding: 0.75rem; border: 1px solid var(--border); border-radius: 10px; }
+.participant-form { margin-bottom: 0.75rem; flex-wrap: wrap; }
+.participant-form input, .participant-form select { flex: 1; min-width: 10rem; }
+.bracket-board { display: flex; align-items: flex-start; gap: 1rem; padding-bottom: 0.5rem; overflow-x: auto; }
+.bracket-round { display: grid; min-width: 17rem; gap: 0.7rem; }
+.bracket-round h4 { text-align: center; }
+.bracket-match { padding: 0.7rem; border: 1px solid var(--border); border-left: 3px solid var(--text-muted); border-radius: 10px; background: var(--bg); }
+.bracket-match.completed { border-left-color: var(--success); }
+.bracket-match > div:not(.bracket-controls) { display: flex; padding: 0.35rem; justify-content: space-between; }
+.bracket-controls { display: grid; grid-template-columns: 1fr 1fr auto; gap: 0.35rem; margin-top: 0.5rem; }
+.bracket-controls input { min-width: 0; padding: 0.4rem; border: 1px solid var(--border); border-radius: 7px; background: var(--surface); color: var(--text); }
+.winner { color: var(--success); }
+
+/* Accounts, images and data */
+.admin-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 1rem; }
+.health-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.5rem; }
+.health-summary > div { display: grid; min-height: 66px; padding: 0.6rem; align-content: space-between; gap: 0.3rem; border: 1px solid var(--border); border-radius: 9px; background: var(--bg); }
+.health-summary span:first-child { color: var(--text-secondary); font-size: 0.68rem; }
+.health-summary strong { color: var(--text); font-size: 0.9rem; }
+.recommendation { margin: 0.75rem 0 0; padding: 0.6rem 0.75rem; border-left: 3px solid var(--primary); border-radius: 6px; background: var(--bg); color: var(--text-secondary); font-size: 0.74rem; }
+.technical-details { margin-top: 0.75rem; border-top: 1px solid var(--border); }
+.json-summary { max-height: 15rem; margin-top: 0.65rem; overflow: auto; color: var(--text-secondary); font-size: 0.68rem; white-space: pre-wrap; }
+.broadcast-form { display: grid; grid-template-columns: 1fr 1fr auto; margin-top: 0.8rem; align-items: end; gap: 0.55rem; }
+.maintenance-menu { position: relative; }
+.maintenance-menu > summary { list-style: none; cursor: pointer; }
+.maintenance-popover { top: calc(100% + 0.35rem); bottom: auto; }
+.image-editor-card { display: flex; flex-direction: column; gap: 0.65rem; }
+.image-preview { display: grid; min-height: 140px; max-height: 180px; place-items: center; overflow: hidden; border: 1px dashed var(--border); border-radius: 10px; background: var(--bg); }
+.image-preview .empty-state { min-height: 0; border: 0; background: transparent; }
+.image-preview img { width: 100%; height: 100%; max-height: 180px; object-fit: contain; }
+.image-file-meta { min-height: 2.2em; overflow-wrap: anywhere; color: var(--text-secondary); }
+.danger-zone { border-color: rgb(239 68 68 / 55%); }
+.preserve-lines { white-space: pre-wrap; }
+
+/* Dialogs, menus and toast */
+.react-modal { position: fixed; inset: 0; z-index: 1000; display: flex !important; padding: 1rem; align-items: center; justify-content: center; background: rgb(2 6 23 / 74%); backdrop-filter: blur(5px); }
+.react-modal .modal-content { display: block; width: min(32rem, 100%); max-width: none; max-height: calc(100vh - 2rem); overflow: auto; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: 0 28px 90px rgb(0 0 0 / 42%); }
+.react-modal .modal-wide { width: min(58rem, 100%); }
+.react-modal .modal-header, .react-modal .modal-body, .react-modal .modal-footer { padding: 1rem 1.15rem; }
+.react-modal .modal-header { border-bottom: 1px solid var(--border); }
+.react-modal .modal-header h3 { margin: 0; color: var(--text); font-size: 1rem; }
+.react-modal .modal-body { display: grid; gap: 0.75rem; }
+.react-modal .modal-footer { border-top: 1px solid var(--border); }
+.react-modal .close-btn { display: grid; width: 30px; height: 30px; place-items: center; border: 0; border-radius: 999px; background: var(--surface-hover); color: var(--text-secondary); cursor: pointer; }
+.confirm-dialog { grid-template-columns: auto 1fr; align-items: start; }
+.confirm-dialog p { margin: 0; color: var(--text); }
+.confirm-icon { display: grid; width: 38px; height: 38px; place-items: center; border-radius: 10px; background: rgb(239 68 68 / 12%); color: #f87171; }
+.toast.show { position: fixed; right: 1rem; bottom: 1rem; z-index: 1500; display: block; padding: 0.75rem 0.9rem; border-radius: 10px; background: #334155; color: white; box-shadow: 0 12px 35px rgb(0 0 0 / 25%); }
+.toast.success { background: #15803d; }
+.toast.error { background: #b91c1c; }
+.file-button { cursor: pointer; }
+
+@media (prefers-color-scheme: dark) {
+  .react-app { color-scheme: dark; }
+  .react-app .app-header { box-shadow: 0 6px 22px rgb(0 0 0 / 24%); }
+  .ui-panel, .react-card, .match-card, .season-card, .cup-card, .image-editor-card, .react-app .table-container { box-shadow: 0 10px 30px rgb(0 0 0 / 18%); }
+  .tone-info { color: #60a5fa; }
+  .tone-success { color: #34d399; }
+  .tone-warning { color: #fbbf24; }
+  .tone-danger { color: #f87171; }
+}
+
+@media (max-width: 1320px) {
+  .react-app .header-content { grid-template-columns: 1fr auto; gap: 0.5rem 1rem; }
+  .react-app .main-nav { grid-column: 1 / -1; grid-row: 2; justify-content: flex-start; overflow-x: auto; padding-bottom: 0.15rem; }
+  .react-app .auth-section { grid-column: 2; grid-row: 1; }
+}
+
+@media (max-width: 900px) {
+  .match-teams-editor { grid-template-columns: 1fr 1fr; }
+  .score-editor { grid-column: 1 / -1; grid-row: 2; grid-template-columns: 1fr 1fr; align-items: end; }
+  .admin-grid { grid-template-columns: 1fr; }
+  .broadcast-form { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 700px) {
+  .react-app { --ui-control: 44px; --ui-panel-padding: 0.85rem; }
+  .react-app .header-content { padding: 0.55rem 1rem; }
+  .react-app .logo-icon { font-size: 1.75rem; }
+  .react-app .logo-text h1 { font-size: 0.9rem; }
+  .react-app .tagline, .react-app .user-role, .react-app .user-name { display: none; }
+  .react-app .main-nav { margin-inline: -1rem; padding-inline: 1rem; }
+  .react-app .nav-btn { min-height: 42px; }
+  .react-app .main-content { padding: 1.15rem 1rem 2rem; }
+  .page-header { align-items: flex-start; }
+  .page-heading-icon { width: 38px; height: 38px; }
+  .page-heading h2 { font-size: 1.3rem; }
+  .page-actions .btn { min-height: 40px; }
+  .entity-toolbar, .ranking-toolbar { align-items: stretch; flex-direction: column; }
+  .search-field { max-width: none; }
+  .inline-form { width: 100%; }
+  .inline-form input { min-width: 0; flex: 1; }
+  .match-meta-grid, .match-teams-editor { grid-template-columns: 1fr; }
+  .score-editor { grid-column: auto; grid-row: auto; grid-template-columns: 1fr; }
+  .react-form-grid { grid-template-columns: 1fr; }
+  .react-form-grid .full-width { grid-column: auto; }
+  .matches-grid, .seasons-grid, .cups-grid, .image-editor-grid, .data-actions-grid { grid-template-columns: 1fr; }
+  .health-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .react-app .responsive-table table, .react-app .responsive-table tbody, .react-app .responsive-table tr, .react-app .responsive-table td { display: block; width: 100%; }
+  .react-app .responsive-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
+  .react-app .responsive-table tr { padding: 0.65rem; border-bottom: 1px solid var(--border); }
+  .react-app .responsive-table tr:last-child { border-bottom: 0; }
+  .react-app .responsive-table td { display: flex; padding: 0.4rem; align-items: center; justify-content: space-between; gap: 1rem; border: 0; text-align: right; }
+  .react-app .responsive-table td::before { content: attr(data-label); color: var(--text-secondary); font-size: 0.68rem; font-weight: 700; text-align: left; }
+  .react-app .responsive-table td:first-child { align-items: flex-start; }
+  .match-result { min-height: 72px; }
+  .react-modal .modal-header, .react-modal .modal-body, .react-modal .modal-footer { padding: 0.9rem; }
+}
+
+@media (max-width: 460px) {
+  .react-app .logo-text h1 { max-width: 11rem; white-space: normal; }
+  .react-app .auth-section .btn { padding-inline: 0.55rem; }
+  .page-header { flex-direction: column; }
+  .page-actions { width: 100%; }
+  .page-actions > .btn, .page-actions > details { width: 100%; }
+  .page-actions .btn { width: 100%; }
+  .view-mode-selector, .filter-chips { width: 100%; }
+  .view-mode-btn, .filter-chips button { flex: 1; }
+  .inline-form { flex-direction: column; }
+  .inline-form .btn { width: 100%; }
+  .match-result { grid-template-columns: 1fr; }
+  .match-score { order: -1; }
+  .health-summary { grid-template-columns: 1fr 1fr; }
+  .cup-card-actions { flex-wrap: wrap; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .react-app .tab-content { animation: none; }
+}

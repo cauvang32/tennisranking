@@ -85,6 +85,8 @@ export interface Ranking {
   money?: number | string
   money_lost?: number | string
   total_money?: number | string
+  score_difference?: number
+  money_balance?: number | string
   form?: Array<'win' | 'loss' | 'W' | 'L' | { result: 'win' | 'loss' | 'W' | 'L'; play_date?: string }>
   rank?: number
 }

@@ -529,6 +529,23 @@ body.authenticated .logged-out-only {
   color: var(--error);
 }
 
+.rankings-table .col-difference,
+.rankings-table .col-difference.positive,
+.rankings-table .col-difference.negative {
+  text-align: center;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.rankings-table .col-difference.positive {
+  color: var(--success);
+}
+
+.rankings-table .col-difference.negative {
+  color: var(--error);
+}
+
 /* ========== Match Entry Cards (Batch / Parsed) ========== */
 
 /* 2-column grid on desktop, 1-column on mobile */

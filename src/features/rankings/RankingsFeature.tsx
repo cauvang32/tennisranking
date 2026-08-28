@@ -37,13 +37,14 @@ export function RankingsFeature() {
       </div>
     </div>
     {loading ? <Loading /> : rankings.length === 0 ? <Empty>Chưa có dữ liệu xếp hạng</Empty> : <div className="table-container"><table className="rankings-table">
-      <thead><tr><th>Hạng</th><th>Người chơi</th><th>Trận</th><th>Thắng</th><th>Thua</th><th>Điểm</th><th>Tỷ lệ thắng</th><th>Phong độ</th><th>Tiền</th></tr></thead>
+      <thead><tr><th>Hạng</th><th>Người chơi</th><th>Trận</th><th>Thắng</th><th>Thua</th><th>Điểm</th><th>Chênh lệch</th><th>Tỷ lệ thắng</th><th>Phong độ</th><th>Tiền</th></tr></thead>
       <tbody>{rankings.map((row, index) => {
         const played = row.total_matches ?? row.matches_played ?? row.wins + row.losses
         const rate = row.win_rate ?? row.win_percentage ?? (played ? row.wins / played * 100 : 0)
         return <tr key={row.player_id ?? row.id ?? index} className={index < 3 ? `rank-${index + 1}` : ''}>
           <td><span className="rank-badge">{index === 0 ? '🥇' : index === 1 ? '🥈' : index === 2 ? '🥉' : index + 1}</span></td>
           <td><strong>{row.player_name || row.name}</strong></td><td>{played}</td><td>{row.wins}</td><td>{row.losses}</td><td><strong>{row.points}</strong></td>
+          <td className={'col-difference' + ((row.score_difference ?? 0) > 0 ? ' positive' : (row.score_difference ?? 0) < 0 ? ' negative' : '')}>{(row.score_difference ?? 0) > 0 ? '+' : ''}{row.score_difference ?? 0}</td>
           <td>{Number(rate).toFixed(1)}%</td><td><div className="form-indicator">{row.form?.map((entry, i) => {
             const result = typeof entry === 'string' ? entry : entry.result
             return <span key={i} className={`form-dot ${result.toLowerCase().startsWith('w') ? 'win' : 'loss'}`}>{result.slice(0, 1).toUpperCase()}</span>

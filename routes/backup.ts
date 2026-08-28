@@ -18,7 +18,6 @@ export const createBackupRouter = ({
   requireAdmin,
   conditionalRateLimit,
   criticalLimiter,
-  strictRestoreLimiter,
   exportLimiter,
   handleValidationErrors,
   rankingsCache,
@@ -58,7 +57,7 @@ export const createBackupRouter = ({
 
   // ── Full Restore (JSON) ───────────────────────────────────────────────────
   router.post('/restore',
-    authenticateToken, requireAdmin, largeBodyParser, conditionalRateLimit(strictRestoreLimiter),
+    authenticateToken, requireAdmin, largeBodyParser,
     asyncHandler(async (req, res) => {
       const backupData = req.body
       const currentUsername = req.user.username
@@ -97,6 +96,10 @@ export const createBackupRouter = ({
       let cupsRestored = 0, cupsSkipped = 0
       try {
         await client.query('BEGIN')
+        // Bulk mode: silences the per-row cache-invalidation triggers so this
+        // restore bumps the data version exactly once (after commit) instead of
+        // once per row — that fan-out is what tripped the /init rate limiter.
+        await client.query("SELECT set_config('tennis.cache_bulk_tx', '1', false)")
 
         // Clear existing data (within transaction) — cup tables first due to FK dependencies
         await client.query('DELETE FROM cup_advancements')
@@ -328,9 +331,16 @@ export const createBackupRouter = ({
         console.error('❌ Restore failed, transaction rolled back:', error.message)
         throw error
       } finally {
+        // Session GUCs revert when the transaction ends; reset defensively
+        // before the pooled client is reused.
+        await client.query("SELECT set_config('tennis.cache_bulk_tx', '0', false)").catch(() => {})
         client.release()
       }
 
+      // Exactly one data-version bump for the whole restore: row triggers were
+      // silenced in bulk mode, so this single notification (plus the cache
+      // clear) is all clients need to refresh.
+      await db.notifyBulkTx()
       await rankingsCache.clear()
       res.json({
         success: true, message: 'Data restored successfully',
@@ -363,7 +373,7 @@ export const createBackupRouter = ({
   router.post('/restore-data',
     authenticateToken, requireAdmin,
     (_req, res) => res.status(410).json({ error: 'This restore format has been retired. Use /api/restore instead.' }),
-    largeBodyParser, conditionalRateLimit(strictRestoreLimiter),
+    largeBodyParser,
     [
       body('backupData').isObject(), body('clearExisting').optional().isBoolean(),
       body('backupData.version').exists(), body('backupData.data').isObject()
@@ -381,6 +391,8 @@ export const createBackupRouter = ({
       const client = await db.pool.connect()
       try {
         await client.query('BEGIN')
+        // Bulk mode: silences per-row cache-invalidation triggers (see /restore).
+        await client.query("SELECT set_config('tennis.cache_bulk_tx', '1', false)")
 
         if (clearExisting) {
           await client.query('DELETE FROM cup_advancements')
@@ -531,9 +543,14 @@ export const createBackupRouter = ({
         console.error('❌ Restore-data failed, transaction rolled back:', error.message)
         throw error
       } finally {
+        // Session GUCs revert when the transaction ends; reset defensively
+        // before the pooled client is reused.
+        await client.query("SELECT set_config('tennis.cache_bulk_tx', '0', false)").catch(() => {})
         client.release()
       }
 
+      // Exactly one data-version bump for the whole restore (see /restore).
+      await db.notifyBulkTx()
       await rankingsCache.clear()
       res.json({ success: true, message: 'Data restored successfully', results, timestamp: formatSecureTimestamp() })
     }))
@@ -554,6 +571,9 @@ export const createBackupRouter = ({
       }
       console.log(`⚠️ CLEAR ALL DATA requested by user: ${req.user.username}`)
       await db.clearAllData()
+      // clearAllData runs in bulk mode (row triggers silenced) — publish the
+      // single commit notification so clients refresh exactly once.
+      await db.notifyBulkTx()
       await rankingsCache.clear()
       console.log('✅ All data cleared successfully')
       res.json({ success: true, message: 'All data cleared successfully', timestamp: formatSecureTimestamp() })

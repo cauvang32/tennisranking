@@ -151,6 +151,16 @@ class TennisDatabasePostgreSQL {
     }
   }
 
+  /**
+   * Publish the single cache-invalidation notification for a bulk operation
+   * (restore, clear-all-data). Bulk transactions set the tennis.cache_bulk_tx GUC so
+   * the per-row triggers stay silent; this one call after commit is what bumps
+   * the data version exactly once for the whole bulk transaction.
+   */
+  async notifyBulkTx() {
+    await this.query('SELECT notify_cache_invalidation_tx()')
+  }
+
   scheduleReconnect() {
     if (this.reconnectTimer) {
       return
@@ -1842,6 +1852,9 @@ class TennisDatabasePostgreSQL {
     const client = await this.pool.connect()
     try {
       await client.query('BEGIN')
+      // Silence per-row cache-invalidation triggers for the bulk TRUNCATE;
+      // the caller publishes one notification after commit (see backup routes).
+      await client.query("SELECT set_config('tennis.cache_bulk_tx', '1', false)")
 
       // Use TRUNCATE for faster, cleaner deletion (resets sequences automatically)
       // Cup tables must be included — cups has SET NULL on season_id so it won't cascade from seasons
@@ -1871,6 +1884,9 @@ class TennisDatabasePostgreSQL {
     const client = await this.pool.connect()
     try {
       await client.query('BEGIN')
+      // Silence per-row cache-invalidation triggers for the bulk TRUNCATE;
+      // the caller publishes one notification after commit (see backup routes).
+      await client.query("SELECT set_config('tennis.cache_bulk_tx', '1', false)")
 
       // Use TRUNCATE for faster deletion
       // Cup tables must be included — cups has SET NULL on season_id so it won't cascade from seasons

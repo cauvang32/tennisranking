@@ -49,12 +49,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (dataVersion === undefined) return
     let lastVersion = dataVersion
     let polling: number | undefined
+    // Debounced reload: if several version events arrive in quick succession,
+    // only the latest triggers one /api/init call instead of one per event.
+    let pendingTimer: number | undefined
+    const scheduleReload = () => {
+      if (pendingTimer !== undefined) window.clearTimeout(pendingTimer)
+      pendingTimer = window.setTimeout(() => {
+        pendingTimer = undefined
+        void reload()
+      }, 250)
+    }
     const source = new EventSource(`${api.baseUrl}/events`, { withCredentials: true })
     source.onmessage = event => {
       const payload = JSON.parse(event.data) as { version: number }
       if (payload.version !== lastVersion) {
         lastVersion = payload.version
-        void reload()
+        scheduleReload()
       }
     }
     source.onerror = () => {
@@ -64,12 +74,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const payload = await api.request<{ version: number }>('/data-version')
           if (payload.version !== lastVersion) {
             lastVersion = payload.version
-            await reload()
+            scheduleReload()
           }
         } catch { /* keep the last usable screen */ }
       }, 15000)
     }
-    return () => { source.close(); if (polling) clearInterval(polling) }
+    return () => { source.close(); if (polling) clearInterval(polling); if (pendingTimer !== undefined) window.clearTimeout(pendingTimer) }
   }, [dataVersion, reload])
 
   const notify = useCallback((message: string, kind = 'info') => {

@@ -195,10 +195,12 @@ export const refreshLimiter = createProxyAwareRateLimiter({
 
 // Init endpoint limiter. It runs after checkAuth, so signed-in users are
 // bucketed per account instead of per shared IP. The allowance comfortably
-// covers reloads following a restore while keeping anonymous scraping bounded.
+// covers many open tabs plus post-restore reloads; the frontend debounces
+// version-driven reloads, and the dynamic CPU/RAM scaler still tightens the
+// limit under load. Anonymous traffic stays tightly bounded.
 export const initLimiter = createProxyAwareRateLimiter({
   windowMs: 60 * 1000,
-  limit: (req) => req.user ? 240 : 60,
+  limit: (req) => req.user ? 600 : 120,
   storePrefix: 'init',
   userAwareKey: true,
   message: { error: 'Too many init requests. Please slow down.' }
@@ -231,29 +233,6 @@ export const exportLimiter = createProxyAwareRateLimiter({
 export const criticalLimiter = createProxyAwareRateLimiter({
   windowMs: 60 * 60 * 1000, limit: 10, storePrefix: 'critical',
   message: { error: 'Critical operation limit exceeded. Please wait 1 hour before trying again.' }
-})
-
-export const restoreLimiter = createProxyAwareRateLimiter({
-  windowMs: 60 * 60 * 1000, limit: 50, storePrefix: 'restore',
-  message: { error: 'Too many restore requests from this IP, please try again later.' }
-})
-
-// Strict restore limiter: 5 requests per 15-minute window, per IP.
-// Dedicated to restore endpoints so they cannot exhaust the general restore budget.
-export const strictRestoreLimiter = createProxyAwareRateLimiter({
-  windowMs: 15 * 60 * 1000, limit: 5, storePrefix: 'strict-restore',
-  message: { error: 'Too many restore requests. Please wait before trying again.', retryAfter: 900 },
-  handler: (req, res, _next, opts) => {
-    const clientIP = getRealClientIP(req)
-    const userInfo = req.user ? `${req.user.username}(${req.user.role})` : 'anonymous'
-    console.warn(`⚠️ Strict restore rate limit exceeded: ${clientIP} | ${userInfo} | ${req.method} ${req.path}`)
-    logError(new Error(`Strict restore rate limit exceeded: ${req.method} ${req.path}`), req, req.user)
-    const retryAfter = typeof opts.message?.retryAfter === 'number' ? opts.message.retryAfter : 900
-    res.set('Retry-After', String(retryAfter))
-    res.status(opts.statusCode || 429).json(
-      opts.message || { error: 'Too many restore requests. Please wait before trying again.', retryAfter }
-    )
-  }
 })
 
 // R4: CSP report endpoint limiter — 30 requests per minute per IP.

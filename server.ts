@@ -38,8 +38,7 @@ import {
   applyGlobalRateLimiting, logRateLimitConfig, disconnectRateLimitRedis,
   initRateLimitRedis,
   authLimiter, refreshLimiter, initLimiter, smartApiLimiter, conditionalRateLimit,
-  createLimiter, deleteLimiter, exportLimiter, criticalLimiter, restoreLimiter,
-  strictRestoreLimiter, loginLimiter, deviceRegisterLimiter, cspReportLimiter
+  createLimiter, deleteLimiter, exportLimiter, criticalLimiter, loginLimiter, deviceRegisterLimiter, cspReportLimiter
 } from './middleware/rate-limiter.js'
 import { buildAuthMiddleware, invalidateTokenVersionCache } from './middleware/auth.js'
 import { privateApiCacheControl } from './middleware/api-cache-control.js'
@@ -500,8 +499,7 @@ const routeCtx = {
   db, app, rankingsCache, sseClients, pushSender,
   authenticateToken, checkAuth, requireAdmin, requireEditor,
   conditionalRateLimit, smartApiLimiter,
-  authLimiter, refreshLimiter, initLimiter, createLimiter, deleteLimiter, exportLimiter, criticalLimiter, restoreLimiter,
-  strictRestoreLimiter, cspReportLimiter,
+  authLimiter, refreshLimiter, initLimiter, createLimiter, deleteLimiter, exportLimiter, criticalLimiter, cspReportLimiter,
   deviceRegisterLimiter,
   handleValidationErrors, sanitizeResponse, formatSecureTimestamp,
   // S5: Invalidate token version cache when user is modified/deleted

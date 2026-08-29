@@ -1,5 +1,5 @@
 import pg from 'pg'
-import { execFile } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import { normalize, resolve, join } from 'path'
 import { readFileSync, createWriteStream, createReadStream } from 'fs'
 import { mkdir } from 'fs/promises'
@@ -2683,17 +2683,22 @@ class TennisDatabasePostgreSQL {
   // so a brand-new host needs no manual migration step.
   _runDockerDbTool(args: string[], onStdout?: (chunk: Buffer) => void, timeoutMs = 120000): Promise<void> {
     return new Promise<void>((resolvePromise, rejectPromise) => {
-      const child = execFile('docker', ['exec', '-i', config.postgresContainer, ...args], {
-        maxBuffer: 0,
-        timeout: timeoutMs,
+      // spawn, NOT execFile: execFile buffers stdout internally, and with
+      // maxBuffer: 0 it silently drops bytes as soon as the child writes —
+      // that truncated pg_dump output (and the resulting corrupt archive
+      // made pg_restore segfault). spawn's 'pipe' is unbuffered.
+      const child = spawn('docker', ['exec', '-i', config.postgresContainer, ...args], {
+        stdio: ['ignore', 'pipe', 'pipe'],
         windowsHide: true,
         shell: false
       })
+      const timer = setTimeout(() => { child.kill() }, timeoutMs)
       let stderr = ''
       child.stdout.on('data', chunk => { if (onStdout) onStdout(chunk) })
       child.stderr.on('data', chunk => { stderr += chunk })
-      child.on('error', err => rejectPromise(new Error('Failed to run docker exec: ' + err.message)))
+      child.on('error', err => { clearTimeout(timer); rejectPromise(new Error('Failed to run docker exec: ' + err.message)) })
       child.on('close', code => {
+        clearTimeout(timer)
         if (code === 0) resolvePromise()
         else rejectPromise(new Error('docker exec ' + args[2] + ' exited with code ' + code + ': ' + stderr.trim().slice(0, 500)))
       })
@@ -2715,27 +2720,94 @@ class TennisDatabasePostgreSQL {
     })
   }
 
+  // Run a one-off psql command inside the Postgres container. Defaults to the
+  // 'postgres' maintenance database — CREATE/DROP DATABASE cannot run against a
+  // connected database.
+  _runPsql(args: string[], database?: string, timeoutMs = 120000): Promise<{ code: number; stdout: string; stderr: string }> {
+    return new Promise((resolvePromise, rejectPromise) => {
+      const child = spawn('docker', ['exec', '-i', config.postgresContainer, 'psql', '-U', this.config.user, '-v', 'ON_ERROR_STOP=1', '-d', database || 'postgres', '-t', '-A', '-c', args.join(' ')], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        shell: false
+      })
+      const timer = setTimeout(() => { child.kill() }, timeoutMs)
+      let stdout = ''
+      let stderr = ''
+      child.stdout.on('data', chunk => { stdout += chunk })
+      child.stderr.on('data', chunk => { stderr += chunk })
+      child.on('error', err => { clearTimeout(timer); rejectPromise(new Error('Failed to run docker exec: ' + err.message)) })
+      child.on('close', code => {
+        clearTimeout(timer)
+        resolvePromise({ code: code ?? -1, stdout: stdout.trim(), stderr: stderr.trim() })
+      })
+    })
+  }
+
+  // Verify a backup archive BEFORE any destructive step: restore it into a
+  // throwaway scratch database, require at least one table to come back, then
+  // drop the scratch DB. pg_restore SEGFAULTS (exit 139) on truncated
+  // custom-format archives instead of reporting an error, and the restore
+  // handler clears the real data first — so a corrupt upload must be caught
+  // while the current data is still intact. Using PostgreSQL itself as the
+  // validator avoids hand-parsing the binary archive format.
+  async testDumpArchive(filePath: string): Promise<string | null> {
+    const scratch = 'tennis_restore_test_' + Date.now()
+    try {
+      const created = await this._runPsql(['CREATE DATABASE ' + scratch])
+      if (created.code !== 0) return 'could not create scratch test database: ' + created.stderr.slice(0, 300)
+
+      const restoreResult = await new Promise<number>(resolvePromise => {
+        const child = spawn('docker', ['exec', '-i', config.postgresContainer, 'pg_restore', '-U', this.config.user, '-d', scratch, '--no-owner', '--no-privileges', '--clean', '--if-exists'], {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true,
+          shell: false
+        })
+        const timer = setTimeout(() => { child.kill() }, 300000)
+        const input = createReadStream(filePath)
+        input.on('error', () => { clearTimeout(timer); child.kill(); resolvePromise(-1) })
+        input.pipe(child.stdin)
+        child.on('error', () => { clearTimeout(timer); resolvePromise(-1) })
+        child.on('close', code => { clearTimeout(timer); resolvePromise(code ?? -1) })
+      })
+      if (restoreResult !== 0) {
+        return 'pg_restore failed on the test database (exit ' + restoreResult + '). The archive is corrupt or incomplete.'
+      }
+
+      // Require at least one table actually landed — a truncated archive can
+      // surface as a non-fatal pg_restore error while restoring nothing.
+      const tables = await this._runPsql(['SELECT count(*) FROM pg_tables WHERE schemaname = \'public\''], scratch)
+      if (tables.code !== 0) return 'scratch table check failed: ' + tables.stderr.slice(0, 300)
+      const tableCount = Number(String(tables.stdout).trim() || 0)
+      if (tableCount < 1) return 'pg_restore finished but restored no tables; the archive appears empty or corrupt'
+      return null
+    } finally {
+      await this._runPsql(['DROP DATABASE IF EXISTS ' + scratch]).catch(() => { })
+    }
+  }
+
   // Restore a custom-format dump into the database. Destructive: the caller is
   // expected to have truncated the application tables beforehand so no orphaned
   // rows survive with the same primary keys. pg_restore reads the archive from
   // STDIN (no filename given) — the host dump file is piped through 'docker exec -i',
   // so nothing needs to be copied into the container filesystem first.
+  // The handler must call testDumpArchive() first and refuse to proceed on failure.
   async restoreDatabase(filePath: string): Promise<string | null> {
     return new Promise<string | null>((resolvePromise, rejectPromise) => {
-      const child = execFile('docker', ['exec', '-i', config.postgresContainer, 'pg_restore', '-U', this.config.user, '-d', this.config.database, '--no-owner', '--no-privileges', '--clean', '--if-exists'], {
-        maxBuffer: 0,
-        timeout: 300000,
+      const child = spawn('docker', ['exec', '-i', config.postgresContainer, 'pg_restore', '-U', this.config.user, '-d', this.config.database, '--no-owner', '--no-privileges', '--clean', '--if-exists'], {
+        stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
         shell: false
       })
+      const timer = setTimeout(() => { child.kill() }, 300000)
       const input = createReadStream(filePath)
-      input.on('error', err => { child.kill(); rejectPromise(new Error('Failed to read dump file: ' + err.message)) })
+      input.on('error', err => { clearTimeout(timer); child.kill(); rejectPromise(new Error('Failed to read dump file: ' + err.message)) })
       input.pipe(child.stdin)
       let stderr = ''
       child.stdout.on('data', () => {})
       child.stderr.on('data', chunk => { stderr += chunk })
-      child.on('error', err => rejectPromise(new Error('Failed to run docker exec: ' + err.message)))
+      child.on('error', err => { clearTimeout(timer); rejectPromise(new Error('Failed to run docker exec: ' + err.message)) })
       child.on('close', code => {
+        clearTimeout(timer)
         // pg_restore is non-zero when it skips already-applied objects after
         // --clean; treat warnings as success but surface the message.
         if (code === 0 || code === 1) resolvePromise(stderr.trim().slice(0, 1000) || null)

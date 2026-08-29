@@ -641,6 +641,14 @@ export const createBackupRouter = ({
       const filePath = join(config.backupRoot, tempName + '.dump')
       try {
         await writeFile(filePath, upload.buffer)
+        // Validate the archive BEFORE any destructive step: pg_restore crashes
+        // on a truncated archive and the clear is one-way, so a corrupt upload
+        // must be rejected while the current data is still intact.
+        const problem = await db.testDumpArchive(filePath)
+        if (problem) {
+          console.error('❌ File restore rejected, corrupt archive:', problem)
+          return res.status(400).json({ error: 'Backup file is corrupted or incomplete (' + problem + '). Current data left untouched.' })
+        }
         // Destructive clear first (bulk mode silences row triggers).
         await db.clearAllData()
         const warnings = await db.restoreDatabase(filePath)

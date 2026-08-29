@@ -34,12 +34,13 @@ export function DataFeature() {
     if (!pendingRestore) return
     setBusy(true)
     try {
+      // Route through the shared client so the X-CSRF-Token header is attached
+      // (a raw fetch here bypassed the CSRF middleware → 403 on every restore).
       const form = new FormData()
       form.append('file', pendingRestore)
       form.append('confirmRestore', 'true')
-      const response = await fetch(`${getApiBase()}/restore-file`, { method: 'POST', credentials: 'include', body: form })
-      const data = await response.json().catch(() => ({})) as { success?: boolean; error?: string; warnings?: string }
-      if (!response.ok || !data.success) { throw new Error(data.error || 'Restore failed') }
+      const data = await api.request<{ success?: boolean; error?: string; warnings?: string }>('/restore-file', { method: 'POST', body: form })
+      if (!data.success) { throw new Error(data.error || 'Restore failed') }
       await app.reload()
       setPendingRestore(null)
       app.notify(data.warnings ? `Đã khôi phục (có cảnh báo: ${data.warnings.slice(0, 120)})` : 'Khôi phục dữ liệu thành công', 'success')

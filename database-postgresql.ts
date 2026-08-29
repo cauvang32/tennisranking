@@ -1,7 +1,7 @@
 import pg from 'pg'
 import { execFile } from 'node:child_process'
 import { normalize, resolve, join } from 'path'
-import { readFileSync, createWriteStream } from 'fs'
+import { readFileSync, createWriteStream, createReadStream } from 'fs'
 import { mkdir } from 'fs/promises'
 import config from './config/env.js'
 
@@ -2701,13 +2701,15 @@ class TennisDatabasePostgreSQL {
   }
 
   // Full database dump to a file on the host (custom format, self-describing).
-  async dumpDatabase(filePath: string, options: { tempName?: string } = {}): Promise<void> {
-    const containerPath = options.tempName ? '/tmp/' + options.tempName : '/tmp/tennis_dump'
+  // pg_dump must stream to STDOUT: with '-f' the archive lands in the container
+  // filesystem and stdout is empty, producing a 0-byte host file. The custom
+  // format is self-contained, so the byte stream can be written straight to disk.
+  async dumpDatabase(filePath: string): Promise<void> {
     await mkdir(join(filePath, '..'), { recursive: true })
     await new Promise<void>((resolvePromise, rejectPromise) => {
       const out = createWriteStream(filePath)
-      out.on('error', rejectPromise)
-      this._runDockerDbTool(['pg_dump', '-U', this.config.user, '-d', this.config.database, '-Fc', '-f', containerPath], chunk => {
+      out.on('error', err => rejectPromise(new Error('Failed to write dump file: ' + err.message)))
+      this._runDockerDbTool(['pg_dump', '-U', this.config.user, '-d', this.config.database, '-Fc'], chunk => {
         out.write(chunk)
       }).then(() => out.end(err => err ? rejectPromise(err) : resolvePromise())).catch(rejectPromise)
     })
@@ -2715,17 +2717,20 @@ class TennisDatabasePostgreSQL {
 
   // Restore a custom-format dump into the database. Destructive: the caller is
   // expected to have truncated the application tables beforehand so no orphaned
-  // rows survive with the same primary keys. Runs pg_restore in the container
-  // against the configured database.
+  // rows survive with the same primary keys. pg_restore reads the archive from
+  // STDIN (no filename given) — the host dump file is piped through 'docker exec -i',
+  // so nothing needs to be copied into the container filesystem first.
   async restoreDatabase(filePath: string): Promise<string | null> {
-    const containerPath = '/tmp/' + (filePath.split('/').pop() || 'tennis_dump')
     return new Promise<string | null>((resolvePromise, rejectPromise) => {
-      const child = execFile('docker', ['exec', '-i', config.postgresContainer, 'pg_restore', '-U', this.config.user, '-d', this.config.database, '--no-owner', '--no-privileges', '--clean', '--if-exists', containerPath], {
+      const child = execFile('docker', ['exec', '-i', config.postgresContainer, 'pg_restore', '-U', this.config.user, '-d', this.config.database, '--no-owner', '--no-privileges', '--clean', '--if-exists'], {
         maxBuffer: 0,
         timeout: 300000,
         windowsHide: true,
         shell: false
       })
+      const input = createReadStream(filePath)
+      input.on('error', err => { child.kill(); rejectPromise(new Error('Failed to read dump file: ' + err.message)) })
+      input.pipe(child.stdin)
       let stderr = ''
       child.stdout.on('data', () => {})
       child.stderr.on('data', chunk => { stderr += chunk })

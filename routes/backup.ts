@@ -602,7 +602,7 @@ export const createBackupRouter = ({
       const tempName = `tennis_dump_${stamp}`
       const filePath = join(config.backupRoot, tempName + '.dump')
       try {
-        await db.dumpDatabase(filePath, { tempName })
+        await db.dumpDatabase(filePath)
         res.setHeader('Content-Type', 'application/octet-stream')
         res.setHeader('Content-Disposition', `attachment; filename="${tempName}.dump"`)
         res.setHeader('Cache-Control', 'no-store')

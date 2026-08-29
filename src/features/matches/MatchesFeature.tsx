@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
-import type { Match, MatchInput, MatchType, Player } from '../../../shared/domain'
+import type { Match, MatchInput, MatchType, Player, Season } from '../../../shared/domain'
 import { api } from '../../api/client'
 import { ConfirmButton, Empty, Loading, PageHeader, Panel, errorMessage, formatDate } from '../../components/common'
 import { useApp } from '../../app/app-context'
@@ -17,6 +17,27 @@ function PlayerSelect({ value, players, onChange, label }: { value: number | nul
 
 function winnerFromScores(team1Score: number, team2Score: number, fallback: 1 | 2): 1 | 2 {
   return team1Score === team2Score ? fallback : team1Score > team2Score ? 1 : 2
+}
+
+// Vietnamese accent-stripping: NFD decomposition drops the combining marks,
+// then we lowercase and strip anything that is not a-z0-9. (Mirrors the
+// pre-migration ACCENT_MAP-based normalizer but far shorter.)
+function normalizeName(value: string): string {
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+function levenshtein(a: string, b: string): number {
+  const m = a.length; const n = b.length
+  if (!m) return n; if (!n) return m
+  let prev: number[] = Array.from({ length: n + 1 }, (_, i) => i)
+  for (let i = 1; i <= m; i++) {
+    const cur: number[] = new Array<number>(n + 1); cur[0] = i
+    for (let j = 1; j <= n; j++) {
+      cur[j] = Math.min(prev[j]! + 1, cur[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1))
+    }
+    prev = cur
+  }
+  return prev[n] ?? 0
 }
 
 function validate(input: MatchInput): string | null {
@@ -38,6 +59,54 @@ interface ParsedMatch {
   matchType: MatchType
 }
 
+// Editable AI-parsed match card. After parsing, each row is a full MatchInput
+// pre-filled by fuzzyMatchPlayer; the user fixes players/score/winner/date
+// before confirming. (Restores the pre-migration editable preview.)
+function ParsedMatchCard({ match, players, seasons, onPatch, onRemove, defaultSeasonId }: {
+  match: MatchInput; players: Player[]; seasons: Season[];
+  onPatch: (patch: Partial<MatchInput>) => void; onRemove: () => void; defaultSeasonId: number
+}) {
+  const name = (id: number | null) => players.find(p => p.id === id)?.name || ''
+  const selectClass = 'select-field'
+  const inputClass = 'input-field'
+  return (
+    <div className="match-card parsed-match-card">
+      <div className="match-card-header">
+        <span className="match-type-badge">{match.matchType === 'solo' ? '1v1' : '2v2'}</span>
+        <button type="button" className="btn btn-sm btn-danger" onClick={onRemove} title="Xóa trận đấu này"><Icon name="close" size={14} /> Xóa</button>
+      </div>
+      <div className="match-meta-grid">
+        <label className="form-group">Mùa giải<select className={selectClass} value={match.seasonId || defaultSeasonId} onChange={e => onPatch({ seasonId: Number(e.target.value) })}><option value="">-- Chọn --</option>{seasons.filter(s => s.is_active || s.id === match.seasonId).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
+        <label className="form-group">Ngày thi đấu<input className={inputClass} type="date" value={match.playDate} onChange={e => onPatch({ playDate: e.target.value })} /></label>
+      </div>
+      <div className="match-teams">
+        <div className="match-team match-team-1">
+          <span className="match-team-label">Đội 1 · {name(match.player1Id)}{match.matchType === 'duo' ? ` + ${name(match.player2Id)}` : ''}</span>
+          <div className="match-player-selects">
+            <select className={selectClass} value={match.player1Id || ''} onChange={e => onPatch({ player1Id: Number(e.target.value) || 0 })}><option value="">-- Chọn --</option>{players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+            {match.matchType === 'duo' && <select className={selectClass} value={match.player2Id || ''} onChange={e => onPatch({ player2Id: Number(e.target.value) || null })}><option value="">-- Chọn --</option>{players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
+          </div>
+        </div>
+        <div className="match-score">
+          <input className="input-field score-field" type="number" min={0} aria-label="Tỷ số đội 1" value={match.team1Score} onChange={e => onPatch({ team1Score: Number(e.target.value), winningTeam: winnerFromScores(Number(e.target.value), match.team2Score, match.winningTeam) })} />
+          <span className="score-separator">:</span>
+          <input className="input-field score-field" type="number" min={0} aria-label="Tỷ số đội 2" value={match.team2Score} onChange={e => onPatch({ team2Score: Number(e.target.value), winningTeam: winnerFromScores(match.team1Score, Number(e.target.value), match.winningTeam) })} />
+        </div>
+        <div className="match-team match-team-2">
+          <span className="match-team-label">Đội 2 · {name(match.player3Id)}{match.matchType === 'duo' ? ` + ${name(match.player4Id)}` : ''}</span>
+          <div className="match-player-selects">
+            <select className={selectClass} value={match.player3Id || ''} onChange={e => onPatch({ player3Id: Number(e.target.value) || 0 })}><option value="">-- Chọn --</option>{players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>
+            {match.matchType === 'duo' && <select className={selectClass} value={match.player4Id || ''} onChange={e => onPatch({ player4Id: Number(e.target.value) || null })}><option value="">-- Chọn --</option>{players.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}</select>}
+          </div>
+        </div>
+      </div>
+      <div className="match-footer">
+        <select className="select-field match-winner-select" value={match.winningTeam} onChange={e => onPatch({ winningTeam: Number(e.target.value) as 1 | 2 })}><option value={1}>Đội 1 thắng</option><option value={2}>Đội 2 thắng</option></select>
+      </div>
+    </div>
+  )
+}
+
 export function MatchesFeature() {
   const app = useApp()
   const activeSeason = app.seasons.find(season => season.is_active) || app.seasons[0]
@@ -50,7 +119,7 @@ export function MatchesFeature() {
   const [loadingHistory, setLoadingHistory] = useState(false)
   const [busy, setBusy] = useState(false)
   const [batch, setBatch] = useState<MatchInput[]>([])
-  const [parsed, setParsed] = useState<ParsedMatch[]>([])
+  const [parsed, setParsed] = useState<MatchInput[]>([])
   const [parsing, setParsing] = useState(false)
 
   useEffect(() => {
@@ -120,33 +189,69 @@ export function MatchesFeature() {
     try {
       const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(file) })
       const result = await api.mutate<{ matches: ParsedMatch[] }>('/matches/parse-image', 'POST', { imageBase64: dataUrl.split(',')[1], mimeType: file.type })
-      setParsed(result.matches || [])
+      // Pre-fill each AI-parsed row into an editable match, fuzzy-resolving
+      // players against the existing roster. player2/4 are optional for duo.
+      setParsed((result.matches || []).map(item => ({
+        ...blankMatch(activeSeason?.id, defaultDate, item.matchType),
+        player1Id: findPlayer(item.player1Name), player2Id: item.matchType === 'duo' ? (findPlayer(item.player2Name) || null) : null,
+        player3Id: findPlayer(item.player3Name), player4Id: item.matchType === 'duo' ? (findPlayer(item.player4Name) || null) : null,
+        team1Score: item.team1Score, team2Score: item.team2Score, winningTeam: item.winningTeam
+      })))
       app.notify(`Đã trích xuất ${result.matches?.length || 0} trận`, 'success')
     } catch (error) { app.notify(errorMessage(error), 'error') } finally { setParsing(false); event.target.value = '' }
   }
 
-  const normalize = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '')
-  const findPlayer = (name?: string | null) => app.players.find(player => normalize(player.name) === normalize(name || ''))?.id || 0
+  // Fuzzy player resolution for AI-parsed names. The AI often returns a name
+  // that is not byte-identical to the stored player (accents, nickname, extra
+  // words), so we match progressively: exact → substring → last/first word →
+  // Levenshtein ≤ 3. This restores the pre-migration behavior of finding
+  // existing players instead of silently dropping the match.
+  const playerIndex = useMemo(
+    () => app.players.map(player => ({ id: player.id, name: player.name, norm: normalizeName(player.name) })),
+    [app.players]
+  )
+  const fuzzyMatchPlayer = (name?: string | null): number => {
+    const target = normalizeName(name || '').trim()
+    if (!target) return 0
+    const exact = playerIndex.find(entry => entry.norm === target)
+    if (exact) return exact.id
+    const substring = playerIndex.find(entry => entry.norm.includes(target) || target.includes(entry.norm))
+    if (substring) return substring.id
+    const words = target.split(/\s+/)
+    const wordMatch = (pred: (word: string) => boolean) => playerIndex.find(entry => entry.norm.split(/\s+/).some(pred))
+    if (words.length >= 2) {
+      const last = words[words.length - 1]!
+      const nick = wordMatch(w => w === last || last.startsWith(w) || w.startsWith(last))
+      if (nick) return nick.id
+    }
+    const first = words[0]!
+    const firstHit = wordMatch(w => w === first || first.startsWith(w) || w.startsWith(first))
+    if (firstHit) return firstHit.id
+    if (words.length > 3 || target.length <= 20) {
+      let best = Infinity; let bestId = 0
+      for (const entry of playerIndex) {
+        const d = levenshtein(target, entry.norm)
+        if (d < best && d <= 3) { best = d; bestId = entry.id }
+      }
+      if (bestId) return bestId
+    }
+    return 0
+  }
+  const findPlayer = fuzzyMatchPlayer
+  // `parsed` holds the editable matches (pre-filled by fuzzyMatchPlayer above).
+  const updateParsed = (index: number, patch: Partial<MatchInput>) => setParsed(items => items.map((item, i) => i === index ? { ...item, ...patch } : item))
+  const removeParsed = (index: number) => setParsed(items => items.filter((_, i) => i !== index))
   const confirmParsed = async () => {
     if (!parsed.length) return
-    // Map each parsed row to a match, dropping any that can't be matched to
-    // existing players (name not found or invalid). The old UI let users fix or
-    // skip individual rows; keep that behavior instead of aborting the whole batch.
-    const candidates = parsed.map(item => ({
-      ...blankMatch(activeSeason?.id, defaultDate, item.matchType),
-      player1Id: findPlayer(item.player1Name), player2Id: item.matchType === 'duo' ? findPlayer(item.player2Name) || null : null,
-      player3Id: findPlayer(item.player3Name), player4Id: item.matchType === 'duo' ? findPlayer(item.player4Name) || null : null,
-      team1Score: item.team1Score, team2Score: item.team2Score, winningTeam: item.winningTeam
-    }))
-    const valid = candidates.filter(match => !validate(match))
-    const skipped = candidates.length - valid.length
-    if (!valid.length) { app.notify('Không có trận nào khớp với người chơi hiện có. Hãy thêm thủ công.', 'error'); return }
+    const valid = parsed.filter(match => !validate(match))
+    const skipped = parsed.length - valid.length
+    if (!valid.length) { app.notify('Không có trận nào hợp lệ — hãy kiểm tra mùa giải, ngày và người chơi trong từng thẻ.', 'error'); return }
     setBusy(true)
     try {
       await api.mutate('/matches/bulk-create', 'POST', { matches: valid })
       setParsed([])
       await app.reload()
-      app.notify(skipped > 0 ? `Đã ghi nhận ${valid.length} trận, bỏ qua ${skipped} trận chưa khớp` : 'Đã ghi nhận kết quả từ ảnh', skipped ? 'info' : 'success')
+      app.notify(skipped > 0 ? `Đã ghi nhận ${valid.length} trận, bỏ qua ${skipped} trận chưa hợp lệ` : 'Đã ghi nhận kết quả từ ảnh', skipped ? 'info' : 'success')
     } catch (error) { app.notify(errorMessage(error), 'error') } finally { setBusy(false) }
   }
 
@@ -167,7 +272,7 @@ export function MatchesFeature() {
         <div className="react-form-actions"><button className="btn btn-primary" disabled={busy}>{editingId ? 'Lưu thay đổi' : 'Ghi nhận'}</button>{!editingId && <button type="button" className="btn btn-secondary" onClick={addBatch}><Icon name="plus" /> Thêm vào lô</button>}{editingId && <button type="button" className="btn btn-secondary" onClick={() => { setEditingId(undefined); setForm(blankMatch(activeSeason?.id, defaultDate)) }}>Hủy sửa</button>}</div>
       </form>
       {batch.length > 0 && <div className="batch-panel"><div className="subsection-heading"><h4>Lô chờ gửi</h4><span className="count-badge">{batch.length}</span></div>{batch.map((item, index) => <div className="batch-row" key={index}><span>{item.playDate} · {item.matchType === 'solo' ? '1v1' : '2v2'} · {item.team1Score}-{item.team2Score}</span><button type="button" className="btn btn-sm btn-danger" onClick={() => setBatch(rows => rows.filter((_, i) => i !== index))}><Icon name="trash" size={14} /> Xóa</button></div>)}<button type="button" className="btn btn-primary" disabled={busy} onClick={() => void submitBatch()}>Gửi toàn bộ</button></div>}
-      <details className="image-import"><summary><Icon name="image" /> Nhập kết quả từ ảnh</summary><div className="image-import-body"><p>Chọn ảnh PNG, JPEG hoặc WebP có danh sách kết quả rõ ràng.</p><label className="btn btn-secondary file-button"><Icon name="upload" /> {parsing ? 'Đang phân tích…' : 'Chọn ảnh kết quả'}<input hidden type="file" accept="image/png,image/jpeg,image/webp" disabled={parsing} onChange={handleScreenshot} /></label>{parsed.length > 0 && <><div className="parsed-list">{parsed.map((item, index) => <div className="parsed-row" key={index}><strong>{item.player1Name}{item.player2Name ? ` + ${item.player2Name}` : ''}</strong><span>{item.team1Score} – {item.team2Score}</span><strong>{item.player3Name}{item.player4Name ? ` + ${item.player4Name}` : ''}</strong><button type="button" className="btn btn-sm btn-danger" onClick={() => setParsed(rows => rows.filter((_, i) => i !== index))}><Icon name="close" size={14} /></button></div>)}</div><button type="button" className="btn btn-primary" onClick={() => void confirmParsed()}>Xác nhận tất cả</button></>}</div></details>
+      <details className="image-import"><summary><Icon name="image" /> Nhập kết quả từ ảnh</summary><div className="image-import-body"><p>Chọn ảnh PNG, JPEG hoặc WebP có danh sách kết quả rõ ràng.</p><label className="btn btn-secondary file-button"><Icon name="upload" /> {parsing ? 'Đang phân tích…' : 'Chọn ảnh kết quả'}<input hidden type="file" accept="image/png,image/jpeg,image/webp" disabled={parsing} onChange={handleScreenshot} /></label>{parsed.length > 0 && <><div className="match-cards-container">{parsed.map((item, index) => <ParsedMatchCard key={index} match={item} players={app.players} seasons={app.seasons} defaultSeasonId={activeSeason?.id || 0} onPatch={patch => updateParsed(index, patch)} onRemove={() => removeParsed(index)} />)}</div><div className="react-form-actions"><button type="button" className="btn btn-primary" disabled={busy} onClick={() => void confirmParsed()}>Xác nhận tất cả ({parsed.length})</button><button type="button" className="btn btn-secondary" onClick={() => setParsed([])}>Hủy</button></div></>}</div></details>
     </Panel>}
 
     <Panel title="Lịch sử trận đấu" actions={<label className="compact-select">Ngày<select value={historyDate} onChange={e => setHistoryDate(e.target.value)}>{app.data?.playDates.map(date => <option key={date} value={date}>{date}</option>)}</select></label>}>

@@ -124,7 +124,7 @@ Each file in `routes/` exports a factory function. New routes follow the same pa
 | `cups.ts` | Cup tournament management |
 | `export.ts` | Excel export |
 | `admin.ts` | Admin dashboard, FCM control |
-| `backup.ts` | JSON backup/restore, clear data |
+| `backup.ts` | pg_dump .dump backup/restore (file), JSON preview export, clear data |
 | `health.ts` | Health checks, cache stats |
 | `system.ts` | CSRF token, data version, SSE, config debug |
 | `users.ts` | User CRUD, password change |

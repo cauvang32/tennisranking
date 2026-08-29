@@ -1,6 +1,8 @@
 import pg from 'pg'
-import { normalize, resolve } from 'path'
-import { readFileSync } from 'fs'
+import { execFile } from 'node:child_process'
+import { normalize, resolve, join } from 'path'
+import { readFileSync, createWriteStream } from 'fs'
+import { mkdir } from 'fs/promises'
 import config from './config/env.js'
 
 const { Pool } = pg
@@ -2669,8 +2671,75 @@ class TennisDatabasePostgreSQL {
   async close() {
     if (this.pool) {
       await this.pool.end()
-    }
+    
   }
 }
+  // ── Database file backup/restore (pg_dump / pg_restore) ─────────────────
+  // pg_dump and pg_restore live in the Postgres container, not on the host, so
+  // we shell out via 'docker exec' (no --privileged, no docker-socket mount —
+  // we only run tools that already exist inside the image). The backup file is
+  // a self-describing custom-format (.dump) archive: restoring it into a blank
+  // database recreates schema (tables, indexes, triggers, sequences) AND data,
+  // so a brand-new host needs no manual migration step.
+  _runDockerDbTool(args: string[], onStdout?: (chunk: Buffer) => void, timeoutMs = 120000): Promise<void> {
+    return new Promise<void>((resolvePromise, rejectPromise) => {
+      const child = execFile('docker', ['exec', '-i', config.postgresContainer, ...args], {
+        maxBuffer: 0,
+        timeout: timeoutMs,
+        windowsHide: true,
+        shell: false
+      })
+      let stderr = ''
+      child.stdout.on('data', chunk => { if (onStdout) onStdout(chunk) })
+      child.stderr.on('data', chunk => { stderr += chunk })
+      child.on('error', err => rejectPromise(new Error('Failed to run docker exec: ' + err.message)))
+      child.on('close', code => {
+        if (code === 0) resolvePromise()
+        else rejectPromise(new Error('docker exec ' + args[2] + ' exited with code ' + code + ': ' + stderr.trim().slice(0, 500)))
+      })
+    })
+  }
+
+  // Full database dump to a file on the host (custom format, self-describing).
+  async dumpDatabase(filePath: string, options: { tempName?: string } = {}): Promise<void> {
+    const containerPath = options.tempName ? '/tmp/' + options.tempName : '/tmp/tennis_dump'
+    await mkdir(join(filePath, '..'), { recursive: true })
+    await new Promise<void>((resolvePromise, rejectPromise) => {
+      const out = createWriteStream(filePath)
+      out.on('error', rejectPromise)
+      this._runDockerDbTool(['pg_dump', '-U', this.config.user, '-d', this.config.database, '-Fc', '-f', containerPath], chunk => {
+        out.write(chunk)
+      }).then(() => out.end(err => err ? rejectPromise(err) : resolvePromise())).catch(rejectPromise)
+    })
+  }
+
+  // Restore a custom-format dump into the database. Destructive: the caller is
+  // expected to have truncated the application tables beforehand so no orphaned
+  // rows survive with the same primary keys. Runs pg_restore in the container
+  // against the configured database.
+  async restoreDatabase(filePath: string): Promise<string | null> {
+    const containerPath = '/tmp/' + (filePath.split('/').pop() || 'tennis_dump')
+    return new Promise<string | null>((resolvePromise, rejectPromise) => {
+      const child = execFile('docker', ['exec', '-i', config.postgresContainer, 'pg_restore', '-U', this.config.user, '-d', this.config.database, '--no-owner', '--no-privileges', '--clean', '--if-exists', containerPath], {
+        maxBuffer: 0,
+        timeout: 300000,
+        windowsHide: true,
+        shell: false
+      })
+      let stderr = ''
+      child.stdout.on('data', () => {})
+      child.stderr.on('data', chunk => { stderr += chunk })
+      child.on('error', err => rejectPromise(new Error('Failed to run docker exec: ' + err.message)))
+      child.on('close', code => {
+        // pg_restore is non-zero when it skips already-applied objects after
+        // --clean; treat warnings as success but surface the message.
+        if (code === 0 || code === 1) resolvePromise(stderr.trim().slice(0, 1000) || null)
+        else rejectPromise(new Error('pg_restore exited with code ' + code + ': ' + stderr.trim().slice(0, 500)))
+      })
+    })
+  }
+
+}
+
 
 export default TennisDatabasePostgreSQL

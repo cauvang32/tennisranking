@@ -11,3 +11,10 @@ if (process.env.NODE_ENV !== 'test') {
 export const uploadRoot = resolve(
   process.env.UPLOAD_ROOT || join(process.cwd(), 'data', 'uploads')
 )
+
+// Directory for database backup files (pg_dump custom-format .dump).
+// Production should point UPLOAD_ROOT outside the Git checkout so git
+// reset/redeploy cannot remove backups or uploads.
+export const backupRoot = resolve(
+  process.env.BACKUP_ROOT || join(process.cwd(), 'data', 'backups')
+)

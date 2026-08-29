@@ -2,7 +2,11 @@ import { Router } from 'express'
 import express from 'express'
 import crypto from 'crypto'
 import bcrypt from 'bcrypt'
+import multer from 'multer'
 import { body } from 'express-validator'
+import { join } from 'path'
+import { createReadStream } from 'fs'
+import { unlink, writeFile } from 'fs/promises'
 import config from '../config/env.js'
 
 import { asyncHandler } from '../utils/async-handler.js'
@@ -577,6 +581,82 @@ export const createBackupRouter = ({
       await rankingsCache.clear()
       console.log('✅ All data cleared successfully')
       res.json({ success: true, message: 'All data cleared successfully', timestamp: formatSecureTimestamp() })
+    })
+  )
+
+  // ── Database file backup / restore (pg_dump custom format) ─────────────
+  // The .dump is self-describing: restoring it into a blank database recreates
+  // schema (tables, indexes, triggers, sequences) AND data, so it is the
+  // recommended full-disaster-recovery artifact. The JSON /backup above is kept
+  // only as a human-readable preview; it no longer restores into a blank host.
+  const fileUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 500 * 1024 * 1024 } // 500 MB
+  })
+
+  router.get('/backup-file',
+    authenticateToken, requireAdmin, conditionalRateLimit(criticalLimiter),
+    asyncHandler(async (req, res) => {
+      console.log(`💾 DUMP requested by user: ${req.user.username}`)
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      const tempName = `tennis_dump_${stamp}`
+      const filePath = join(config.backupRoot, tempName + '.dump')
+      try {
+        await db.dumpDatabase(filePath, { tempName })
+        res.setHeader('Content-Type', 'application/octet-stream')
+        res.setHeader('Content-Disposition', `attachment; filename="${tempName}.dump"`)
+        res.setHeader('Cache-Control', 'no-store')
+        const stream = createReadStream(filePath)
+        stream.on('error', err => { if (!res.headersSent) res.status(500).json({ error: err.message }) })
+        stream.pipe(res)
+        stream.on('close', () => unlink(filePath).catch(() => {}))
+      } catch (error) {
+        console.error('❌ Dump failed:', error.message)
+        if (!res.headersSent) res.status(500).json({ error: 'Failed to create database dump: ' + error.message })
+      }
+    })
+  )
+
+  router.post('/restore-file',
+    authenticateToken, requireAdmin, conditionalRateLimit(criticalLimiter),
+    fileUpload.single('file'),
+    asyncHandler(async (req, res) => {
+      const upload = req.file
+      if (!upload || upload.size === 0) {
+        return res.status(400).json({ error: 'No backup file uploaded' })
+      }
+      if (!upload.originalname || !/\.(dump|sql)$/i.test(upload.originalname)) {
+        return res.status(400).json({ error: 'Unsupported backup file type (expected .dump or .sql)' })
+      }
+      // H2: explicit confirmation required (destructive operation)
+      if (req.body?.confirmRestore !== 'true') {
+        return res.status(400).json({
+          error: 'Xác nhận cần thiết để khôi phục dữ liệu',
+          requiresConfirmation: true,
+          message: 'Hành động này sẽ ghi đè toàn bộ dữ liệu hiện tại. Gửi lại với confirmRestore=true để xác nhận.'
+        })
+      }
+      console.log(`📥 FILE RESTORE requested by ${req.user.username}: ${upload.originalname} (${upload.size} bytes)`)
+      const tempName = `restore_${Date.now()}`
+      const filePath = join(config.backupRoot, tempName + '.dump')
+      try {
+        await writeFile(filePath, upload.buffer)
+        // Destructive clear first (bulk mode silences row triggers).
+        await db.clearAllData()
+        const warnings = await db.restoreDatabase(filePath)
+        await db.notifyBulkTx()
+        await rankingsCache.clear()
+        if (warnings) console.warn('⚠️ pg_restore warnings:', warnings)
+        console.log('✅ File restore completed')
+        res.json({ success: true, message: 'Database restored from dump file', warnings: warnings || undefined })
+      } catch (error) {
+        console.error('❌ File restore failed:', error.message)
+        // Best-effort: data was already cleared; surface the failure so the
+        // admin knows the restore did NOT complete and can re-run it.
+        res.status(500).json({ error: 'Restore failed after clearing data. Re-run the restore.', details: error.message })
+      } finally {
+        await unlink(filePath).catch(() => {})
+      }
     })
   )
 

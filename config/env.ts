@@ -1,7 +1,7 @@
 import dotenv from 'dotenv'
 import { readFileSync } from 'fs'
 import { join } from 'path'
-import { uploadRoot } from './upload-paths.js'
+import { uploadRoot, backupRoot } from './upload-paths.js'
 
 // Load environment variables (idempotent — safe to call multiple times)
 dotenv.config({ path: join(process.cwd(), '.env') })
@@ -183,6 +183,13 @@ const config = {
   // point this outside the Git checkout (for example
   // /home/vps/tennisranking-data/uploads) so git reset/redeploy cannot remove it.
   uploadRoot,
+
+  // Database backup files (pg_dump .dump). Kept alongside uploads in production.
+  backupRoot,
+
+  // Postgres container name used for docker-exec based backup/restore
+  // (pg_dump/pg_restore run inside the DB container; no binaries on the host).
+  postgresContainer: process.env.POSTGRES_CONTAINER || 'tennis-postgres',
 
   // Database connection pool
   // Default of 10 is reasonable for a single-worker app; increase for PM2 cluster mode.

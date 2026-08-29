@@ -31,3 +31,13 @@ Follow the existing Conventional Commit style: `feat: add cup brackets`, `fix: p
 ## Security & Configuration
 
 Copy `.env.example` to `.env`; never commit secrets, credentials, uploaded data, or generated keys. Required authentication and CSRF secrets are validated at startup. Preserve cookie, CSRF, authorization, cache-invalidation, and parameterized-query patterns when modifying API behavior.
+
+### Backup / restore
+
+Full disaster recovery uses `pg_dump` in **custom format** (`.dump`), run inside the Postgres container via `docker exec` (the host has no `pg_dump`; `POSTGRES_CONTAINER` names the container, default `tennis-postgres`). The dump is self-describing — restoring it into a blank database recreates schema (tables, indexes, triggers, sequences) **and** data, so a brand-new host needs no manual migration.
+
+- `GET /api/backup-file` → streams a fresh `.dump` for download (saved under `BACKUP_ROOT`, default `data/backups/`).
+- `POST /api/restore-file` → upload a `.dump` (multipart, field `file` + `confirmRestore=true`); clears the DB in bulk mode (row triggers silenced), runs `pg_restore --clean --if-exists`, then fires one cache notification.
+- `GET /api/backup` / `POST /api/restore` (JSON) are kept as a **read-only preview** for inspecting records; the JSON path no longer restores into a blank host because it must hand-map every column/table.
+
+When a new table or column is added, the `.dump`/`.sql` paths pick it up automatically (no per-column code); only the JSON preview would need its export/insert lists updated if you keep using it.

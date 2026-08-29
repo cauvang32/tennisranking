@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from 'react'
-import type { Match, MatchInput, MatchType, Player, Season } from '../../../shared/domain'
+import type { Match, MatchInput, MatchType, Player } from '../../../shared/domain'
 import { api } from '../../api/client'
 import { ConfirmButton, Empty, Loading, PageHeader, Panel, errorMessage, formatDate } from '../../components/common'
 import { useApp } from '../../app/app-context'
@@ -122,22 +122,17 @@ interface ParsedMatch {
 // Editable AI-parsed match card. After parsing, each row is a full MatchInput
 // pre-filled by fuzzyMatchPlayer; the user fixes players/score/winner/date
 // before confirming. (Restores the pre-migration editable preview.)
-function ParsedMatchCard({ match, players, seasons, onPatch, onRemove, defaultSeasonId }: {
-  match: MatchInput; players: Player[]; seasons: Season[];
-  onPatch: (patch: Partial<MatchInput>) => void; onRemove: () => void; defaultSeasonId: number
+function ParsedMatchCard({ match, players, onPatch, onRemove }: {
+  match: MatchInput; players: Player[];
+  onPatch: (patch: Partial<MatchInput>) => void; onRemove: () => void
 }) {
   const name = (id: number | null) => players.find(p => p.id === id)?.name || ''
   const selectClass = 'select-field'
-  const inputClass = 'input-field'
   return (
     <div className="match-card parsed-match-card">
       <div className="match-card-header">
         <span className="match-type-badge">{match.matchType === 'solo' ? '1v1' : '2v2'}</span>
         <button type="button" className="btn btn-sm btn-danger" onClick={onRemove} title="Xóa trận đấu này"><Icon name="close" size={14} /> Xóa</button>
-      </div>
-      <div className="match-meta-grid">
-        <label className="form-group">Mùa giải<select className={selectClass} value={match.seasonId || defaultSeasonId} onChange={e => onPatch({ seasonId: Number(e.target.value) })}><option value="">-- Chọn --</option>{seasons.filter(s => s.is_active || s.id === match.seasonId).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label>
-        <label className="form-group">Ngày thi đấu<input className={inputClass} type="date" value={match.playDate} onChange={e => onPatch({ playDate: e.target.value })} /></label>
       </div>
       <div className="match-teams">
         <div className="match-team match-team-1">
@@ -181,6 +176,9 @@ export function MatchesFeature() {
   const [batch, setBatch] = useState<MatchInput[]>([])
   const [parsed, setParsed] = useState<MatchInput[]>([])
   const [parsing, setParsing] = useState(false)
+  // Shared season/date for the whole parsed batch — one change syncs every card.
+  const [parsedSeasonId, setParsedSeasonId] = useState(0)
+  const [parsedDate, setParsedDate] = useState('')
 
   useEffect(() => {
     if (!form.seasonId) { setEligiblePlayers(app.players); return }
@@ -249,6 +247,9 @@ export function MatchesFeature() {
     try {
       const dataUrl = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = reject; reader.readAsDataURL(file) })
       const result = await api.mutate<{ matches: ParsedMatch[] }>('/matches/parse-image', 'POST', { imageBase64: dataUrl.split(',')[1], mimeType: file.type })
+      // Auto-default the whole batch: latest active season + latest play date.
+      setParsedSeasonId(activeSeason?.id || 0)
+      setParsedDate(defaultDate)
       // Pre-fill each AI-parsed row into an editable match, fuzzy-resolving
       // players against the existing roster. player2/4 are optional for duo.
       setParsed((result.matches || []).map(item => {
@@ -315,7 +316,10 @@ export function MatchesFeature() {
   const removeParsed = (index: number) => setParsed(items => items.filter((_, i) => i !== index))
   const confirmParsed = async () => {
     if (!parsed.length) return
-    const valid = parsed.filter(match => !validate(match))
+    // The shared season/date are the single source of truth for the batch —
+    // they apply to every match so the whole batch stays in sync.
+    const filled = parsed.map(match => ({ ...match, seasonId: parsedSeasonId, playDate: parsedDate }))
+    const valid = filled.filter(match => !validate(match))
     const skipped = parsed.length - valid.length
     if (!valid.length) { app.notify('Không có trận nào hợp lệ — hãy kiểm tra mùa giải, ngày và người chơi trong từng thẻ.', 'error'); return }
     setBusy(true)
@@ -344,7 +348,7 @@ export function MatchesFeature() {
         <div className="react-form-actions"><button className="btn btn-primary" disabled={busy}>{editingId ? 'Lưu thay đổi' : 'Ghi nhận'}</button>{!editingId && <button type="button" className="btn btn-secondary" onClick={addBatch}><Icon name="plus" /> Thêm vào lô</button>}{editingId && <button type="button" className="btn btn-secondary" onClick={() => { setEditingId(undefined); setForm(blankMatch(activeSeason?.id, defaultDate)) }}>Hủy sửa</button>}</div>
       </form>
       {batch.length > 0 && <div className="batch-panel"><div className="subsection-heading"><h4>Lô chờ gửi</h4><span className="count-badge">{batch.length}</span></div>{batch.map((item, index) => <div className="batch-row" key={index}><span>{item.playDate} · {item.matchType === 'solo' ? '1v1' : '2v2'} · {item.team1Score}-{item.team2Score}</span><button type="button" className="btn btn-sm btn-danger" onClick={() => setBatch(rows => rows.filter((_, i) => i !== index))}><Icon name="trash" size={14} /> Xóa</button></div>)}<button type="button" className="btn btn-primary" disabled={busy} onClick={() => void submitBatch()}>Gửi toàn bộ</button></div>}
-      <details className="image-import"><summary><Icon name="image" /> Nhập kết quả từ ảnh</summary><div className="image-import-body"><p>Chọn ảnh PNG, JPEG hoặc WebP có danh sách kết quả rõ ràng.</p><label className="btn btn-secondary file-button"><Icon name="upload" /> {parsing ? 'Đang phân tích…' : 'Chọn ảnh kết quả'}<input hidden type="file" accept="image/png,image/jpeg,image/webp" disabled={parsing} onChange={handleScreenshot} /></label>{parsed.length > 0 && <><div className="match-cards-container">{parsed.map((item, index) => <ParsedMatchCard key={index} match={item} players={app.players} seasons={app.seasons} defaultSeasonId={activeSeason?.id || 0} onPatch={patch => updateParsed(index, patch)} onRemove={() => removeParsed(index)} />)}</div><div className="react-form-actions"><button type="button" className="btn btn-primary" disabled={busy} onClick={() => void confirmParsed()}>Xác nhận tất cả ({parsed.length})</button><button type="button" className="btn btn-secondary" onClick={() => setParsed([])}>Hủy</button></div></>}</div></details>
+      <details className="image-import"><summary><Icon name="image" /> Nhập kết quả từ ảnh</summary><div className="image-import-body"><p>Chọn ảnh PNG, JPEG hoặc WebP có danh sách kết quả rõ ràng.</p><label className="btn btn-secondary file-button"><Icon name="upload" /> {parsing ? 'Đang phân tích…' : 'Chọn ảnh kết quả'}<input hidden type="file" accept="image/png,image/jpeg,image/webp" disabled={parsing} onChange={handleScreenshot} /></label>{parsed.length > 0 && <><div className="match-meta-grid parsed-batch-meta"><label className="form-group">Mùa giải (áp dụng cả lô)<select className="select-field" value={parsedSeasonId} onChange={e => setParsedSeasonId(Number(e.target.value))}><option value="">-- Chọn --</option>{app.seasons.filter(s => s.is_active || s.id === parsedSeasonId).map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select></label><label className="form-group">Ngày thi đấu (áp dụng cả lô)<input className="input-field" type="date" value={parsedDate} onChange={e => setParsedDate(e.target.value)} /></label></div><div className="match-cards-container">{parsed.map((item, index) => <ParsedMatchCard key={index} match={item} players={app.players} onPatch={patch => updateParsed(index, patch)} onRemove={() => removeParsed(index)} />)}</div><div className="react-form-actions"><button type="button" className="btn btn-primary" disabled={busy} onClick={() => void confirmParsed()}>Xác nhận tất cả ({parsed.length})</button><button type="button" className="btn btn-secondary" onClick={() => { setParsed([]); setParsedSeasonId(0); setParsedDate('') }}>Hủy</button></div></>}</div></details>
     </Panel>}
 
     <Panel title="Lịch sử trận đấu" actions={<label className="compact-select">Ngày<select value={historyDate} onChange={e => setHistoryDate(e.target.value)}>{app.data?.playDates.map(date => <option key={date} value={date}>{date}</option>)}</select></label>}>

@@ -23,7 +23,22 @@ function winnerFromScores(team1Score: number, team2Score: number, fallback: 1 | 
 // then we lowercase and strip anything that is not a-z0-9. (Mirrors the
 // pre-migration ACCENT_MAP-based normalizer but far shorter.)
 function normalizeName(value: string): string {
-  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]/g, '')
+  // Keep spaces so multi-word names stay splittable; drop other punctuation.
+  return value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9 ]/g, '')
+}
+
+// Word-level scoring used by mapTeamNameToPair: how well one normalized word
+// covers one normalized player name (exact/last/first/substring/prefix).
+function scoreWordAgainstPlayer(word: string, playerNorm: string): number {
+  if (word === playerNorm) return 10
+  const playerWords = playerNorm.split(/\s+/)
+  const last = playerWords[playerWords.length - 1]!
+  if (playerWords.length > 0 && word === last) return 10
+  if (playerWords.length > 0 && word === playerWords[0]!) return 7
+  if (playerNorm.includes(word)) return 7
+  if (last.startsWith(word)) return 5
+  if (word.startsWith(last)) return 5
+  return 0
 }
 
 function levenshtein(a: string, b: string): number {
@@ -38,6 +53,51 @@ function levenshtein(a: string, b: string): number {
     prev = cur
   }
   return prev[n] ?? 0
+}
+
+/**
+ * Split an AI-returned *team* name into up to two individual players.
+ * The AI prompt forces player2Name/player4Name to null, so for a 2v2 match the
+ * model returns each side as one string (e.g. "Anh Tú & Dũng"). Score every
+ * roster player against the team words, then pick the best disjoint pair (or a
+ * single player if only one matches). Returns ids or nulls for unfilled slots.
+ */
+function mapTeamNameToPair(teamName: string | null | undefined, players: { id: number; norm: string }[]): { p1: number | null; p2: number | null } {
+  const normalized = normalizeName(teamName || '').trim()
+  if (!normalized) return { p1: null, p2: null }
+  const words = normalized.split(/\s+/).filter(Boolean)
+  if (!words.length) return { p1: null, p2: null }
+  const candidates = players
+    .map(entry => ({ id: entry.id, score: words.reduce((sum, w) => sum + scoreWordAgainstPlayer(w, entry.norm), 0) }))
+    .filter(entry => entry.score > 0)
+  if (!candidates.length) return { p1: null, p2: null }
+  candidates.sort((a, b) => b.score - a.score)
+  // Single player covers all words → 1v1-ish result, leave partner empty.
+  const top = candidates[0]!
+  const coveredBy = (id: number) => {
+    const norm = players.find(entry => entry.id === id)!.norm
+    let covered = 0
+    for (const w of words) if (scoreWordAgainstPlayer(w, norm) > 0) covered++
+    return covered
+  }
+  if (candidates.length === 1 || coveredBy(top.id) === words.length && candidates.length <= 2) {
+    if (words.length === 1 && candidates.length <= 2) return { p1: top.id, p2: null }
+  }
+  let bestPair: { p1: number | null; p2: number | null } | null = null
+  let bestTotal = -1
+  for (let i = 0; i < candidates.length; i++) {
+    for (let j = i + 1; j < candidates.length; j++) {
+      const a = candidates[i]!, b = candidates[j]!
+      const normA = players.find(entry => entry.id === a.id)!.norm
+      const normB = players.find(entry => entry.id === b.id)!.norm
+      let covered = 0
+      for (const w of words) if (scoreWordAgainstPlayer(w, normA) > 0 || scoreWordAgainstPlayer(w, normB) > 0) covered++
+      const total = a.score + b.score + (covered === words.length ? 20 : 0)
+      if (total > bestTotal) { bestTotal = total; bestPair = { p1: a.id, p2: b.id } }
+    }
+  }
+  if (bestPair && bestTotal >= words.length * 3) return bestPair
+  return { p1: top.id, p2: null }
 }
 
 function validate(input: MatchInput): string | null {
@@ -191,12 +251,24 @@ export function MatchesFeature() {
       const result = await api.mutate<{ matches: ParsedMatch[] }>('/matches/parse-image', 'POST', { imageBase64: dataUrl.split(',')[1], mimeType: file.type })
       // Pre-fill each AI-parsed row into an editable match, fuzzy-resolving
       // players against the existing roster. player2/4 are optional for duo.
-      setParsed((result.matches || []).map(item => ({
-        ...blankMatch(activeSeason?.id, defaultDate, item.matchType),
-        player1Id: findPlayer(item.player1Name), player2Id: item.matchType === 'duo' ? (findPlayer(item.player2Name) || null) : null,
-        player3Id: findPlayer(item.player3Name), player4Id: item.matchType === 'duo' ? (findPlayer(item.player4Name) || null) : null,
-        team1Score: item.team1Score, team2Score: item.team2Score, winningTeam: item.winningTeam
-      })))
+      setParsed((result.matches || []).map(item => {
+        // For 2v2 the AI returns each side as ONE team string (the prompt forces
+        // player2Name/player4Name to null), so split it into two players;
+        // solo/duo rows with explicit 4 names use the per-slot matcher.
+        const hasExplicitPartner = Boolean(item.player2Name || item.player4Name)
+        const side1 = hasExplicitPartner
+          ? { p1: findPlayer(item.player1Name), p2: item.player2Name ? (findPlayer(item.player2Name) || null) : null }
+          : mapTeamNameToPair(item.player1Name, playerIndex)
+        const side2 = hasExplicitPartner
+          ? { p1: findPlayer(item.player3Name), p2: item.player4Name ? (findPlayer(item.player4Name) || null) : null }
+          : mapTeamNameToPair(item.player3Name, playerIndex)
+        return {
+          ...blankMatch(activeSeason?.id, defaultDate, item.matchType),
+          player1Id: side1.p1 || 0, player2Id: item.matchType === 'duo' ? side1.p2 : null,
+          player3Id: side2.p1 || 0, player4Id: item.matchType === 'duo' ? side2.p2 : null,
+          team1Score: item.team1Score, team2Score: item.team2Score, winningTeam: item.winningTeam
+        }
+      }))
       app.notify(`Đã trích xuất ${result.matches?.length || 0} trận`, 'success')
     } catch (error) { app.notify(errorMessage(error), 'error') } finally { setParsing(false); event.target.value = '' }
   }

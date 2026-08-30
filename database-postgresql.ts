@@ -2671,9 +2671,9 @@ class TennisDatabasePostgreSQL {
   async close() {
     if (this.pool) {
       await this.pool.end()
-    
+    }
   }
-}
+
   // ── Database file backup/restore (pg_dump / pg_restore) ─────────────────
   // pg_dump and pg_restore live in the Postgres container, not on the host, so
   // we shell out via 'docker exec' (no --privileged, no docker-socket mount —
@@ -2744,12 +2744,12 @@ class TennisDatabasePostgreSQL {
   }
 
   // Verify a backup archive BEFORE any destructive step: restore it into a
-  // throwaway scratch database, require at least one table to come back, then
-  // drop the scratch DB. pg_restore SEGFAULTS (exit 139) on truncated
-  // custom-format archives instead of reporting an error, and the restore
-  // handler clears the real data first — so a corrupt upload must be caught
-  // while the current data is still intact. Using PostgreSQL itself as the
-  // validator avoids hand-parsing the binary archive format.
+  // throwaway scratch database with the SAME flags the real restore uses,
+  // require at least one table to come back, then drop the scratch DB.
+  // pg_restore SEGFAULTS (exit 139) on truncated custom-format archives
+  // instead of reporting an error, so a corrupt upload must be caught before
+  // we touch the real database. Using PostgreSQL itself as the validator
+  // avoids hand-parsing the binary archive format.
   async testDumpArchive(filePath: string): Promise<string | null> {
     const scratch = 'tennis_restore_test_' + Date.now()
     try {
@@ -2757,7 +2757,7 @@ class TennisDatabasePostgreSQL {
       if (created.code !== 0) return 'could not create scratch test database: ' + created.stderr.slice(0, 300)
 
       const restoreResult = await new Promise<number>(resolvePromise => {
-        const child = spawn('docker', ['exec', '-i', config.postgresContainer, 'pg_restore', '-U', this.config.user, '-d', scratch, '--no-owner', '--no-privileges', '--clean', '--if-exists'], {
+        const child = spawn('docker', ['exec', '-i', config.postgresContainer, 'pg_restore', '-U', this.config.user, '-d', scratch, '--no-owner', '--no-privileges', '--clean', '--if-exists', '--disable-triggers', '--single-transaction'], {
           stdio: ['pipe', 'pipe', 'pipe'],
           windowsHide: true,
           shell: false
@@ -2785,15 +2785,19 @@ class TennisDatabasePostgreSQL {
     }
   }
 
-  // Restore a custom-format dump into the database. Destructive: the caller is
-  // expected to have truncated the application tables beforehand so no orphaned
-  // rows survive with the same primary keys. pg_restore reads the archive from
-  // STDIN (no filename given) — the host dump file is piped through 'docker exec -i',
-  // so nothing needs to be copied into the container filesystem first.
+  // Restore a custom-format dump into the database. The dump is
+  // self-describing, so the restore REPLACES every table: pg_restore --clean
+  // drops each object before recreating it, and the whole thing runs in a
+  // SINGLE transaction — on any failure it rolls back and the pre-restore
+  // data stays intact (no "cleared but half-restored" state). --disable-triggers
+  // stops the stats triggers on 'matches' from firing mid-restore and corrupting
+  // the stats tables the archive also carries (allowed: the app role is
+  // superuser and owns all tables). pg_restore reads the archive from STDIN
+  // (no filename given) — the host dump file is piped through 'docker exec -i'.
   // The handler must call testDumpArchive() first and refuse to proceed on failure.
   async restoreDatabase(filePath: string): Promise<string | null> {
     return new Promise<string | null>((resolvePromise, rejectPromise) => {
-      const child = spawn('docker', ['exec', '-i', config.postgresContainer, 'pg_restore', '-U', this.config.user, '-d', this.config.database, '--no-owner', '--no-privileges', '--clean', '--if-exists'], {
+      const child = spawn('docker', ['exec', '-i', config.postgresContainer, 'pg_restore', '-U', this.config.user, '-d', this.config.database, '--no-owner', '--no-privileges', '--clean', '--if-exists', '--disable-triggers', '--single-transaction'], {
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true,
         shell: false
@@ -2808,10 +2812,13 @@ class TennisDatabasePostgreSQL {
       child.on('error', err => { clearTimeout(timer); rejectPromise(new Error('Failed to run docker exec: ' + err.message)) })
       child.on('close', code => {
         clearTimeout(timer)
-        // pg_restore is non-zero when it skips already-applied objects after
-        // --clean; treat warnings as success but surface the message.
-        if (code === 0 || code === 1) resolvePromise(stderr.trim().slice(0, 1000) || null)
-        else rejectPromise(new Error('pg_restore exited with code ' + code + ': ' + stderr.trim().slice(0, 500)))
+        // With --single-transaction the restore is all-or-nothing: any error
+        // aborts the whole transaction and rolls back. So exit code 1 (which
+        // pg_restore also uses for "completed with errors") must be treated
+        // as FAILURE, never silently accepted — otherwise a partial restore
+        // is reported as success and data is quietly missing.
+        if (code === 0) resolvePromise(stderr.trim().slice(0, 1000) || null)
+        else rejectPromise(new Error('pg_restore exited with code ' + code + ' (rolled back): ' + stderr.trim().slice(0, 500)))
       })
     })
   }

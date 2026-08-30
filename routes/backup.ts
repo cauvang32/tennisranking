@@ -594,8 +594,9 @@ export const createBackupRouter = ({
   // ── Database file backup / restore (pg_dump custom format) ─────────────
   // The .dump is self-describing: restoring it into a blank database recreates
   // schema (tables, indexes, triggers, sequences) AND data, so it is the
-  // recommended full-disaster-recovery artifact. The JSON /backup above is kept
-  // only as a human-readable preview; it no longer restores into a blank host.
+  // recommended full-disaster-recovery artifact. The JSON /backup above is a
+  // human-readable legacy backup: /restore-file accepts .json uploads and
+  // restores them via the same shared JSON restore transaction.
   const fileUpload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 500 * 1024 * 1024 } // 500 MB
@@ -690,8 +691,11 @@ export const createBackupRouter = ({
           console.error('❌ File restore rejected, corrupt archive:', problem)
           return res.status(400).json({ error: 'Backup file is corrupted or incomplete (' + problem + '). Current data left untouched.' })
         }
-        // Destructive clear first (bulk mode silences row triggers).
-        await db.clearAllData()
+        // No separate clear step: the dump is self-describing, so pg_restore
+        // --clean --if-exists --single-transaction drops and recreates every
+        // table inside ONE transaction. On any failure it rolls back and the
+        // current data is left intact — a failed restore can never leave the
+        // database empty.
         const warnings = await db.restoreDatabase(filePath)
         await db.notifyBulkTx()
         await rankingsCache.clear()
@@ -699,10 +703,8 @@ export const createBackupRouter = ({
         console.log('✅ File restore completed')
         res.json({ success: true, message: 'Database restored from dump file', warnings: warnings || undefined })
       } catch (error) {
-        console.error('❌ File restore failed:', error.message)
-        // Best-effort: data was already cleared; surface the failure so the
-        // admin knows the restore did NOT complete and can re-run it.
-        res.status(500).json({ error: 'Restore failed after clearing data. Re-run the restore.', details: error.message })
+        console.error('❌ File restore failed (rolled back):', error.message)
+        res.status(500).json({ error: 'Restore failed and was rolled back; your current data is intact.', details: error.message })
       } finally {
         await unlink(filePath).catch(() => {})
       }

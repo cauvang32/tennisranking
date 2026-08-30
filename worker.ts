@@ -1,6 +1,6 @@
 import './config/env.js' // Loads and validates required environment variables at boot
 import http from 'http'
-import DB from './database-postgresql.js'
+import DB from './databases/postgresql/index.js'
 import { createPushSender } from './lib/push-sender.js'
 
 // Module-level refs so the health server closure can access them.

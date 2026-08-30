@@ -129,7 +129,7 @@ npm run deploy:subdomain   # BASE_PATH=/
 │   └── style.css            # Existing design system
 ├── public/                  # Static assets
 ├── server.ts                # Express app source (thin orchestration layer)
-├── database-postgresql.ts   # PostgreSQL adapter (all queries)
+├── databases/postgresql/    # PostgreSQL adapter (split by domain)
 ├── worker.ts                # FCM background worker (BullMQ)
 ├── build/                   # Compiled server/worker output (generated)
 ├── dist/                    # Production browser assets (generated)

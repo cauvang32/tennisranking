@@ -25,7 +25,7 @@ const legacyMigrations = [
   '11-add-cup-results.sh'
 ]
 
-const { default: TennisDatabase } = await import('../database-postgresql.js')
+const { default: TennisDatabase } = await import('../databases/postgresql/index.js')
 const db = new TennisDatabase()
 const initialized = await db.init()
 if (!initialized || !db.pool) throw new Error('Core database bootstrap failed')

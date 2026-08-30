@@ -44,7 +44,7 @@ import { buildAuthMiddleware, invalidateTokenVersionCache } from './middleware/a
 import { privateApiCacheControl } from './middleware/api-cache-control.js'
 import { createTimeoutMiddleware } from './utils/async-handler.js'
 import RedisCache from './lib/redis-cache.js'
-import TennisDatabase from './database-postgresql.js'
+import TennisDatabase from './databases/postgresql/index.js'
 import { createPushSender } from './lib/push-sender.js'
 import { logAccess } from './access-logger.js'
 import { uploadRoot } from './lib/upload-storage.js'

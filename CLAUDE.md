@@ -21,7 +21,7 @@ Node.js 22 is expected. Production never executes TypeScript source directly.
 ## Code layout
 
 - `server.ts` is the composition root; keep domain behavior in injected route/service modules.
-- `database-postgresql.ts` is the production database adapter. Use parameterized SQL only.
+- `databases/postgresql/` is the production database adapter (split by domain: `core`, `schema`, `players`, `seasons`, `matches`, `rankings`, `users`, `devices`, `data`, `images`, `cups`, `backup`; composed in `index.ts`). Use parameterized SQL only.
 - `config/`, `lib/`, `middleware/`, `routes/`, and `utils/` contain backend TypeScript.
 - `src/app/` owns the React shell and application context; `src/api/` owns HTTP/auth/CSRF behavior; `src/components/` contains shared UI; `src/features/` contains feature components.
 - `shared/domain.ts` holds browser/server contracts.

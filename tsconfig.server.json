@@ -17,7 +17,7 @@
     "server.ts",
     "worker.ts",
     "access-logger.ts",
-    "database-postgresql.ts",
+    "databases/**/*.ts",
     "config/**/*.ts",
     "lib/**/*.ts",
     "middleware/**/*.ts",

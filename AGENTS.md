@@ -2,7 +2,9 @@
 
 ## Project Structure & Module Organization
 
-This is a tennis-ranking application: an Express/PostgreSQL/Redis TypeScript API plus a React/Vite TypeScript SPA. Source entry points are `server.ts` (HTTP app), `database-postgresql.ts` (database adapter), and `worker.ts` (FCM worker); production runs their compiled files from `build/`. Keep route handlers in `routes/`, cross-cutting services in `lib/`, configuration in `config/`, and middleware in `middleware/`. The frontend lives in `src/`: application state in `src/app/`, shared UI in `src/components/`, API access in `src/api/`, and feature components in `src/features/<feature>/`. Shared API/domain contracts live in `shared/`. Put database changes in ordered, idempotent `migrations/`; put tests in `tests/`, `tests/unit/`, or `tests/frontend/`.
+This is a tennis-ranking application: an Express/PostgreSQL/Redis TypeScript API plus a React/Vite TypeScript SPA. Source entry points are `server.ts` (HTTP app), the `databases/postgresql/` adapter (composed in `databases/postgresql/index.ts`), and `worker.ts` (FCM worker); production runs their compiled files from `build/`. Keep route handlers in `routes/`, cross-cutting services in `lib/`, configuration in `config/`, and middleware in `middleware/`. The frontend lives in `src/`: application state in `src/app/`, shared UI in `src/components/`, API access in `src/api/`, and feature components in `src/features/<feature>/`. Shared API/domain contracts live in `shared/`. Put tests in `tests/`, `tests/unit/`, or `tests/frontend/`.
+
+Database migrations are **numbered SQL files** in `migrations/` (e.g. `13-foo.sql`). The runner only applies files matching `^\d+.*\.sql$`, tracks them in `schema_migrations` with a SHA-256 checksum, and rejects applied files that were modified — never edit an applied migration, add a new numbered one. Unnumbered legacy `.sh`/`.sql` files in `migrations/` are manual-only and are skipped by the runner. Apply with `npm run migrate` (compiled) or `npm run migrate:source` (tsx).
 
 ## Build, Test, and Development Commands
 
@@ -13,6 +15,8 @@ This is a tennis-ranking application: an Express/PostgreSQL/Redis TypeScript API
 - `npm test` runs the full Vitest suite; `npm run test:unit` limits it to unit tests; `npm run test:watch` is useful while developing.
 - `npm run lint` checks backend, frontend, and tests with ESLint.
 - `npm run typecheck` checks all TypeScript projects; `npm run check` runs the complete local validation sequence.
+- The SPA is served from either `/` or `/tennis/`; pick the matching variant (`npm run deploy:subpath` / `deploy:subdomain`) — the React API client in `src/api/` handles both base paths.
+- Production executes only compiled artifacts (`build/server.js`, `build/worker.js`); always deploy or roll back `dist/` and `build/` together. The compose `tennis-worker` service exposes a health endpoint on port 3002.
 
 ## Coding Style & Naming Conventions
 

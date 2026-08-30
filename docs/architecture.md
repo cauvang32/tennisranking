@@ -38,7 +38,7 @@ ranking/
 ├── tests/unit/              # Backend unit tests
 ├── tests/frontend/          # jsdom/Testing Library React tests
 ├── types/express.d.ts       # Express request/response augmentation
-├── database-postgresql.ts   # Production database adapter
+├── databases/postgresql/    # Production database adapter (split by domain)
 ├── server.ts                # HTTP application composition root
 ├── worker.ts                # BullMQ FCM worker
 ├── dist/                    # Generated browser artifact
@@ -74,7 +74,7 @@ export const createPlayerRouter = ({ db, checkAuth, rankingsCache }) => {
 }
 ```
 
-All SQL is parameterized through `database-postgresql.ts`. Mutations invalidate the relevant Redis keys, while PostgreSQL triggers provide cross-process `NOTIFY` invalidation.
+All SQL is parameterized through the `databases/postgresql/` adapter. Mutations invalidate the relevant Redis keys, while PostgreSQL triggers provide cross-process `NOTIFY` invalidation.
 
 ## Security boundaries
 

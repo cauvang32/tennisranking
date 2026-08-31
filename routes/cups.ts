@@ -14,6 +14,12 @@ import {
 } from '../lib/upload-storage.js'
 
 const CUP_UPLOAD_DIR = await ensureUploadDirectory('cups')
+
+// Only powers of two produce clean single-elimination brackets (each round
+// halves the field down to a single final). Restrict to these so a bracket can
+// always be generated without byes straddling an odd split.
+const TEAM_COUNTS = [2, 4, 8, 16, 32]
+const isTeamCount = value => TEAM_COUNTS.includes(Number(value))
 const safeImageContentType = value =>
   ['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(value)
     ? value
@@ -135,7 +141,9 @@ export const createCupRouter = ({
         .isIn(['single_elimination'])
         .withMessage('Invalid cup format. Only single_elimination is supported.'),
       body('numTeams')
-        .isInt({ min: 2, max: 32 }).withMessage('Number of teams must be 2-32'),
+        .isInt({ min: 2, max: 32 })
+        .custom(isTeamCount)
+        .withMessage('Number of teams must be a power of two (2, 4, 8, 16 or 32)'),
       body('seasonId').optional({ nullable: true }).isInt().withMessage('Season ID must be integer'),
       body('regulationText').optional({ nullable: true, checkFalsy: true }).isString().withMessage('Regulation text must be string'),
       body('startDate').optional({ nullable: true, checkFalsy: true }).isISO8601().withMessage('Valid start date required'),
@@ -181,7 +189,7 @@ export const createCupRouter = ({
       param('id').isInt().withMessage('Invalid cup ID'),
       body('name').optional().trim().isLength({ min: 1, max: 255 }).withMessage('Invalid name'),
       body('format').optional().isIn(['single_elimination']).withMessage('Invalid format'),
-      body('numTeams').optional().isInt({ min: 2, max: 32 }).withMessage('Teams must be 2-32'),
+      body('numTeams').optional().isInt({ min: 2, max: 32 }).custom(isTeamCount).withMessage('Teams must be a power of two (2, 4, 8, 16 or 32)'),
       body('seasonId').optional({ nullable: true }).isInt().withMessage('Season ID must be integer'),
       body('regulationText').optional({ nullable: true, checkFalsy: true }).isString().withMessage('Regulation text must be string'),
       body('startDate').optional({ nullable: true, checkFalsy: true }).isISO8601(),
@@ -502,6 +510,13 @@ export const createCupRouter = ({
         }
       }
 
+      // A match cannot be scored until both of its teams have been assigned by
+      // advancing the previous round. Allowing this would record a "completed"
+      // match with no winner and later break advanceRound ("No winners to advance").
+      if (matchInfo.team1_participant_id === null || matchInfo.team2_participant_id === null) {
+        return res.status(400).json({ error: 'Chưa thể ghi điểm — hai đội chưa được xác định (hãy hoàn thành vòng trước)' })
+      }
+
       const { team1Score, team2Score } = req.body
       const result = await db.updateCupMatchScore(cupId, matchId, team1Score, team2Score)
       await rankingsCache.invalidateByPrefix(`cup:${cupId}*`)
@@ -579,6 +594,9 @@ export const createCupRouter = ({
           if (!prevRoundComplete) {
             return res.status(400).json({ error: 'Chưa thể chỉnh sửa — vòng trước chưa hoàn thành' })
           }
+        }
+        if (matchInfo.team1_participant_id === null || matchInfo.team2_participant_id === null) {
+          return res.status(400).json({ error: 'Chưa thể chỉnh sửa — hai đội chưa được xác định (hãy hoàn thành vòng trước)' })
         }
       }
 
@@ -778,6 +796,12 @@ export const createCupRouter = ({
         if (!prevRoundComplete) {
           return res.status(400).json({ error: 'Chưa thể ghi điểm — vòng trước chưa hoàn thành' })
         }
+      }
+
+      // A match cannot have a winner picked until both of its teams are assigned
+      // (i.e. the previous round has been advanced into it).
+      if (matchInfo.team1_participant_id === null || matchInfo.team2_participant_id === null) {
+        return res.status(400).json({ error: 'Chưa thể chọn người thắng — hai đội chưa được xác định (hãy hoàn thành vòng trước)' })
       }
 
       const { winnerParticipantId } = req.body

@@ -129,7 +129,7 @@ export function CupsFeature() {
                     <div className="bracket-match-number">Trận {match.match_number ?? ''}</div>
                     <div className={'bracket-team' + (isWinner1 ? ' winner' : '') + (canPick ? ' clickable' : '')}>{canPick && t1 !== null && <button className="btn-winner-pick" title="Chọn người thắng" onClick={() => void pickWinner(match, t1)}>🏆</button>}<span>{teamName(match, 1)}</span><strong className="bracket-score">{match.team1_score ?? '–'}</strong></div>
                     <div className={'bracket-team' + (isWinner2 ? ' winner' : '') + (canPick ? ' clickable' : '')}>{canPick && t2 !== null && <button className="btn-winner-pick" title="Chọn người thắng" onClick={() => void pickWinner(match, t2)}>🏆</button>}<span>{teamName(match, 2)}</span><strong className="bracket-score">{match.team2_score ?? '–'}</strong></div>
-                    {app.isAdmin && selected.status !== 'completed' && match.status !== 'completed' && !locked && (
+                    {app.isAdmin && selected.status !== 'completed' && match.status !== 'completed' && !locked && t1 !== null && t2 !== null && (
                       <div className="bracket-controls">
                         <input aria-label="Điểm đội 1" type="number" min={0} value={score[match.id]?.team1Score ?? 0} onChange={e => setScore({ ...score, [match.id]: { ...score[match.id]!, team1Score: Number(e.target.value) } })} />
                         <input aria-label="Điểm đội 2" type="number" min={0} value={score[match.id]?.team2Score ?? 0} onChange={e => setScore({ ...score, [match.id]: { ...score[match.id]!, team2Score: Number(e.target.value) } })} />

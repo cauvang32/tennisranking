@@ -28,15 +28,17 @@ export const createSystemRouter = ({
   const MAX_SSE_PER_IP = Math.max(5, Math.min(50, Math.floor(config.maxSseClients / 5)))
 
   // ── CSRF token endpoint ───────────────────────────────────────────────────
-  router.get('/api/csrf-token', (req, res) => {
-    const csrfSecret = deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })
-    const csrfToken = createReusableToken(csrfSecret)
+  // checkAuth (not the global CSRF middleware) resolves the caller, because the
+  // global middleware skips GETs before it sets req.user — without this, a
+  // logged-in page reload would get an anonymous-bound token and the next
+  // mutation would 403. checkAuth is non-blocking for anonymous callers.
+  router.get('/api/csrf-token', checkAuth, (req, res) => {
+    const csrfToken = createReusableToken(req.csrfSecret ?? deriveCSRFSecretFromUser(req.user || { id: 'anonymous' }))
     res.json({ csrfToken })
   })
 
-  router.post('/api/csrf-token', (req, res) => {
-    const csrfSecret = deriveCSRFSecretFromUser(req.user || { id: 'anonymous' })
-    const csrfToken = createReusableToken(csrfSecret)
+  router.post('/api/csrf-token', checkAuth, (req, res) => {
+    const csrfToken = createReusableToken(req.csrfSecret ?? deriveCSRFSecretFromUser(req.user || { id: 'anonymous' }))
     res.json({ csrfToken })
   })
 

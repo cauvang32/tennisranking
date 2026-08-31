@@ -36,6 +36,11 @@ export class PlayersMethods extends DatabaseCore {
         WHERE player1_id = $1 OR player2_id = $1 OR player3_id = $1 OR player4_id = $1
       `, [playerId])
 
+      // Daily stats reference players with a NO-ACTION FK (lifetime/season
+      // stats cascade). Delete explicitly so a leftover row can never block
+      // the player delete with 23503.
+      await client.query('DELETE FROM player_daily_stats WHERE player_id = $1', [playerId])
+
       // Then remove the player
       await client.query('DELETE FROM players WHERE id = $1', [playerId])
 

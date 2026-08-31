@@ -288,10 +288,24 @@ const allowDevOrigins = (() => {
   }
   return isDevelopment
 })()
+// The cors package's origin callback receives only (origin, callback) — no
+// request — so capture the current request's Host in a preceding middleware
+// to detect same-origin requests (the compiled server serving its own SPA on
+// the same host:port must never be blocked, in any mode).
+let corsRequestHost: string | null = null
+app.use((req, _res, next) => {
+  corsRequestHost = req.headers.host ?? null
+  next()
+})
 const corsOptions = {
   origin: function (origin, callback) {
     if (isDevelopment) console.log('CORS Origin:', origin)
     if (!origin) return callback(null, true)
+    // Same-origin request (browsers enforce the same-origin policy already;
+    // CORS headers are ignored on same-origin responses) — always allow.
+    if (corsRequestHost && origin.replace(/^https?:\/\//, '').toLowerCase() === corsRequestHost.toLowerCase()) {
+      return callback(null, true)
+    }
     const allowedOrigins = [...config.allowedOrigins]
     if (config.publicDomain) {
       const protocol = config.isProduction ? 'https' : 'http'

@@ -352,7 +352,7 @@
 .rankings-table .rank-3 { background: color-mix(in srgb, #c26f32 7%, var(--surface)); }
 .rank-badge { display: inline-grid; min-width: 1.75rem; height: 1.75rem; place-items: center; border-radius: 8px; background: var(--surface-hover); font-weight: 800; }
 .form-indicator { display: flex; gap: 0.25rem; }
-.form-dot { display: inline-grid; width: 1.3rem; height: 1.3rem; place-items: center; border-radius: 999px; color: white; font-size: 0.58rem; font-weight: 800; }
+.form-dot { display: inline-grid; width: 1.4rem; height: 1.4rem; place-items: center; border-radius: 999px; color: white; font-size: 0.68rem; font-weight: 800; }
 .form-dot.win { background: var(--success); }
 .form-dot.loss { background: var(--error); }
 
@@ -381,7 +381,7 @@
 .matches-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(310px, 100%), 1fr)); gap: 0.75rem; }
 .match-card { overflow: hidden; border-radius: 11px; }
 .match-card-header { display: flex; padding: 0.45rem 0.65rem; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); background: var(--surface-hover); color: var(--text-secondary); font-size: 0.7rem; }
-.match-type-badge { padding: 0.15rem 0.45rem; border-radius: 999px; background: var(--primary); color: white; font-size: 0.62rem; font-weight: 750; }
+.match-type-badge { padding: 0.15rem 0.45rem; border-radius: 999px; background: var(--primary); color: white; font-size: 0.66rem; font-weight: 750; }
 .match-result { display: grid; min-height: 78px; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 0.55rem; padding: 0.75rem; text-align: center; }
 .match-side { display: flex; align-items: center; justify-content: center; gap: 0.25rem; font-size: 0.78rem; line-height: 1.35; }
 .match-side.winner { color: var(--success); }
@@ -485,6 +485,10 @@
   .score-editor { grid-column: 1 / -1; grid-row: 2; grid-template-columns: 1fr 1fr; align-items: end; }
   .admin-grid { grid-template-columns: 1fr; }
   .broadcast-form { grid-template-columns: 1fr; }
+  /* Touch-friendly tap sizes for phones and touch tablets. */
+  .react-app .btn-sm { min-height: 44px; }
+  .action-menu summary { width: 44px; height: 44px; }
+  .image-import summary, .technical-details summary, .maintenance-menu > summary { min-height: 44px; }
 }
 
 @media (max-width: 700px) {
@@ -510,13 +514,17 @@
   .react-form-grid .full-width { grid-column: auto; }
   .matches-grid, .seasons-grid, .cups-grid, .image-editor-grid, .data-actions-grid { grid-template-columns: 1fr; }
   .health-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .react-app .responsive-table table, .react-app .responsive-table tbody, .react-app .responsive-table tr, .react-app .responsive-table td { display: block; width: 100%; }
+  .react-app .responsive-table table, .react-app .responsive-table tbody { display: block; width: 100%; }
   .react-app .responsive-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); }
-  .react-app .responsive-table tr { padding: 0.65rem; border-bottom: 1px solid var(--border); }
+  /* Each row becomes a compact stat block: identity spans full width, the
+     remaining label/value cells flow two-per-line so wide tables (e.g. the
+     10-column rankings) stay scannable on a phone. */
+  .react-app .responsive-table tr { display: grid; grid-template-columns: 1fr 1fr; gap: 0.3rem 1rem; padding: 0.65rem; border-bottom: 1px solid var(--border); }
   .react-app .responsive-table tr:last-child { border-bottom: 0; }
-  .react-app .responsive-table td { display: flex; padding: 0.4rem; align-items: center; justify-content: space-between; gap: 1rem; border: 0; text-align: right; }
+  .react-app .responsive-table td { display: flex; min-width: 0; padding: 0.2rem 0; align-items: center; justify-content: space-between; gap: 0.75rem; border: 0; text-align: right; }
   .react-app .responsive-table td::before { content: attr(data-label); color: var(--text-secondary); font-size: 0.68rem; font-weight: 700; text-align: left; }
-  .react-app .responsive-table td:first-child { align-items: flex-start; }
+  .react-app .responsive-table td:first-child { grid-column: 1 / -1; }
+  .react-app .responsive-table td:nth-child(2) { font-size: 0.92rem; }
   .match-result { min-height: 72px; }
   .react-modal .modal-header, .react-modal .modal-body, .react-modal .modal-footer { padding: 0.9rem; }
 }

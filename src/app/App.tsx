@@ -80,7 +80,6 @@ export function App() {
   if (app.loading && !app.data) return <main className="app-container"><Loading label="Đang khởi tạo hệ thống..." /></main>
 
   return <div className="app-container react-app">
-    <HeroBanner />
     <header className="app-header">
       <div className="header-content">
         <div className="logo-section"><div className="logo-icon" aria-hidden="true">🎾</div><div className="logo-text">
@@ -100,6 +99,8 @@ export function App() {
         </div>
       </div>
     </header>
+
+    <HeroBanner />
 
     <main className="main-content" id="main-content">
       {app.error && <div className="status-message error">⚠️ {app.error} <button className="btn btn-sm" onClick={() => void app.reload()}>Thử lại</button></div>}

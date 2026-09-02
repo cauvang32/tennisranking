@@ -7,6 +7,10 @@ export default defineConfig(({ mode }) => {
   const rawBasePath = process.env.BASE_PATH || '/tennis/'
   const basePath = rawBasePath.endsWith('/') ? rawBasePath : `${rawBasePath}/`
 
+  // Bundle-size report (stats.html) is opt-in so it doesn't slow every build:
+  // run `ANALYZE=1 npm run build:client` to generate it.
+  const analyze = process.env.ANALYZE === '1' || process.env.ANALYZE === 'true'
+
   return {
     plugins: [react()],
     // Backend secrets live in the repository-root .env. The browser build does
@@ -24,27 +28,19 @@ export default defineConfig(({ mode }) => {
       sourcemap: false,
       // Minification target for modern browsers
       target: 'es2020',
-      // Use terser for smaller production bundles
-      minify: 'terser',
-      terserOptions: {
-        compress: {
-          drop_console: mode === 'production',
-          drop_debugger: true
-        }
-      },
+      // Use esbuild minify (Vite 8's default) — far faster than terser, which
+      // dominated the build. `drop` only takes effect when minifying (production
+      // builds), matching the old `drop_console: mode === 'production'` intent.
+      minify: 'esbuild',
+      esbuildOptions: { drop: ['console', 'debugger'] },
       // CSS code splitting
       cssCodeSplit: true,
       // Vite 8 uses Rolldown instead of Rollup — renamed from rollupOptions
       rolldownOptions: {
-        // Bundle analysis plugin (outputs HTML report on build)
-        plugins: [
-          visualizer({
-            open: mode === 'development',
-            filename: 'stats.html',
-            gzipSize: true,
-            brotliSize: true
-          })
-        ],
+        // Bundle analysis plugin (outputs stats.html) — only when ANALYZE is set.
+        plugins: analyze
+          ? [visualizer({ filename: 'stats.html', gzipSize: true, brotliSize: true })]
+          : [],
         output: {
           // Use content-hash for long-term caching (immutable assets)
           assetFileNames: 'assets/[name]-[hash][extname]',

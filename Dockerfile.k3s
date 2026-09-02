@@ -15,6 +15,7 @@ COPY src/ ./src/
 COPY shared/ ./shared/
 COPY types/ ./types/
 COPY config/ ./config/
+COPY databases/ ./databases/
 COPY lib/ ./lib/
 COPY middleware/ ./middleware/
 COPY routes/ ./routes/

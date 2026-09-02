@@ -14,6 +14,7 @@ COPY package*.json tsconfig*.json ./
 RUN npm ci
 COPY *.ts ./
 COPY config/ ./config/
+COPY databases/ ./databases/
 COPY lib/ ./lib/
 COPY middleware/ ./middleware/
 COPY routes/ ./routes/

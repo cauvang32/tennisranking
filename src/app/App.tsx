@@ -10,6 +10,7 @@ import { AccountsFeature } from '../features/accounts/AccountsFeature'
 import { ImagesFeature } from '../features/images/ImagesFeature'
 import { DataFeature } from '../features/data/DataFeature'
 import { Icon, type IconName } from '../components/icons'
+import { HeroBanner } from '../components/HeroBanner'
 
 type Tab = 'rankings' | 'matches' | 'players' | 'seasons' | 'cups' | 'accounts' | 'images' | 'data'
 
@@ -79,6 +80,7 @@ export function App() {
   if (app.loading && !app.data) return <main className="app-container"><Loading label="Đang khởi tạo hệ thống..." /></main>
 
   return <div className="app-container react-app">
+    <HeroBanner />
     <header className="app-header">
       <div className="header-content">
         <div className="logo-section"><div className="logo-icon" aria-hidden="true">🎾</div><div className="logo-text">
